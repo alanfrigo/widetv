@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Retro TV</string>
+    <string name="gate_title">RETRO TV</string>
+    <string name="gate_server_hint">ENDERECO DO SERVIDOR</string>
+    <string name="gate_password_hint">SENHA</string>
+    <string name="gate_enter">SINTONIZAR</string>
+    <string name="gate_error">SENHA INCORRETA</string>
+    <string name="gate_offline">SERVIDOR FORA DO AR</string>
+    <string name="gate_no_server">INFORME O ENDERECO DO SERVIDOR</string>
+    <string name="no_channels">SEM CANAIS</string>
+    <string name="no_signal">SEM SINAL</string>
+    <string name="settings_title">AJUSTE DO TUBO</string>
+    <string name="settings_hint">↑↓ ESCOLHE   ←→ AJUSTA   VOLTAR FECHA</string>
+    <string name="settings_defaults">RESTAURAR PADROES</string>
+    <string name="settings_defaults_action">OK</string>
+    <string name="menu_title_channels">CANAIS</string>
+    <string name="menu_hint_channels">OK SINTONIZA   → EPISODIOS   VOLTAR FECHA</string>
+    <string name="menu_hint_episodes">OK REPRODUZ   ← CANAIS   VOLTAR FECHA</string>
+    <string name="menu_loading">CARREGANDO…</string>
+    <string name="menu_empty">SEM EPISODIOS</string>
+</resources>

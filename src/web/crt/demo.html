@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Skin CRT - demo</title>
+
+    <!--
+      Pagina de ajuste da skin. Abra direto em file://, sem servidor e sem rede:
+      os unicos arquivos referenciados sao vizinhos desta pasta.
+
+        tv.css             moldura, layout, tipografia
+        crt.css            camadas de efeito
+        testclip-bars.mp4  clipe 640x480 (4:3), 8s, h264, gerado com ffmpeg:
+                      ffmpeg -y \
+                        -f lavfi -i "smptebars=size=640x480:rate=24:duration=2" \
+                        -f lavfi -i "testsrc2=size=640x480:rate=24:duration=6" \
+                        -filter_complex "[0:v][1:v]concat=n=2:v=1:a=0,setsar=1,format=yuv420p[v]" \
+                        -map "[v]" -c:v libx264 -profile:v main -level 3.0 -crf 27 \
+                        -movflags +faststart -an testclip-bars.mp4
+
+      Barra de cor e um bom alvo para calibrar (mostra o que a mascara de
+      fosforo faz com cada primaria), mas para julgar o efeito de verdade vale
+      abrir sobre um desenho: #clip=arquivo.mp4 troca o video sem editar nada,
+      por exemplo demo.html#clip=testclip.mp4,diag
+
+      Os controles abaixo da TV existem so aqui. O app nao tem menu: ele monta
+      o mesmo markup e nunca mexe nas custom properties em runtime.
+    -->
+    <link rel="stylesheet" href="tv.css" />
+    <link rel="stylesheet" href="crt.css" />
+
+    <style>
+      /* ------------------------------------------------------------------
+         Estilos exclusivos da demo (painel de ajuste). Nada daqui vai para o
+         app: tv.css e crt.css sao os arquivos de producao.
+         ------------------------------------------------------------------ */
+      .crt {
+        /* espaco reservado para o painel, para a TV caber na tela */
+        --tv-reserved: 24rem;
+      }
+
+      .panel {
+        width: 100%;
+        max-width: 64rem;
+        margin-inline: auto;
+        display: grid;
+        gap: 1.25rem;
+        padding: 1.25rem;
+        border: 1px solid #23262a;
+        border-radius: 0.75rem;
+        background: #101216;
+        font-size: 0.8rem;
+        color: #aab0a8;
+      }
+
+      .panel h1 {
+        margin: 0;
+        font-family: var(--tv-font-pixel);
+        font-size: 0.85rem;
+        line-height: 1.5;
+        letter-spacing: 0.06em;
+        color: var(--crt-phosphor);
+      }
+
+      .panel p {
+        margin: 0;
+        line-height: 1.6;
+      }
+
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+      }
+
+      button {
+        padding: 0.55rem 0.9rem;
+        border: 1px solid #2f3a33;
+        border-radius: 0.4rem;
+        background: #171b1d;
+        color: var(--crt-phosphor);
+        font: inherit;
+        font-family: var(--tv-font-ui);
+        letter-spacing: 0.04em;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--crt-phosphor);
+        background: #1d2321;
+      }
+
+      button[aria-pressed='true'] {
+        background: color-mix(in srgb, var(--crt-phosphor) 22%, #171b1d);
+        border-color: var(--crt-phosphor);
+        color: #0a0d0b;
+        font-weight: 700;
+      }
+
+      .sliders {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+        gap: 0.75rem 1.5rem;
+      }
+
+      .slider {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 0.25rem 0.75rem;
+      }
+
+      .slider label {
+        font-family: var(--tv-font-ui);
+        color: #8d948b;
+      }
+
+      .slider output {
+        font-variant-numeric: tabular-nums;
+        color: var(--crt-phosphor);
+      }
+
+      .slider input[type='range'] {
+        grid-column: 1 / -1;
+        width: 100%;
+        accent-color: var(--crt-phosphor);
+      }
+
+      .slider input[type='color'] {
+        grid-column: 1 / -1;
+        width: 100%;
+        height: 1.9rem;
+        padding: 0;
+        border: 1px solid #2f3a33;
+        border-radius: 0.3rem;
+        background: #171b1d;
+      }
+
+      details {
+        border-top: 1px solid #23262a;
+        padding-top: 0.9rem;
+      }
+
+      summary {
+        cursor: pointer;
+        color: #8d948b;
+      }
+
+      #selftest {
+        margin: 0.75rem 0 0;
+        padding: 0.75rem;
+        border-radius: 0.4rem;
+        background: #0a0c0e;
+        color: #9aa39a;
+        font-size: 0.72rem;
+        line-height: 1.65;
+        white-space: pre-wrap;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- .crt e o container: e nele que .crt-off e .crt-mono entram. -->
+    <div class="crt" id="crt">
+      <div class="tv">
+        <div class="tv-cabinet">
+          <div class="tv-bezel">
+            <div class="crt-screen" id="screen">
+              <video
+                class="crt-video"
+                id="video"
+                src="testclip-bars.mp4"
+                autoplay
+                muted
+                loop
+                playsinline
+              ></video>
+
+              <!-- Conteudo sobre o tubo: fica sob as camadas de efeito. -->
+              <p class="crt-osd crt-osd--auto" id="osd">CH 03<br />DESENHO</p>
+
+              <!-- Camadas de efeito, na ordem documentada em crt.css. -->
+              <div class="crt-layer crt-scanlines"></div>
+              <div class="crt-layer crt-mask"></div>
+              <div class="crt-layer crt-roll"></div>
+              <div class="crt-layer crt-vignette"></div>
+
+              <svg
+                class="crt-layer crt-grain"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <filter id="crt-grain-filter" x="0" y="0" width="100%" height="100%">
+                  <feTurbulence
+                    type="fractalNoise"
+                    baseFrequency="0.85"
+                    numOctaves="2"
+                    stitchTiles="stitch"
+                    seed="3"
+                  >
+                    <!-- SMIL: trocar a semente e o que faz o grao cintilar de
+                         verdade em vez de deslizar uma textura fixa. -->
+                    <animate
+                      attributeName="seed"
+                      values="1;7;13;19;25;31;37;43"
+                      dur="0.72s"
+                      calcMode="discrete"
+                      repeatCount="indefinite"
+                    />
+                  </feTurbulence>
+                  <feColorMatrix type="saturate" values="0" />
+                </filter>
+                <rect width="100%" height="100%" filter="url(#crt-grain-filter)" />
+              </svg>
+
+              <div class="crt-layer crt-flicker"></div>
+              <div class="crt-layer crt-glass"></div>
+            </div>
+          </div>
+
+          <div class="tv-chin">
+            <div class="tv-brand">DESENHO<br />TUBO 4:3</div>
+            <div class="tv-grille"></div>
+            <div class="tv-knobs">
+              <span class="tv-led"></span>
+              <span class="tv-knob tv-knob--big"></span>
+              <span class="tv-knob"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h1>SKIN CRT - AJUSTE</h1>
+        <p>
+          Os controles sao da demo, nao do app. Eles so escrevem as custom
+          properties de <code>crt.css</code> em <code>:root</code>; copie os
+          valores que voce gostar para dentro do arquivo.
+        </p>
+
+        <div class="row">
+          <button id="toggle-off" type="button" aria-pressed="false">
+            Efeitos CRT: LIGADOS
+          </button>
+          <button id="toggle-mono" type="button" aria-pressed="false">
+            Fosforo mono: DESLIGADO
+          </button>
+          <button id="show-osd" type="button">Mostrar OSD</button>
+          <button id="reset" type="button">Restaurar padroes</button>
+        </div>
+
+        <div class="sliders" id="sliders"></div>
+
+        <details>
+          <summary>Diagnostico</summary>
+          <pre id="selftest">rodando...</pre>
+        </details>
+      </div>
+    </div>
+
+    <script>
+      (() => {
+        'use strict';
+
+        const root = document.documentElement;
+        const crt = document.getElementById('crt');
+        const screenEl = document.getElementById('screen');
+        const osd = document.getElementById('osd');
+
+        /* ----------------------------------------------------------------
+           Sliders: um por custom property afinavel. `unit` vazio = numero.
+           Os defaults sao lidos de crt.css, nunca repetidos aqui.
+           ---------------------------------------------------------------- */
+        const CONTROLS = [
+          { prop: '--crt-scanline-opacity', label: 'scanline opacity', min: 0, max: 1, step: 0.01 },
+          { prop: '--crt-grain-opacity', label: 'grain opacity', min: 0, max: 0.6, step: 0.01 },
+          { prop: '--crt-flicker-amount', label: 'flicker amount', min: 0, max: 0.12, step: 0.005 },
+          { prop: '--crt-vignette', label: 'vignette', min: 0, max: 1, step: 0.01 },
+          { prop: '--crt-mask-opacity', label: 'mask opacity', min: 0, max: 0.6, step: 0.01 },
+          { prop: '--crt-bloom', label: 'bloom', min: 0, max: 1.5, step: 0.05 },
+          { prop: '--crt-scanline-pitch', label: 'scanline pitch', min: 2, max: 8, step: 1, unit: 'px' },
+          { prop: '--crt-phosphor', label: 'phosphor', color: true },
+        ];
+
+        const defaults = new Map();
+        const styleOf = getComputedStyle(root);
+        for (const c of CONTROLS) {
+          defaults.set(c.prop, styleOf.getPropertyValue(c.prop).trim());
+        }
+
+        const slidersEl = document.getElementById('sliders');
+        const inputs = new Map();
+
+        for (const c of CONTROLS) {
+          const wrap = document.createElement('div');
+          wrap.className = 'slider';
+
+          const label = document.createElement('label');
+          label.textContent = c.label;
+          label.htmlFor = 'in' + c.prop;
+
+          const out = document.createElement('output');
+          const input = document.createElement('input');
+          input.id = 'in' + c.prop;
+
+          const initial = defaults.get(c.prop) || '';
+
+          if (c.color) {
+            input.type = 'color';
+            input.value = initial || '#33ff66';
+            out.textContent = input.value;
+          } else {
+            input.type = 'range';
+            input.min = String(c.min);
+            input.max = String(c.max);
+            input.step = String(c.step);
+            input.value = String(parseFloat(initial) || 0);
+            out.textContent = input.value + (c.unit || '');
+          }
+
+          input.addEventListener('input', () => {
+            const value = c.color ? input.value : input.value + (c.unit || '');
+            root.style.setProperty(c.prop, value);
+            out.textContent = value;
+          });
+
+          inputs.set(c.prop, { input, out, control: c });
+          wrap.append(label, out, input);
+          slidersEl.append(wrap);
+        }
+
+        /* ---------------------------------------------------------------- */
+
+        const toggleOff = document.getElementById('toggle-off');
+        toggleOff.addEventListener('click', () => {
+          const off = crt.classList.toggle('crt-off');
+          toggleOff.setAttribute('aria-pressed', String(off));
+          toggleOff.textContent = 'Efeitos CRT: ' + (off ? 'DESLIGADOS' : 'LIGADOS');
+        });
+
+        const toggleMono = document.getElementById('toggle-mono');
+        toggleMono.addEventListener('click', () => {
+          const mono = crt.classList.toggle('crt-mono');
+          toggleMono.setAttribute('aria-pressed', String(mono));
+          toggleMono.textContent = 'Fosforo mono: ' + (mono ? 'LIGADO' : 'DESLIGADO');
+        });
+
+        document.getElementById('show-osd').addEventListener('click', () => {
+          osd.classList.remove('crt-osd--auto');
+          void osd.offsetWidth; /* reinicia a animacao */
+          osd.classList.add('crt-osd--auto');
+        });
+
+        document.getElementById('reset').addEventListener('click', () => {
+          for (const c of CONTROLS) {
+            root.style.removeProperty(c.prop);
+            const entry = inputs.get(c.prop);
+            const value = defaults.get(c.prop) || '';
+            if (c.color) {
+              entry.input.value = value || '#33ff66';
+              entry.out.textContent = entry.input.value;
+            } else {
+              entry.input.value = String(parseFloat(value) || 0);
+              entry.out.textContent = entry.input.value + (c.unit || '');
+            }
+          }
+        });
+
+        /* ----------------------------------------------------------------
+           Diagnostico. Nao ha teste automatizado nesta parte do projeto, entao
+           a pagina se testa: propriedades presentes, camadas inertes ao
+           ponteiro, 4:3 de verdade, .crt-off desligando tudo e zero request
+           para fora (o app precisa funcionar sem internet de saida).
+           ---------------------------------------------------------------- */
+        function selftest() {
+          const lines = [];
+          let failures = 0;
+
+          const check = (ok, name, detail) => {
+            if (!ok) failures++;
+            lines.push((ok ? 'OK   ' : 'FALHA') + '  ' + name + (detail ? '  -> ' + detail : ''));
+          };
+
+          const cs = getComputedStyle(root);
+
+          // o diagnostico roda sempre com os efeitos ligados, mesmo que a
+          // pagina tenha sido aberta em #off; o estado volta no final
+          const wasOff = crt.classList.contains('crt-off');
+          crt.classList.remove('crt-off');
+
+          // 1. custom properties do contrato
+          for (const prop of [
+            '--crt-scanline-opacity',
+            '--crt-grain-opacity',
+            '--crt-flicker-amount',
+            '--crt-vignette',
+            '--crt-phosphor',
+          ]) {
+            const v = cs.getPropertyValue(prop).trim();
+            check(v !== '', 'custom property ' + prop, v || '(vazia)');
+          }
+
+          // 2. as duas folhas de estilo pegaram
+          check(
+            getComputedStyle(document.body).marginTop === '0px',
+            'tv.css aplicado',
+            'body margin=' + getComputedStyle(document.body).marginTop,
+          );
+          const scan = document.querySelector('.crt-scanlines');
+          check(
+            getComputedStyle(scan).mixBlendMode === 'multiply',
+            'crt.css aplicado',
+            'scanlines blend=' + getComputedStyle(scan).mixBlendMode,
+          );
+
+          // 3. camadas presentes e na ordem
+          const layers = [...document.querySelectorAll('.crt-screen .crt-layer')];
+          const names = layers.map(
+            (el) => [...el.classList].find((c) => c !== 'crt-layer') || '?',
+          );
+          check(layers.length === 7, 'camadas presentes (7)', names.join(' > '));
+
+          // 4. nenhuma camada captura ponteiro
+          const clickable = [...document.querySelectorAll('.crt-screen > *:not(.crt-video)')].filter(
+            (el) => getComputedStyle(el).pointerEvents !== 'none',
+          );
+          check(clickable.length === 0, 'pointer-events: none em todas as camadas',
+            clickable.length ? clickable.map((e) => e.className).join(', ') : 'incluindo o OSD');
+
+          // 5. viewport 4:3 de verdade
+          const r = screenEl.getBoundingClientRect();
+          const ratio = r.width / r.height;
+          check(Math.abs(ratio - 4 / 3) < 0.01, 'viewport 4:3', ratio.toFixed(4));
+
+          // 6. grao: filtro SVG inline e animado
+          const turb = document.querySelector('#crt-grain-filter feTurbulence');
+          check(!!turb, 'feTurbulence inline', turb ? 'baseFrequency=' + turb.getAttribute('baseFrequency') : 'ausente');
+          check(!!turb && !!turb.querySelector('animate'), 'grao animado (SMIL)', 'seed');
+
+          // 7. .crt-off desliga tudo de uma vez
+          crt.classList.add('crt-off');
+          const stillVisible = layers.filter((el) => getComputedStyle(el).display !== 'none');
+          const offRadius = getComputedStyle(screenEl).borderTopLeftRadius;
+          const offFilter = getComputedStyle(document.getElementById('video')).filter;
+          crt.classList.remove('crt-off');
+          check(stillVisible.length === 0, '.crt-off esconde as 7 camadas',
+            stillVisible.length ? stillVisible.map((e) => e.className).join(', ') : 'display:none');
+          check(offRadius === '0px', '.crt-off remove a curvatura falsa', offRadius);
+          check(offFilter === 'none', '.crt-off devolve o video cru', 'filter=' + offFilter);
+
+          // 8. curvatura ligada
+          check(
+            getComputedStyle(screenEl).borderTopLeftRadius !== '0px',
+            'curvatura falsa via border-radius',
+            getComputedStyle(screenEl).borderTopLeftRadius,
+          );
+
+          // 9. video nativo, sem canvas
+          const video = document.getElementById('video');
+          check(video instanceof HTMLVideoElement, 'video nativo (<video>, sem canvas)',
+            'readyState=' + video.readyState + ' ' + video.videoWidth + 'x' + video.videoHeight);
+          check(document.querySelector('canvas') === null, 'nenhum <canvas> na pagina');
+
+          // 10. nada de rede externa
+          const remote = performance
+            .getEntriesByType('resource')
+            .map((e) => e.name)
+            .filter((n) => /^https?:/i.test(n));
+          check(remote.length === 0, 'zero request externo (sem CDN)',
+            remote.length ? remote.join(', ') : 'so arquivos locais');
+
+          if (wasOff) crt.classList.add('crt-off');
+
+          lines.push('');
+          lines.push(failures === 0 ? 'RESULTADO: 100% OK' : 'RESULTADO: ' + failures + ' FALHA(S)');
+          document.getElementById('selftest').textContent = lines.join('\n');
+        }
+
+        /* ----------------------------------------------------------------
+           Atalhos por hash, para abrir a pagina ja num estado: util para
+           comparar e para capturar a tela sem clicar em nada.
+             #diag        abre o diagnostico
+             #off         comeca com os efeitos desligados
+             #mono        comeca em fosforo monocromatico
+             #clip=X.mp4  troca o video (caminho relativo a esta pasta)
+           Combinaveis: #diag,off
+           ---------------------------------------------------------------- */
+        function applyHash() {
+          const flags = new Set(
+            decodeURIComponent(location.hash.replace(/^#/, ''))
+              .split(/[,\s]+/)
+              .filter(Boolean),
+          );
+          if (flags.has('off') !== crt.classList.contains('crt-off')) toggleOff.click();
+          if (flags.has('mono') !== crt.classList.contains('crt-mono')) toggleMono.click();
+          document.querySelector('details').open = flags.has('diag');
+
+          const clip = [...flags].find((f) => f.startsWith('clip='));
+          if (clip) {
+            const src = clip.slice('clip='.length);
+            const video = document.getElementById('video');
+            if (src && video.getAttribute('src') !== src) video.setAttribute('src', src);
+          }
+        }
+
+        applyHash();
+        window.addEventListener('hashchange', applyHash);
+
+        if (document.readyState === 'complete') selftest();
+        else window.addEventListener('load', selftest);
+      })();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,75 @@
+name: retro-tv
+
+services:
+  retro-tv:
+    build:
+      context: .
+      target: runtime
+    image: retro-tv:latest
+    container_name: retro-tv
+    restart: unless-stopped
+    # PID 1 que enterra processo zumbi do ffprobe.
+    init: true
+
+    # Segredos vem do .env ao lado deste arquivo, entregues literais ao
+    # container. Importante: o hash da senha contem "$" e NAO pode passar por
+    # interpolacao do compose. No .env, escreva entre aspas simples:
+    #   AUTH_PASSWORD_HASH='scrypt$16384$8$1$...'
+    # required: false porque no TrueNAS as variaveis vem da UI, sem .env.
+    env_file:
+      - path: .env
+        required: false
+
+    # Estas tres sobrescrevem o .env de proposito: no .env elas descrevem o
+    # HOST (onde fica a biblioteca, onde fica o banco), aqui descrevem o
+    # caminho DENTRO do container. `environment` tem prioridade sobre env_file.
+    environment:
+      PORT: "8080"
+      LIBRARY_ROOT: /media/desenhos
+      DATA_DIR: /data
+      # Primeiro boot indexa o acervo sozinho, em segundo plano. Ponha "false"
+      # se preferir controlar o scan na mao com:
+      #   docker compose exec retro-tv node dist/server/scan.js /media/desenhos
+      AUTO_SCAN: "true"
+      # Modo de apresentacao: crt (default) ou widescreen. Vem do .env do host;
+      # no TrueNAS, defina na UI do app.
+      DISPLAY_MODE: ${DISPLAY_MODE:-crt}
+      TZ: ${TZ:-America/Sao_Paulo}
+
+    # Publicado so no loopback: sem HTTPS na frente, o cookie de sessao anda em
+    # texto claro pela rede. Troque HOST_BIND para 0.0.0.0 apenas se o reverse
+    # proxy estiver em outra maquina - e ai coloque HTTPS nele.
+    ports:
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8080}:8080"
+
+    volumes:
+      # Biblioteca read-only: o app so le e nunca renomeia nada do acervo.
+      - "${LIBRARY_ROOT:?defina LIBRARY_ROOT no .env com o caminho da biblioteca no host}:/media/desenhos:ro"
+      # Indice SQLite em volume nomeado: sobrevive a recriacao do container.
+      - retro-tv-data:/data
+
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # 401 conta como saudavel: prova que o processo responde antes do login.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:' + (process.env.PORT || 8080) + '/api/auth/session').then((r) => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  retro-tv-data:

@@ -1,0 +1,71 @@
+# Dependencias e build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Indice do acervo. O banco nao guarda video, mas guarda o caminho completo de
+# cada arquivo pessoal, que ja e informacao demais para um repositorio publico.
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Segredos. Só o exemplo entra no repositorio.
+.env
+.env.*
+!.env.example
+
+# Nenhum video, em hipotese nenhuma.
+#
+# Este e um app de acervo pessoal: um arquivo de desenho largado por engano
+# dentro do projeto nao pode acabar num commit. A regra e cega de proposito.
+# Nada aqui precisa de video versionado:
+#   - fixtures do scanner sao geradas em disco pelo proprio teste
+#     (tests/library/fixture-tree.ts)
+#   - o clipe do demo do CRT sai de `npm run demo:clip`
+# Se algum dia um video precisar mesmo entrar, sera com `git add -f` consciente.
+*.mp4
+*.mkv
+*.avi
+*.webm
+*.m4v
+*.mov
+*.wmv
+*.flv
+*.rmvb
+*.m2ts
+*.ts.part
+
+# Legendas e capas que costumam vir junto do acervo
+*.srt
+*.ass
+*.sub
+*.idx
+*.nfo
+
+# Fixtures antigas, caso alguem tenha a pasta de um checkout anterior
+tests/**/__fixtures__/
+
+# Testes e cobertura
+coverage/
+.vitest/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Sistema operacional
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

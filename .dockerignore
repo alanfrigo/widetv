@@ -1,0 +1,22 @@
+# O contexto so precisa do que entra no build.
+node_modules
+dist
+data
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+.dockerignore
+docs
+tests
+**/__fixtures__
+npm-debug.log*

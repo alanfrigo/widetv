@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# Wrapper minimo do Gradle.
+#
+# O script oficial existe para adivinhar JAVA_HOME em sistemas exoticos e para
+# lidar com Cygwin. Aqui o alvo e um Mac e um par de TVs: o que sobra e uma
+# linha de java.
+#
+# O Gradle 8.11 nao roda em JDK 25. Exporte o 17 antes de chamar:
+#
+#   JAVA_HOME=$(/usr/libexec/java_home -v 17) ./gradlew test
+#
+set -e
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+
+if [ -n "$JAVA_HOME" ]; then
+  JAVACMD="$JAVA_HOME/bin/java"
+else
+  JAVACMD=java
+fi
+
+exec "$JAVACMD" \
+  -classpath "$DIR/gradle/wrapper/gradle-wrapper.jar" \
+  org.gradle.wrapper.GradleWrapperMain "$@"

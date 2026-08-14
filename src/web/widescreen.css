@@ -1,0 +1,199 @@
+/*
+ * Modo widescreen: a mesma aplicacao numa TV moderna.
+ *
+ * Regra unica deste arquivo: TUDO aqui e escopado em `body.mode-widescreen`.
+ * Sem a classe no <body> este CSS e inerte e o modo CRT sai exatamente como
+ * saia antes dele existir - por isso tambem nao ha uma linha sequer editada em
+ * tv.css, crt.css ou app.css. O interruptor esta no main.ts: quando /api/config
+ * responde `widescreen`, entram `body.mode-widescreen` e `.crt-off` no #crt (o
+ * kill-switch que ja existia em crt.css) e o tubo vira uma tela preta comum.
+ *
+ * O `[hidden]` aparece em varios seletores de proposito: o atributo vale
+ * `display: none` na folha do navegador, e qualquer `display` declarado aqui
+ * venceria esse none e mostraria elemento que deveria estar escondido. Onde a
+ * visibilidade e do JS, o seletor pede `:not([hidden])`; onde ela e do modo, o
+ * seletor pede `[hidden]` e manda mostrar assim mesmo.
+ */
+
+body.mode-widescreen {
+  /* Paleta de TV moderna: cinza neutro sobre preto, sem fosforo. */
+  --ws-text: #e8e8e8;
+  --ws-dim: #9a9a9a;
+  --ws-panel: 10 10 12;
+  --ws-font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+
+  background: #000;
+}
+
+/* --- geometria: a tela ocupa a janela inteira -------------------------- */
+
+/*
+ * `aspect-ratio` anula o 4/3 de tv.css e `max-height` anula o 75vw de app.css.
+ * O `object-fit: contain` do <video> continua vindo de app.css: 16:9 preenche a
+ * janela, 4:3 ganha tarja lateral - que e o que uma TV widescreen faz.
+ */
+body.mode-widescreen .crt-screen {
+  aspect-ratio: auto;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  box-shadow: none;
+  background: #000;
+}
+
+/* --- OSD ---------------------------------------------------------------- */
+
+/*
+ * Mesmo texto, sem o brilho de fosforo: aqui ele seria enfeite fora de lugar.
+ * O peso vem do fundo escurecido, que funciona em cima de qualquer cena.
+ */
+body.mode-widescreen .crt-osd {
+  padding: 0.35em 0.7em;
+  color: var(--ws-text);
+  font-family: var(--ws-font);
+  font-size: clamp(0.85rem, 1.6vw, 1.4rem);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  background: rgb(0 0 0 / 55%);
+  border-radius: 4px;
+  -webkit-text-stroke: 0;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 80%);
+}
+
+/* --- menu --------------------------------------------------------------- */
+
+/*
+ * Painel a esquerda, com gradiente que morre no meio da tela: o episodio
+ * continua rodando atras e visivel, como no menu de uma TV de verdade.
+ */
+body.mode-widescreen .app-menu:not([hidden]) {
+  position: fixed;
+  inset: 0 auto 0 0;
+  /* Acima de todas as camadas do tubo (a mais alta e z-index 8 em crt.css). */
+  z-index: 80;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: clamp(0.8rem, 2vh, 1.4rem);
+  width: min(480px, 40vw);
+  padding: clamp(1.2rem, 3vh, 2.2rem) clamp(1rem, 2vw, 1.8rem);
+  color: var(--ws-text);
+  font-family: var(--ws-font);
+  background: linear-gradient(
+    90deg,
+    rgb(var(--ws-panel) / 96%) 0%,
+    rgb(var(--ws-panel) / 88%) 55%,
+    rgb(var(--ws-panel) / 0%) 100%
+  );
+  animation: app-menu-in 140ms ease-out;
+}
+
+body.mode-widescreen .app-menu__title {
+  margin: 0;
+  color: var(--ws-text);
+  font-size: clamp(1rem, 1.8vw, 1.5rem);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+body.mode-widescreen .app-menu__list {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 20%) transparent;
+}
+
+body.mode-widescreen .app-menu__item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 0 0.85rem;
+  align-items: baseline;
+  padding: 0.5rem 0.8rem;
+  font-size: clamp(0.85rem, 1.4vw, 1.1rem);
+  cursor: pointer;
+  /* A barra de acento existe sempre, transparente: a selecao so pinta, nao
+     empurra a linha para o lado. */
+  border-left: 3px solid transparent;
+}
+
+body.mode-widescreen .app-menu__item.is-selected {
+  background: rgb(255 255 255 / 8%);
+  border-left-color: var(--ws-text);
+}
+
+body.mode-widescreen .app-menu__num {
+  color: var(--ws-dim);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+body.mode-widescreen .app-menu__item.is-selected .app-menu__num {
+  color: var(--ws-text);
+}
+
+body.mode-widescreen .app-menu__name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+body.mode-widescreen .app-menu__meta {
+  color: var(--ws-dim);
+  font-size: 0.8em;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+body.mode-widescreen .app-menu__badge {
+  padding: 0.1em 0.55em;
+  color: var(--ws-dim);
+  font-size: 0.72em;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  border: 1px solid rgb(255 255 255 / 25%);
+  border-radius: 999px;
+}
+
+body.mode-widescreen .app-menu__notice {
+  padding: 0.5rem 0.8rem;
+  color: var(--ws-dim);
+  font-size: clamp(0.85rem, 1.4vw, 1.1rem);
+  letter-spacing: 0.06em;
+}
+
+body.mode-widescreen .app-menu__hints {
+  color: var(--ws-dim);
+  font-size: clamp(0.7rem, 1.1vw, 0.85rem);
+  letter-spacing: 0.04em;
+}
+
+@keyframes app-menu-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* --- legenda de teclas da tela de senha ---------------------------------- */
+
+/*
+ * Estas duas linhas nascem com `hidden` no HTML porque no modo CRT o menu nao
+ * existe. Aqui elas voltam a existir.
+ */
+body.mode-widescreen .app-help__ws[hidden] {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mode-widescreen .app-menu:not([hidden]) {
+    animation: none;
+  }
+}

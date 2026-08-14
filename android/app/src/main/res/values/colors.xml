@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fosforo verde do OSD, o mesmo hex do cliente web. -->
+    <color name="phosphor">#33ff66</color>
+    <color name="phosphor_dim">#1f9940</color>
+    <color name="tv_black">#000000</color>
+</resources>

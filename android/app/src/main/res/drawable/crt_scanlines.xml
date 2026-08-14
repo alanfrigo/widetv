@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Scanlines. O tile tem 4px de altura em mdpi: duas linhas escuras, duas
+  transparentes. Como mora em `drawable-mdpi`, o Android escala com a densidade
+  da tela, entao o periodo da linha acompanha o tamanho do painel em vez de
+  sumir num 4K.
+-->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/crt_scanline_tile"
+    android:tileMode="repeat" />

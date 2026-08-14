@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>TV</title>
+  </head>
+  <body>
+    <!--
+      Sem gabinete: so o tubo, na altura maxima da janela.
+      .crt e o container e e nele que .crt-off e .crt-mono entram.
+    -->
+    <div class="crt" id="crt">
+      <div class="crt-screen" id="screen">
+        <!--
+          Dois elementos de video: enquanto um toca, o outro pre-carrega o
+          proximo episodio. A troca e um swap de visibilidade, sem buraco preto
+          na virada.
+        -->
+        <video class="crt-video is-live" id="video-a" playsinline></video>
+        <video class="crt-video" id="video-b" playsinline hidden></video>
+
+        <!--
+          Sem `crt-osd--auto`: aquela classe roda uma animacao que termina em
+          opacity 0, e animacao vence declaracao normal - a classe .is-visible
+          do JS nunca conseguiria mostrar nada. Quem controla o tempo aqui e o
+          `showOsd` do main.ts.
+        -->
+        <p class="crt-osd" id="osd"></p>
+
+        <!-- Estalo de estatica na troca de canal. -->
+        <div class="crt-layer app-static" id="static"></div>
+
+        <!-- Camadas de efeito, na ordem documentada em crt.css. -->
+        <div class="crt-layer crt-scanlines"></div>
+        <div class="crt-layer crt-mask"></div>
+        <div class="crt-layer crt-roll"></div>
+        <div class="crt-layer crt-vignette"></div>
+
+        <svg
+          class="crt-layer crt-grain"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <filter id="crt-grain-filter" x="0" y="0" width="100%" height="100%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.85"
+              numOctaves="2"
+              stitchTiles="stitch"
+              seed="3"
+            >
+              <animate
+                attributeName="seed"
+                values="1;7;13;19;25;31;37;43"
+                dur="0.72s"
+                calcMode="discrete"
+                repeatCount="indefinite"
+              />
+            </feTurbulence>
+            <feColorMatrix type="saturate" values="0" />
+          </filter>
+          <rect width="100%" height="100%" filter="url(#crt-grain-filter)" />
+        </svg>
+
+        <div class="crt-layer crt-flicker"></div>
+        <div class="crt-layer crt-glass"></div>
+
+        <!-- Tela de senha: mora dentro do tubo para nao quebrar a ilusao. -->
+        <div class="app-gate" id="gate" hidden>
+          <form class="app-gate__form" id="gate-form">
+            <label class="app-gate__label" for="gate-password">SENHA</label>
+            <input
+              class="app-gate__input"
+              id="gate-password"
+              type="password"
+              autocomplete="current-password"
+              autofocus
+            />
+            <p class="app-gate__error" id="gate-error"></p>
+          </form>
+
+          <!--
+            No modo CRT nao ha menu em lugar nenhum depois daqui, entao a tela de
+            senha e a unica chance de dizer quais teclas existem. No widescreen
+            existe o menu, e as duas ultimas linhas - escondidas por atributo e
+            reveladas por widescreen.css - contam como chegar nele.
+          -->
+          <dl class="app-help">
+            <dt class="app-help__key">&uarr; &darr;</dt>
+            <dd class="app-help__what">TROCAR DE CANAL</dd>
+
+            <dt class="app-help__key">0 - 9</dt>
+            <dd class="app-help__what">SINTONIZAR DIRETO</dd>
+
+            <dt class="app-help__key">&larr; &rarr;</dt>
+            <dd class="app-help__what">VOLUME</dd>
+
+            <dt class="app-help__key">M</dt>
+            <dd class="app-help__what">MUDO</dd>
+
+            <dt class="app-help__key app-help__ws" hidden>ENTER</dt>
+            <dd class="app-help__what app-help__ws" hidden>MENU</dd>
+
+            <dt class="app-help__key app-help__ws" hidden>ESC</dt>
+            <dd class="app-help__what app-help__ws" hidden>VOLTAR</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <!--
+      Menu do modo widescreen. Irmao do tubo, nao filho: dentro de .crt-screen
+      ele herdaria `overflow: hidden`, a curvatura falsa e as camadas de efeito -
+      e no CRT ele simplesmente nao existe, porque o `hidden` so sai quando o
+      main.ts abre o menu, o que nunca acontece naquele modo.
+    -->
+    <div class="app-menu" id="menu" hidden>
+      <header class="app-menu__head">
+        <h1 class="app-menu__title" id="menu-title"></h1>
+      </header>
+      <ul class="app-menu__list" id="menu-list"></ul>
+      <footer class="app-menu__hints" id="menu-hints"></footer>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

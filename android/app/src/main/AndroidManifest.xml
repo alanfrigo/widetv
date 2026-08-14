@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      A TV nao tem tela de toque e o app nao precisa de leanback como biblioteca,
+      so como categoria de launcher. Marcar os dois como opcionais evita que o
+      APK seja recusado num aparelho que nao se declara leanback.
+    -->
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+
+    <!--
+      `usesCleartextTraffic`: o caminho publico e HTTPS; o cleartext existe para
+      o atalho da LAN (http://ip-do-nas:8080), que pula o Cloudflare quando a TV
+      esta em casa.
+    -->
+    <application
+        android:allowBackup="false"
+        android:banner="@drawable/tv_banner"
+        android:icon="@drawable/tv_banner"
+        android:label="@string/app_name"
+        android:supportsRtl="false"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.RetroTv">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.RetroTv">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <!-- Sem LEANBACK_LAUNCHER o app nao aparece na home da Google TV. -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                <!-- Mantido para instalar e abrir em tablet/celular durante o desenvolvimento. -->
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

@@ -1,0 +1,243 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/tv_black"
+    android:focusable="true"
+    android:focusableInTouchMode="true">
+
+    <!--
+      O tubo. Travado em 4:3 como no cliente web: o acervo e quase todo 640x480,
+      e os poucos 16:9 entram com barra em cima e embaixo (`resize_mode="fit"`),
+      exatamente como o `object-fit: contain` do web.
+    -->
+    <androidx.media3.ui.AspectRatioFrameLayout
+        android:id="@+id/tube"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center"
+        android:background="@color/tv_black"
+        app:resize_mode="fit">
+
+        <!--
+          Sem controles: a grade nao tem pausa nem rewind, e um botao de play na
+          tela quebraria a ilusao de TV.
+        -->
+        <androidx.media3.ui.PlayerView
+            android:id="@+id/stage"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/tv_black"
+            app:resize_mode="fit"
+            app:surface_type="surface_view"
+            app:use_controller="false" />
+
+        <!--
+          Forca das scanlines. O tile e preto puro; quem dosa e este alpha, entao
+          e este o unico numero a mexer. 0.12 = veu discreto num painel grande;
+          acima de 0.25 o desenho comeca a escurecer de verdade.
+        -->
+        <View
+            android:id="@+id/scanlines"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0.12"
+            android:background="@drawable/crt_scanlines" />
+
+        <com.retrotv.app.ui.VignetteView
+            android:id="@+id/vignette"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Estalo de troca de canal. Alpha 0 no repouso; nunca anima sozinho. -->
+        <View
+            android:id="@+id/static_flash"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0"
+            android:background="@drawable/crt_static" />
+    </androidx.media3.ui.AspectRatioFrameLayout>
+
+    <TextView
+        android:id="@+id/osd"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="48dp"
+        android:fontFamily="monospace"
+        android:shadowColor="@color/phosphor"
+        android:shadowDx="0"
+        android:shadowDy="0"
+        android:shadowRadius="12"
+        android:textColor="@color/phosphor"
+        android:textSize="28sp"
+        android:visibility="gone" />
+
+    <!--
+      Painel de servico (codigo 9992). Fica por cima do canal, que continua
+      rodando: o ajuste so faz sentido olhando o desenho mudar atras.
+    -->
+    <LinearLayout
+        android:id="@+id/settings"
+        android:layout_width="560dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#D9000000"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.15"
+            android:paddingBottom="20dp"
+            android:text="@string/settings_title"
+            android:textColor="@color/phosphor"
+            android:textSize="26sp" />
+
+        <include
+            android:id="@+id/row_scanlines"
+            layout="@layout/crt_row" />
+
+        <include
+            android:id="@+id/row_vignette"
+            layout="@layout/crt_row" />
+
+        <include
+            android:id="@+id/row_radius"
+            layout="@layout/crt_row" />
+
+        <include
+            android:id="@+id/row_static"
+            layout="@layout/crt_row" />
+
+        <include
+            android:id="@+id/row_defaults"
+            layout="@layout/crt_row" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:paddingTop="20dp"
+            android:text="@string/settings_hint"
+            android:textColor="@color/phosphor_dim"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <!--
+      Menu de canais e episodios. So existe no modo panoramico, onde a TV deixa
+      de ser so uma grade que passa: fica por cima do canal, que continua
+      rodando atras, como o painel de servico.
+    -->
+    <LinearLayout
+        android:id="@+id/menu"
+        android:layout_width="640dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#D9000000"
+        android:orientation="vertical"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/menu_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.15"
+            android:paddingBottom="20dp"
+            android:text="@string/menu_title_channels"
+            android:textColor="@color/phosphor"
+            android:textSize="26sp" />
+
+        <!--
+          `afterDescendants`: quem anda entre as linhas e o foco nativo, igual
+          ao painel de servico. A lista nunca fica com o foco para si.
+        -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/menu_list"
+            android:layout_width="match_parent"
+            android:layout_height="480dp"
+            android:descendantFocusability="afterDescendants" />
+
+        <TextView
+            android:id="@+id/menu_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:paddingTop="20dp"
+            android:text="@string/menu_hint_channels"
+            android:textColor="@color/phosphor_dim"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <!-- Portao de acesso. Aparece so quando nao ha sessao valida. -->
+    <LinearLayout
+        android:id="@+id/gate"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/tv_black"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="48dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.2"
+            android:paddingBottom="32dp"
+            android:text="@string/gate_title"
+            android:textColor="@color/phosphor"
+            android:textSize="40sp" />
+
+        <EditText
+            android:id="@+id/gate_server"
+            android:layout_width="480dp"
+            android:layout_height="wrap_content"
+            android:autofillHints="no"
+            android:fontFamily="monospace"
+            android:hint="@string/gate_server_hint"
+            android:imeOptions="actionNext"
+            android:inputType="textUri"
+            android:textColor="@color/phosphor"
+            android:textColorHint="@color/phosphor_dim"
+            android:textSize="20sp" />
+
+        <EditText
+            android:id="@+id/gate_password"
+            android:layout_width="480dp"
+            android:layout_height="wrap_content"
+            android:autofillHints="no"
+            android:fontFamily="monospace"
+            android:hint="@string/gate_password_hint"
+            android:imeOptions="actionDone"
+            android:inputType="textPassword"
+            android:textColor="@color/phosphor"
+            android:textColorHint="@color/phosphor_dim"
+            android:textSize="20sp" />
+
+        <Button
+            android:id="@+id/gate_submit"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:fontFamily="monospace"
+            android:text="@string/gate_enter" />
+
+        <TextView
+            android:id="@+id/gate_error"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:fontFamily="monospace"
+            android:textColor="@color/phosphor"
+            android:textSize="18sp" />
+    </LinearLayout>
+</FrameLayout>
