@@ -349,6 +349,13 @@ Rodar de novo e barato, so o que mudou de `mtime` ou tamanho volta para o
 `ffprobe`. Series novas ganham numero de canal no fim da lista; as existentes
 nao se mexem. Para desligar o automatico, ponha `AUTO_SCAN=false`.
 
+O remux (MKV/Dolby para MP4, veja `AUTO_REMUX` no `.env.example`) roda sozinho
+depois do scan e em todo boot. Para rodar na mao:
+
+```bash
+docker compose exec widetv node dist/server/remux.js /media/biblioteca
+```
+
 **Atualizar**
 
 ```bash

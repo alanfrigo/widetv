@@ -7,20 +7,38 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { registerStreamRoutes, type StreamSource } from '../../src/server/stream/direct';
 
 const BODY = Buffer.from('0123456789'.repeat(100)); // 1000 bytes
+const REMUXED = Buffer.from('mp4-remuxado');
+
+/**
+ * Nome de release de cena real: passa de 100 chars sozinho. O servidor precisa
+ * de maxParamLength maior que o default do Fastify (100), senao todo id longo
+ * vira 414 antes de chegar na rota.
+ */
+const NOME_LONGO =
+  'The.Simpsons.S37E01.Thrifty.Ways.to.Thieve.Your.Mother.1080p.DSNP.WEB-DL.DDP5.1.H.264.DUAL-SiGLA.mkv';
+
 let dir: string;
 let app: FastifyInstance;
 
 let fora: string;
+let remuxado: string;
 
 beforeAll(async () => {
   const base = await mkdtemp(join(tmpdir(), 'widetv-stream-'));
   dir = join(base, 'acervo');
   await mkdir(join(dir, 'Serie'), { recursive: true });
   await writeFile(join(dir, 'Serie', 'ep 01 (piloto).mp4'), BODY);
+  await writeFile(join(dir, 'Serie', 'ep 02.mkv'), BODY);
+  await writeFile(join(dir, 'Serie', NOME_LONGO), BODY);
 
   // Fora da raiz de proposito: prova que a checagem de contencao nao le daqui.
   fora = join(base, 'segredo.mp4');
   await writeFile(fora, 'nao deveria sair daqui');
+
+  // Copia remuxada vive FORA da biblioteca, no DATA_DIR - como em producao.
+  await mkdir(join(base, 'data', 'remux'), { recursive: true });
+  remuxado = join(base, 'data', 'remux', 'abc123.mp4');
+  await writeFile(remuxado, REMUXED);
 
   const source: StreamSource = {
     getEpisode: (id) =>
@@ -32,10 +50,21 @@ beforeAll(async () => {
             ? { relativePath: '../segredo.mp4' }
             : id === 'absoluto'
               ? { relativePath: fora }
-              : null,
+              : id === 'remux'
+                ? { relativePath: 'Serie/ep 02.mkv', remuxPath: remuxado }
+                : id === 'remux-sumiu'
+                  ? {
+                      relativePath: 'Serie/ep 02.mkv',
+                      remuxPath: join(base, 'data', 'remux', 'nao-existe.mp4'),
+                    }
+                  : id === `Serie/${NOME_LONGO}`
+                    ? { relativePath: `Serie/${NOME_LONGO}` }
+                    : null,
   };
 
-  app = Fastify();
+  // Mesmo maxParamLength do servidor real: o id de episodio e um caminho
+  // inteiro e o default de 100 chars nao aguenta nome de release.
+  app = Fastify({ maxParamLength: 2048 });
   registerStreamRoutes(app, source, dir);
   await app.ready();
 });
@@ -124,6 +153,103 @@ describe('erros', () => {
     const r = await app.inject({ method: 'HEAD', url: '/api/stream/ok' });
     expect(r.statusCode).toBe(200);
     expect(r.headers['content-length']).toBe(String(BODY.length));
+    expect(r.rawPayload.length).toBe(0);
+  });
+});
+
+describe('id com nome de release de cena (mais de 100 chars)', () => {
+  test('nao vira 414: o id de episodio e um caminho inteiro', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: `/api/stream/${encodeURIComponent(`Serie/${NOME_LONGO}`)}`,
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.rawPayload.equals(BODY)).toBe(true);
+  });
+});
+
+describe('copia remuxada', () => {
+  test('quando existe, e ela que sai - com content-type de mp4, nao do mkv fonte', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/stream/remux' });
+    expect(r.statusCode).toBe(200);
+    expect(r.rawPayload.equals(REMUXED)).toBe(true);
+    expect(r.headers['content-type']).toBe('video/mp4');
+  });
+
+  test('Range funciona sobre a copia, nao sobre o original', async () => {
+    const r = await app.inject({
+      method: 'GET',
+      url: '/api/stream/remux',
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(r.statusCode).toBe(206);
+    expect(r.rawPayload.equals(REMUXED.subarray(0, 4))).toBe(true);
+    expect(r.headers['content-range']).toBe(`bytes 0-3/${REMUXED.length}`);
+  });
+
+  test('copia apagada do disco cai no original em vez de 404', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/stream/remux-sumiu' });
+    expect(r.statusCode).toBe(200);
+    expect(r.rawPayload.equals(BODY)).toBe(true);
+    expect(r.headers['content-type']).toBe('video/x-matroska');
+  });
+});
+
+describe('?audio=N (troca de dublagem)', () => {
+  let comAudio: FastifyInstance;
+
+  beforeAll(async () => {
+    comAudio = Fastify({ maxParamLength: 2048 });
+    registerStreamRoutes(
+      comAudio,
+      { getEpisode: (id) => (id === 'ep' ? { relativePath: 'Serie/ep 02.mkv' } : null) },
+      dir,
+      async (_id, audioIndex) => {
+        if (audioIndex === 0) return { status: 'default' };
+        if (audioIndex === 1) return { status: 'ready', path: remuxado };
+        if (audioIndex === 2) return { status: 'preparing' };
+        return { status: 'invalid' };
+      },
+    );
+    await comAudio.ready();
+  });
+
+  afterAll(async () => {
+    await comAudio.close();
+  });
+
+  test('faixa default segue o fluxo normal', async () => {
+    const r = await comAudio.inject({ method: 'GET', url: '/api/stream/ep?audio=0' });
+    expect(r.statusCode).toBe(200);
+    expect(r.rawPayload.equals(BODY)).toBe(true);
+  });
+
+  test('variante pronta e servida com Range', async () => {
+    const r = await comAudio.inject({
+      method: 'GET',
+      url: '/api/stream/ep?audio=1',
+      headers: { range: 'bytes=0-3' },
+    });
+    expect(r.statusCode).toBe(206);
+    expect(r.rawPayload.equals(REMUXED.subarray(0, 4))).toBe(true);
+  });
+
+  test('variante em geracao devolve 202 sem cache: o cliente consulta de novo', async () => {
+    const r = await comAudio.inject({ method: 'GET', url: '/api/stream/ep?audio=2' });
+    expect(r.statusCode).toBe(202);
+    expect(r.headers['cache-control']).toBe('no-store');
+    expect(JSON.parse(r.body)).toEqual({ preparing: true });
+  });
+
+  test('faixa inexistente e query torta devolvem 400', async () => {
+    expect((await comAudio.inject({ method: 'GET', url: '/api/stream/ep?audio=9' })).statusCode).toBe(400);
+    expect((await comAudio.inject({ method: 'GET', url: '/api/stream/ep?audio=abc' })).statusCode).toBe(400);
+  });
+
+  test('HEAD com variante pronta responde os cabecalhos dela', async () => {
+    const r = await comAudio.inject({ method: 'HEAD', url: '/api/stream/ep?audio=1' });
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-length']).toBe(String(REMUXED.length));
     expect(r.rawPayload.length).toBe(0);
   });
 });

@@ -1,4 +1,10 @@
-import { API, type ChannelSummary, type EpisodeRef, type NowPlaying } from '@shared/api-types';
+import {
+  API,
+  type ChannelSummary,
+  type EpisodeRef,
+  type NowPlaying,
+  type WatchProgress,
+} from '@shared/api-types';
 
 /**
  * Cliente HTTP. Fino de proposito: a unica coisa que ele acrescenta e medir o
@@ -64,8 +70,53 @@ export async function fetchNow(channelNumber: number): Promise<TimedNow | null> 
   return { data: (await response.json()) as NowPlaying, sentAtMs, receivedAtMs };
 }
 
-export function streamUrl(episodeId: string): string {
-  return API.stream(encodeURIComponent(episodeId));
+/**
+ * @param audioIndex `index` da faixa FONTE desejada; null/ausente toca a
+ *                   default. A troca de dublagem e um arquivo diferente no
+ *                   servidor, nunca uma faixa dentro do mesmo.
+ */
+export function streamUrl(episodeId: string, audioIndex?: number | null): string {
+  const base = API.stream(encodeURIComponent(episodeId));
+  return audioIndex == null ? base : `${base}?audio=${String(audioIndex)}`;
+}
+
+export type VariantProbe = 'ready' | 'preparing' | 'error';
+
+/**
+ * Pergunta se a variante de dublagem ja existe, sem baixar nada. 202 significa
+ * "o servidor esta gerando": pergunte de novo daqui a alguns segundos.
+ */
+export async function probeVariant(episodeId: string, audioIndex: number): Promise<VariantProbe> {
+  try {
+    const response = await fetch(streamUrl(episodeId, audioIndex), {
+      method: 'HEAD',
+      credentials: 'same-origin',
+    });
+    if (response.status === 200) return 'ready';
+    if (response.status === 202) return 'preparing';
+    return 'error';
+  } catch {
+    return 'error';
+  }
+}
+
+export async function fetchHistory(): Promise<WatchProgress[]> {
+  return getJson<WatchProgress[]>(API.history);
+}
+
+/**
+ * Grava onde o usuario parou. Fire-and-forget com `keepalive`: e chamado
+ * tambem na saida da pagina, quando um fetch comum seria cancelado junto com
+ * o documento. Nunca lanca - perder um tick de progresso nao e erro.
+ */
+export function saveProgress(episodeId: string, positionMs: number, durationMs: number): void {
+  void fetch(API.historyOf(episodeId), {
+    method: 'PUT',
+    credentials: 'same-origin',
+    keepalive: true,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ positionMs, durationMs }),
+  }).catch(() => undefined);
 }
 
 export async function login(password: string): Promise<boolean> {

@@ -23,12 +23,39 @@ export interface StreamEpisode {
    * quando ele muda.
    */
   relativePath: string;
+  /**
+   * Caminho ABSOLUTO da copia MP4 remuxada, quando existe. Tem preferencia
+   * sobre o original: e a versao que o navegador toca. Se o arquivo sumiu do
+   * disco, a resposta cai no original em vez de 404 - um MKV que talvez nao
+   * toque ainda e melhor que um canal morto.
+   *
+   * Quem monta este caminho e o chamador (a partir do DATA_DIR proprio), nunca
+   * um valor vindo de URL: aqui ele e usado como veio.
+   */
+  remuxPath?: string | null;
 }
 
 /** Fonte estreita: este modulo nao precisa (nem deve) enxergar o Store inteiro. */
 export interface StreamSource {
   getEpisode(id: string): StreamEpisode | null;
 }
+
+/**
+ * Resolucao de `?audio=N` (troca de dublagem), injetada por quem monta o
+ * servidor porque envolve o indice e a fila de variantes:
+ *
+ * - 'default': N e a faixa que ja toca no arquivo servido - segue o fluxo normal;
+ * - 'ready': variante pronta em `path` (absoluto, montado pelo chamador);
+ * - 'preparing': geracao em andamento - o cliente consulta de novo;
+ * - 'invalid': faixa que o episodio nao tem.
+ */
+export type AudioResolution =
+  | { status: 'default' }
+  | { status: 'ready'; path: string }
+  | { status: 'preparing' }
+  | { status: 'invalid' };
+
+export type AudioResolver = (episodeId: string, audioIndex: number) => Promise<AudioResolution>;
 
 const CONTENT_TYPES: Record<string, string> = {
   '.mp4': 'video/mp4',
@@ -71,6 +98,7 @@ export function registerStreamRoutes(
   app: FastifyInstance,
   source: StreamSource,
   libraryRoot: string,
+  audioResolver?: AudioResolver,
 ): void {
   app.route({
     method: ['GET', 'HEAD'],
@@ -83,21 +111,52 @@ export function registerStreamRoutes(
         return reply.code(404).send({ error: 'episodio desconhecido' });
       }
 
-      const filePath = resolveWithinRoot(libraryRoot, episode.relativePath);
-      if (filePath === null) {
-        return reply.code(404).send({ error: 'episodio indisponivel' });
+      // Dublagem escolhida: `?audio=N` troca o arquivo inteiro, nao a faixa -
+      // e a unica troca que funciona em todo navegador.
+      const { audio } = request.query as { audio?: string };
+      let variantPath: string | null = null;
+      if (audio !== undefined && audioResolver !== undefined) {
+        if (!/^\d+$/.test(audio)) {
+          return reply.code(400).send({ error: 'faixa de audio invalida' });
+        }
+        const resolution = await audioResolver(id, Number(audio));
+        if (resolution.status === 'invalid') {
+          return reply.code(400).send({ error: 'faixa de audio inexistente' });
+        }
+        if (resolution.status === 'preparing') {
+          // 202 e nao 404: o recurso vai existir, o cliente so precisa esperar.
+          // no-store porque um 202 cacheado seria um "preparando" eterno.
+          reply.header('cache-control', 'no-store');
+          return reply.code(202).send({ preparing: true });
+        }
+        if (resolution.status === 'ready') variantPath = resolution.path;
+        // 'default' cai no fluxo normal: a faixa pedida ja e a que toca.
       }
+
+      const original = resolveWithinRoot(libraryRoot, episode.relativePath);
+
+      // Variante de dublagem > copia remuxada > original: primeiro caminho
+      // cujo arquivo existir de verdade e o que sai pelo socket.
+      const candidates = [variantPath, episode.remuxPath ?? null, original].filter(
+        (candidate): candidate is string => candidate !== null,
+      );
 
       // Arquivo removido do disco depois do scan e situacao normal num NAS,
       // nao falha de servidor: responde 404 para o cliente pular o canal.
-      let size: number;
-      try {
-        const info = await stat(filePath);
-        if (!info.isFile()) {
-          return reply.code(404).send({ error: 'episodio indisponivel' });
+      let filePath: string | null = null;
+      let size = 0;
+      for (const candidate of candidates) {
+        try {
+          const info = await stat(candidate);
+          if (!info.isFile()) continue;
+          filePath = candidate;
+          size = info.size;
+          break;
+        } catch {
+          continue;
         }
-        size = info.size;
-      } catch {
+      }
+      if (filePath === null) {
         return reply.code(404).send({ error: 'episodio indisponivel' });
       }
 

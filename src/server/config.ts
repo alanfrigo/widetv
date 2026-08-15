@@ -26,6 +26,12 @@ export interface AppConfig {
   /** Indexa o acervo sozinho quando o indice ainda nao existe. */
   autoScan: boolean;
   /**
+   * Converte para MP4, em segundo plano, os episodios que o navegador nao toca
+   * direto (MKV, audio Dolby). Copia de bytes, nao transcode - mas ocupa
+   * espaco em DATA_DIR, entao da para desligar.
+   */
+  autoRemux: boolean;
+  /**
    * Chave do TMDB, opcional. `null` quando ausente: a busca de capa cai nos
    * provedores sem chave (TVMaze, iTunes) e o servidor sobe do mesmo jeito.
    */
@@ -100,6 +106,8 @@ export function loadConfig(env: Env): AppConfig {
     // Ligado por padrao: quem sobe isto num NAS nao tem shell no container, e
     // um deploy novo sem indice nao serve canal nenhum.
     autoScan: env.AUTO_SCAN?.trim().toLowerCase() !== 'false',
+    // Mesma regra do AUTO_SCAN: so "false" desliga.
+    autoRemux: env.AUTO_REMUX?.trim().toLowerCase() !== 'false',
     // Variavel em branco (a UI do TrueNAS manda assim) conta como ausente: uma
     // chave vazia so renderia 401 em toda busca de capa.
     tmdbApiKey: env.TMDB_API_KEY?.trim() || null,

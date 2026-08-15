@@ -319,9 +319,53 @@ export function pickPreferredSubtitle(
   return fallback;
 }
 
+/**
+ * Dublagem a usar neste episodio, dada a preferencia guardada.
+ *
+ * @returns o `index` da faixa no idioma preferido, ou null quando nao ha
+ *          preferencia ou o episodio nao tem o idioma - ai vale a default.
+ */
+export function pickPreferredAudio(
+  tracks: readonly AudioTrackRef[],
+  preferred: string | null,
+): number | null {
+  const wanted = normalizeLang(preferred);
+  if (wanted === null) return null;
+  for (const track of tracks) {
+    if (normalizeLang(track.lang) === wanted) return track.index;
+  }
+  return null;
+}
+
 /* --- preferencia guardada ------------------------------------------------- */
 
 export const SUBTITLE_LANG_KEY = 'widetv:subtitle-lang';
+export const AUDIO_LANG_KEY = 'widetv:audio-lang';
+
+/**
+ * @returns o idioma de dublagem preferido, ou null quando nunca houve escolha.
+ *          Diferente da legenda nao existe "desligada": sempre toca alguma
+ *          faixa, e sem preferencia vale a default do arquivo.
+ */
+export function readPreferredAudio(storage: StorageLike | null): string | null {
+  if (storage === null) return null;
+  try {
+    return normalizeLang(storage.getItem(AUDIO_LANG_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export function writePreferredAudio(storage: StorageLike | null, lang: string | null): void {
+  if (storage === null) return;
+  try {
+    const normalized = normalizeLang(lang);
+    if (normalized === null) return;
+    storage.setItem(AUDIO_LANG_KEY, normalized);
+  } catch {
+    // Sem memoria de idioma a troca continua valendo na sessao atual.
+  }
+}
 
 /** Valor gravado quando a escolha e "sem legenda", para nao confundir com "nunca escolheu". */
 const OFF = 'off';

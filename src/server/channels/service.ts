@@ -19,7 +19,15 @@ export interface ChannelSource {
   getShowMetadata(showId: number): ShowMetadataRow | null;
 }
 
-/** Reduz a linha do banco ao que o contrato publico expoe. */
+/**
+ * Reduz a linha do banco ao que o contrato publico expoe.
+ *
+ * As faixas de audio sao as do arquivo FONTE: e a lista de dublagens que
+ * existem de verdade, e o `index` delas e o `N` que o `?audio=N` do stream
+ * entende. A gemea AAC que o remux acrescenta e detalhe de implementacao e
+ * nao aparece aqui - o cliente troca de dublagem trocando de arquivo, nunca
+ * escolhendo faixa dentro dele.
+ */
 function toRef(row: EpisodeRow): EpisodeRef {
   return {
     id: row.id,

@@ -548,6 +548,22 @@ code {
   letter-spacing: 0.04em;
 }
 
+/* Barra fina de "onde parei": um episodio comecado carrega o proprio mapa. */
+.episode__progress {
+  flex: 0 0 72px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.episode__progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
 .episode__empty {
   padding: 24px 12px;
   color: var(--muted);

@@ -119,7 +119,10 @@ function collectAudioTracks(streams: readonly FfprobeStream[]): AudioTrackRef[] 
   return streamsOfType(streams, 'audio').map((stream, index) => ({
     index,
     lang: tag(stream.tags?.language),
-    title: tag(stream.tags?.title),
+    // MP4 guarda o titulo do stream na tag `name` (e o que o proprio mux do
+    // ffmpeg escreve); MKV usa `title`. Sem o fallback, todo MP4 - inclusive
+    // os remuxados por nos - perderia o rotulo da faixa no painel.
+    title: tag(stream.tags?.title) ?? tag(stream.tags?.name),
     codec: stream.codec_name ?? null,
     isDefault: stream.disposition?.default === 1,
   }));
@@ -131,7 +134,8 @@ function collectSubtitleTracks(streams: readonly FfprobeStream[]): SubtitleTrack
   return streamsOfType(streams, 'subtitle').map((stream, index) => ({
     index,
     lang: tag(stream.tags?.language),
-    title: tag(stream.tags?.title),
+    // Mesmo fallback do audio: em MP4 o titulo vem na tag `name`.
+    title: tag(stream.tags?.title) ?? tag(stream.tags?.name),
     codec: stream.codec_name ?? null,
     isDefault: stream.disposition?.default === 1,
     forced: stream.disposition?.forced === 1,
@@ -220,7 +224,7 @@ interface FfprobeStream {
   height?: number;
   duration?: string;
   disposition?: { attached_pic?: number; default?: number; forced?: number };
-  tags?: { language?: string; title?: string };
+  tags?: { language?: string; title?: string; name?: string };
 }
 
 interface FfprobeOutput {

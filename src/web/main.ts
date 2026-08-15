@@ -1,8 +1,18 @@
-import { API, type ChannelSummary, type EpisodeRef } from '@shared/api-types';
+import { API, type ChannelSummary, type EpisodeRef, type WatchProgress } from '@shared/api-types';
 
 import './app.css';
 
-import { UnauthorizedError, fetchChannels, fetchEpisodes, hasSession, login, logout } from './api';
+import {
+  UnauthorizedError,
+  fetchChannels,
+  fetchEpisodes,
+  fetchHistory,
+  hasSession,
+  login,
+  logout,
+  probeVariant,
+  saveProgress,
+} from './api';
 import {
   formatChannelMeta,
   formatClock,
@@ -15,13 +25,17 @@ import { browserStorage, readLastChannel, writeLastChannel } from './last-channe
 import { countColumns, moveCursor, stepIndex, type NavKey } from './nav';
 import { ChannelPlayer } from './player';
 import { initialScreen, reduceScreen, type Screen, type ScreenEvent } from './screen';
+import { progressRatio, resumeStartMs } from './resume';
 import {
   audioLabel,
   initialTracks,
+  pickPreferredAudio,
   pickPreferredSubtitle,
+  readPreferredAudio,
   readPreferredSubtitle,
   reduceTracks,
   subtitleLabel,
+  writePreferredAudio,
   writePreferredSubtitle,
   type TracksContext,
   type TracksEvent,
@@ -111,6 +125,8 @@ interface VodSession {
   video: HTMLVideoElement;
   episodes: EpisodeRef[];
   index: number;
+  /** Faixa FONTE de dublagem tocando via `?audio=N`; null quando e a default. */
+  audioIndex: number | null;
 }
 
 const storage = browserStorage();
@@ -128,6 +144,13 @@ let vod: VodSession | null = null;
 /** Episodio a tocar quando a tela do player abrir com `source: 'vod'`. */
 let vodIntent = 0;
 let preferredSubtitle = readPreferredSubtitle(storage);
+let preferredAudio = readPreferredAudio(storage);
+
+/** Onde o usuario parou, por episodio. Vem do servidor; atualizado localmente. */
+let history = new Map<string, WatchProgress>();
+let progressTimer: number | null = null;
+/** Invalida um poll de variante antigo quando o usuario troca de novo no meio. */
+let variantPoll = 0;
 
 let overlayTimer: number | null = null;
 let noticeTimer: number | null = null;
@@ -343,6 +366,9 @@ async function openHome(before: Screen): Promise<void> {
     );
     if (last !== null) gridCursor = channels.findIndex((channel) => channel.number === last);
     renderGrid();
+    // Historico junto do catalogo, sem segurar a grade: ele so pinta barras e
+    // decide retomadas, e chega quando chegar.
+    void refreshHistory();
   }
 
   // Voltando da serie: o foco cai no card de onde se saiu, nao no primeiro.
@@ -426,6 +452,8 @@ function gridColumns(): number {
 async function openSeries(number: number): Promise<void> {
   seriesCursor = 0;
   renderSeries(number);
+  // Outra tela pode ter avancado a maratona (a TV da sala): rebusca ao entrar.
+  void refreshHistory();
 
   if (episodesOf(number) === null) {
     try {
@@ -492,6 +520,17 @@ function renderSeries(number: number): void {
     const mark = resolutionBadge(episode.width, episode.height);
     if (mark !== null) row.append(el('span', 'badge', mark));
 
+    // Barra fina de "onde parei": so aparece em episodio comecado e nao
+    // terminado - e o mapa da maratona quando a serie tem 100 episodios.
+    const ratio = progressRatio(history.get(episode.id));
+    if (ratio > 0) {
+      const bar = el('span', 'episode__progress');
+      const fill = el('span', 'episode__progress-fill');
+      fill.style.width = `${(ratio * 100).toFixed(1)}%`;
+      bar.append(fill);
+      row.append(bar);
+    }
+
     row.addEventListener('focus', () => {
       seriesCursor = index + 2;
     });
@@ -501,6 +540,17 @@ function renderSeries(number: number): void {
     item.append(row);
     dom.episodeList.append(item);
   });
+}
+
+/** Recarrega o historico do servidor e repinta o que estiver na tela. */
+async function refreshHistory(): Promise<void> {
+  try {
+    const entries = await fetchHistory();
+    history = new Map(entries.map((entry) => [entry.episodeId, entry]));
+    if (screen.name === 'series') renderSeries(screen.channel);
+  } catch {
+    // Historico e conforto, nao funcao vital: sem ele o catalogo segue igual.
+  }
 }
 
 /* --- 4. player ------------------------------------------------------------ */
@@ -546,7 +596,7 @@ async function startVod(episodes: EpisodeRef[], index: number): Promise<void> {
     // no catalogo devolveria o som que o usuario tinha desligado.
     if (wasMuted !== player.isMuted) player.toggleMute();
 
-    vod = { player, video, episodes, index };
+    vod = { player, video, episodes, index, audioIndex: null };
   } else {
     vod = { ...vod, episodes, index };
   }
@@ -554,13 +604,27 @@ async function startVod(episodes: EpisodeRef[], index: number): Promise<void> {
   await playVod(index);
 }
 
-async function playVod(index: number): Promise<void> {
+/** Faixa que o arquivo toca sem `?audio`: a marcada default, senao a primeira. */
+function defaultAudioIndex(episode: EpisodeRef): number | null {
+  const chosen = episode.audioTracks.find((track) => track.isDefault) ?? episode.audioTracks[0];
+  return chosen?.index ?? null;
+}
+
+async function playVod(
+  index: number,
+  options?: { startMs?: number; audioIndex?: number | null },
+): Promise<void> {
   const session = vod;
   if (session === null) return;
   const episode = session.episodes[index];
   if (episode === undefined) return;
 
-  vod = { ...session, index };
+  // Sem escolha explicita, a dublagem preferida so entra direto quando a
+  // variante ja existe; senao o episodio abre na default e a troca acontece
+  // sozinha quando o servidor terminar - abrir um episodio nunca espera ffmpeg.
+  const audioIndex = options?.audioIndex !== undefined ? options.audioIndex : null;
+
+  vod = { ...session, index, audioIndex };
   // Antes do `play`: o <track> antigo aponta para a legenda do episodio
   // anterior e recarregaria com o `load()` do proximo.
   clearSubtitles(session.video);
@@ -569,18 +633,163 @@ async function playVod(index: number): Promise<void> {
   // obrigar quem esta deitado no sofa a mexer no mouse para descobrir.
   poke();
 
-  const ok = await session.player.play(episode.id);
+  // Retomada: so quando ninguem pediu posicao (troca de dublagem no meio pede).
+  const startMs = options?.startMs ?? resumeStartMs(history.get(episode.id));
+
+  const ok = await session.player.play(episode.id, { startMs, audioIndex });
   if (!ok) {
     notice('Clique na tela para começar', { sticky: true });
     return;
   }
+  if (options?.startMs === undefined && startMs > 0) {
+    notice(`Retomando de ${formatClock(startMs)}`);
+  }
   applyPreferredSubtitle(episode);
+  tracks = { ...tracks, audio: audioIndex ?? defaultAudioIndex(episode) };
+  startProgressReporter();
   if (tracks.open) renderTracksPanel();
+
+  // Dublagem preferida diferente da default: troca em segundo plano.
+  if (options?.audioIndex === undefined) {
+    const wanted = pickPreferredAudio(episode.audioTracks, preferredAudio);
+    if (wanted !== null && wanted !== defaultAudioIndex(episode)) {
+      void switchVodAudio(wanted, { announce: false });
+    }
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+/** De quanto em quanto tempo perguntar se a variante de dublagem ficou pronta. */
+const VARIANT_POLL_MS = 3_000;
+const VARIANT_POLL_LIMIT = 100;
+
+/**
+ * Troca a dublagem do episodio em reproducao.
+ *
+ * A troca e um ARQUIVO diferente (`?audio=N`): quando a variante ainda nao
+ * existe, o servidor responde 202 e gera em segundo plano; aqui fica um poll
+ * paciente que recarrega o video na mesma posicao quando ela chega. Trocar de
+ * episodio ou escolher outra faixa no meio cancela o poll antigo.
+ */
+async function switchVodAudio(trackIndex: number, options: { announce: boolean }): Promise<void> {
+  const session = vod;
+  if (session === null) return;
+  const episode = session.episodes[session.index];
+  if (episode === undefined) return;
+
+  const target = trackIndex === defaultAudioIndex(episode) ? null : trackIndex;
+  if (target === session.audioIndex) return;
+
+  const myPoll = ++variantPoll;
+
+  const replay = async (): Promise<void> => {
+    const current = vod;
+    if (current === null || current.episodes[current.index]?.id !== episode.id) return;
+    await playVod(current.index, {
+      startMs: current.video.currentTime * 1000,
+      audioIndex: target,
+    });
+  };
+
+  // Default nao depende de variante nenhuma: troca imediata.
+  if (target === null) {
+    await replay();
+    return;
+  }
+
+  let state = await probeVariant(episode.id, target);
+  if (state === 'ready') {
+    await replay();
+    return;
+  }
+  if (state === 'error') {
+    notice('Não deu para trocar a dublagem');
+    return;
+  }
+
+  if (options.announce) notice('Preparando a dublagem… a troca acontece sozinha', { sticky: true });
+  for (let attempt = 0; attempt < VARIANT_POLL_LIMIT; attempt += 1) {
+    await sleep(VARIANT_POLL_MS);
+    // Poll antigo: outra escolha ou outro episodio assumiu no meio do caminho.
+    if (variantPoll !== myPoll) return;
+    if (vod === null || vod.episodes[vod.index]?.id !== episode.id) return;
+
+    state = await probeVariant(episode.id, target);
+    if (state === 'ready') {
+      if (options.announce) notice(null);
+      await replay();
+      return;
+    }
+    if (state === 'error') {
+      notice('Não deu para preparar a dublagem');
+      return;
+    }
+  }
+  notice('A dublagem ainda não ficou pronta; tente de novo');
+}
+
+/* --- progresso (onde parei) ----------------------------------------------- */
+
+/** Intervalo entre gravacoes; um tick perdido custa no maximo isto de recuo. */
+const PROGRESS_INTERVAL_MS = 10_000;
+
+/** Espelho da regra do servidor: daqui em diante a entrada e apagada. */
+const FINISHED_RATIO = 0.95;
+
+/** Grava a posicao atual do catalogo no servidor e no espelho local. */
+function reportProgress(): void {
+  const session = vod;
+  if (session === null) return;
+  const episode = session.episodes[session.index];
+  if (episode === undefined) return;
+
+  const video = session.video;
+  const durationMs =
+    Number.isFinite(video.duration) && video.duration > 0
+      ? video.duration * 1000
+      : episode.durationMs;
+  const positionMs = video.currentTime * 1000;
+  if (durationMs <= 0 || positionMs <= 0) return;
+
+  saveProgress(episode.id, positionMs, durationMs);
+
+  // Espelho local na hora: a barra da lista e a retomada nao esperam refetch.
+  if (positionMs >= durationMs * FINISHED_RATIO) {
+    history.delete(episode.id);
+  } else {
+    const channel = screen.name === 'player' || screen.name === 'series' ? screen.channel : 0;
+    history.set(episode.id, {
+      episodeId: episode.id,
+      channelNumber: channel,
+      positionMs,
+      durationMs,
+      updatedAt: Date.now(),
+    });
+  }
+}
+
+function startProgressReporter(): void {
+  stopProgressReporter();
+  progressTimer = window.setInterval(reportProgress, PROGRESS_INTERVAL_MS);
+}
+
+function stopProgressReporter(): void {
+  if (progressTimer === null) return;
+  window.clearInterval(progressTimer);
+  progressTimer = null;
 }
 
 function onVodEnded(): void {
   const session = vod;
   if (session === null) return;
+
+  // Fim de episodio apaga a retomada no servidor (posicao == duracao).
+  const episode = session.episodes[session.index];
+  if (episode !== undefined) {
+    saveProgress(episode.id, episode.durationMs, episode.durationMs);
+    history.delete(episode.id);
+  }
 
   const decision = decideOnEnded(session.index, session.episodes.length);
   if (decision.type === 'next') {
@@ -593,6 +802,9 @@ function onVodEnded(): void {
 
 function endVod(): void {
   if (vod === null) return;
+  // Ultima posicao antes de largar o player: e ela que a proxima tela retoma.
+  reportProgress();
+  stopProgressReporter();
   const level = vod.player.volumeLevel;
   const wasMuted = vod.player.isMuted;
   clearSubtitles(vod.video);
@@ -685,7 +897,12 @@ function togglePause(): void {
   if (!isVodScreen()) return;
   const video = currentVideo();
   if (video.paused) void video.play();
-  else video.pause();
+  else {
+    video.pause();
+    // Pausa e o momento classico de largar o sofa: melhor gravar agora do que
+    // torcer pelo proximo tick.
+    reportProgress();
+  }
   poke();
 }
 
@@ -700,31 +917,15 @@ function zap(delta: number): void {
 
 /* --- 5. painel de trilhas ------------------------------------------------- */
 
-/**
- * `HTMLMediaElement.audioTracks` nao esta na lib do TypeScript porque quase
- * nenhum navegador implementa. Quando existe, e a unica forma de trocar de
- * dublagem sem transcodificar.
- */
-interface NativeAudioTrack {
-  enabled: boolean;
-}
-interface NativeAudioTrackList {
-  readonly length: number;
-  [index: number]: NativeAudioTrack | undefined;
-}
-
-function nativeAudioTracks(video: HTMLVideoElement): NativeAudioTrackList | null {
-  const list = (video as unknown as { audioTracks?: NativeAudioTrackList }).audioTracks;
-  return list !== undefined && typeof list.length === 'number' ? list : null;
-}
-
 function tracksContext(): TracksContext {
   const episode = currentEpisode();
-  const list = nativeAudioTracks(currentVideo());
   return {
     subtitles: episode?.subtitleTracks.map((track) => track.index) ?? [],
     audios: episode?.audioTracks.map((track) => track.index) ?? [],
-    audioSwitchable: list !== null && list.length > 1,
+    // A troca de dublagem e servida pelo proprio servidor (`?audio=N`), entao
+    // funciona em qualquer navegador - mas so no catalogo: o ao vivo persegue
+    // a grade e nao pode parar para esperar uma variante ser gerada.
+    audioSwitchable: vod !== null,
   };
 }
 
@@ -744,7 +945,15 @@ function dispatchTracks(event: TracksEvent): void {
     if (episode !== null) applySubtitle(currentVideo(), episode, command.index);
   }
   if (command !== null && command.type === 'audio') {
-    applyAudioTrack(command.index);
+    const episode = currentEpisode();
+    const chosen = episode?.audioTracks.find((track) => track.index === command.index);
+    if (chosen !== undefined) {
+      // Preferencia por IDIOMA, como a legenda: o indice 1 e outra dublagem em
+      // cada arquivo do acervo.
+      writePreferredAudio(storage, chosen.lang);
+      preferredAudio = readPreferredAudio(storage);
+    }
+    void switchVodAudio(command.index, { announce: true });
   }
 
   renderTracksPanel();
@@ -876,15 +1085,6 @@ function applyPreferredSubtitle(episode: EpisodeRef): void {
   const index = pickPreferredSubtitle(episode.subtitleTracks, preferredSubtitle);
   tracks = { ...tracks, subtitle: index };
   applySubtitle(currentVideo(), episode, index);
-}
-
-function applyAudioTrack(index: number): void {
-  const list = nativeAudioTracks(currentVideo());
-  if (list === null) return;
-  for (let i = 0; i < list.length; i += 1) {
-    const track = list[i];
-    if (track !== undefined) track.enabled = i === index;
-  }
 }
 
 /* --- teclado -------------------------------------------------------------- */
@@ -1109,6 +1309,12 @@ window.setInterval(() => {
 // mesmo card porque ele e um indice na lista, nao uma coordenada.
 window.addEventListener('resize', () => {
   if (screen.name === 'home') focusRow(dom.grid.children[gridCursor]);
+});
+
+// Aba fechada ou minimizada no meio do episodio: a ultima chance de gravar a
+// posicao. `saveProgress` usa keepalive, entao o request sobrevive a pagina.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') reportProgress();
 });
 
 /* --- partida -------------------------------------------------------------- */

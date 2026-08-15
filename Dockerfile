@@ -56,7 +56,7 @@ LABEL org.opencontainers.image.source="https://github.com/alanfrigo/widetv" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}"
 
-# ffmpeg traz o ffprobe, unica dependencia externa do indexador.
+# ffmpeg e o ffprobe que vem junto: indexador, legendas e remux dependem dele.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
  && rm -rf /var/lib/apt/lists/*

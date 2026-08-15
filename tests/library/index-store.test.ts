@@ -747,9 +747,154 @@ describe('metadata da serie (schema 3)', () => {
     const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
       version: number;
     };
-    expect(versao.version).toBe(3);
+    expect(versao.version).toBe(6);
     conferencia.close();
 
     rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('remux (schema 4)', () => {
+  const TRILHAS_MP4 = [
+    { index: 0, lang: 'por', title: 'AAC', codec: 'aac', isDefault: true },
+    { index: 1, lang: 'por', title: 'Brazilian', codec: 'eac3', isDefault: false },
+  ];
+
+  function makeRemux(over: Partial<Parameters<Store['upsertRemux']>[0]> = {}) {
+    return {
+      episodeId: 'serie/ep01.mp4',
+      file: 'abc.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      audioTracks: TRILHAS_MP4.map((t) => ({ ...t })),
+      createdAt: 42,
+      ...over,
+    };
+  }
+
+  it('roundtrip completo, valido apenas com mtime e size do fonte batendo', () => {
+    const store = openStore(':memory:');
+    store.upsertEpisodes(makeShow(store), [makeEpisode()]);
+    store.upsertRemux(makeRemux());
+
+    expect(store.getRemux('serie/ep01.mp4', 1_700_000_000_000, 123_456)).toEqual(makeRemux());
+    // Fonte mudou: a copia e de outro arquivo, servi-la trocaria o episodio.
+    expect(store.getRemux('serie/ep01.mp4', 1, 123_456)).toBeNull();
+    expect(store.getRemux('serie/ep01.mp4', 1_700_000_000_000, 1)).toBeNull();
+    store.close();
+  });
+
+  it('upsert sobrescreve a linha anterior em vez de duplicar', () => {
+    const store = openStore(':memory:');
+    store.upsertEpisodes(makeShow(store), [makeEpisode()]);
+    store.upsertRemux(makeRemux());
+    store.upsertRemux(makeRemux({ file: 'novo.mp4' }));
+
+    expect(store.listRemuxFiles()).toEqual(['novo.mp4']);
+    store.close();
+  });
+
+  it('episodio removido no prune leva a linha de remux junto', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    store.upsertRemux(makeRemux());
+
+    store.pruneEpisodes(showId, []);
+    expect(store.listRemuxFiles()).toEqual([]);
+    store.close();
+  });
+});
+
+describe('variantes de dublagem (schema 5)', () => {
+  const VARIANTE = {
+    episodeId: 'serie/ep01.mp4',
+    audioIndex: 1,
+    file: 'var1.mp4',
+    mtimeMs: 1_700_000_000_000,
+    size: 123_456,
+    createdAt: 42,
+  };
+
+  it('roundtrip por (episodio, faixa), valido so com mtime e size batendo', () => {
+    const store = openStore(':memory:');
+    store.upsertEpisodes(makeShow(store), [makeEpisode()]);
+    store.upsertAudioVariant(VARIANTE);
+
+    expect(store.getAudioVariant('serie/ep01.mp4', 1, 1_700_000_000_000, 123_456)).toEqual(VARIANTE);
+    // Outra faixa do mesmo episodio e outra linha.
+    expect(store.getAudioVariant('serie/ep01.mp4', 0, 1_700_000_000_000, 123_456)).toBeNull();
+    // Fonte mudou: variante e de outro arquivo.
+    expect(store.getAudioVariant('serie/ep01.mp4', 1, 1, 123_456)).toBeNull();
+    store.close();
+  });
+
+  it('arquivos de variante entram na lista da coleta', () => {
+    const store = openStore(':memory:');
+    store.upsertEpisodes(makeShow(store), [makeEpisode()]);
+    store.upsertAudioVariant(VARIANTE);
+    store.upsertAudioVariant({ ...VARIANTE, audioIndex: 0, file: 'var0.mp4' });
+    expect(store.listAudioVariantFiles().sort()).toEqual(['var0.mp4', 'var1.mp4']);
+    store.close();
+  });
+
+  it('episodio removido leva as variantes junto', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    store.upsertAudioVariant(VARIANTE);
+    store.pruneEpisodes(showId, []);
+    expect(store.listAudioVariantFiles()).toEqual([]);
+    store.close();
+  });
+});
+
+describe('historico de onde parou (schema 6)', () => {
+  const LINHA = {
+    episodeId: 'serie/ep01.mp4',
+    positionMs: 600_000,
+    durationMs: 1_320_000,
+    updatedAt: 42,
+  };
+
+  it('roundtrip com upsert sobrescrevendo a posicao anterior', () => {
+    const store = openStore(':memory:');
+    store.upsertEpisodes(makeShow(store), [makeEpisode()]);
+    store.upsertWatchHistory(LINHA);
+    store.upsertWatchHistory({ ...LINHA, positionMs: 700_000, updatedAt: 43 });
+
+    expect(store.getWatchHistory('serie/ep01.mp4')?.positionMs).toBe(700_000);
+    store.close();
+  });
+
+  it('lista vem com o numero do canal, mais recente primeiro', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [
+      makeEpisode(),
+      makeEpisode({ id: 'serie/ep02.mp4', orderIndex: 1 }),
+    ]);
+    store.upsertWatchHistory(LINHA);
+    store.upsertWatchHistory({ ...LINHA, episodeId: 'serie/ep02.mp4', updatedAt: 99 });
+
+    const lista = store.listWatchHistory(10);
+    expect(lista.map((entry) => entry.episodeId)).toEqual(['serie/ep02.mp4', 'serie/ep01.mp4']);
+    expect(lista[0]?.channelNumber).toBe(1);
+    store.close();
+  });
+
+  it('delete apaga e episodio removido do indice leva o progresso junto', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    store.upsertWatchHistory(LINHA);
+
+    store.deleteWatchHistory('serie/ep01.mp4');
+    expect(store.getWatchHistory('serie/ep01.mp4')).toBeNull();
+
+    store.upsertWatchHistory(LINHA);
+    store.pruneEpisodes(showId, []);
+    expect(store.listWatchHistory(10)).toEqual([]);
+    store.close();
   });
 });

@@ -264,6 +264,11 @@ export interface Store {
   getShowMetadata(showId: number): ShowMetadataRow | null;
   upsertShowMetadata(row: ShowMetadataRow): void;
 
+  /** Copia MP4 remuxada; valida apenas se mtime e size do FONTE baterem. Veja 10. */
+  getRemux(episodeId: string, mtimeMs: number, size: number): RemuxRow | null;
+  upsertRemux(row: RemuxRow): void;
+  listRemuxFiles(): string[];
+
   close(): void;
 }
 
@@ -484,6 +489,12 @@ export interface EpisodeRef {
 - Os dois campos sao **sempre presentes**; `[]` quando o indice nao conhece as
   trilhas (linha gravada por uma versao anterior, arquivo sem audio, etc.).
   Cliente nenhum pode assumir que ha pelo menos uma faixa.
+- `audioTracks` descreve o arquivo FONTE: e a lista de dublagens que existem,
+  e o `index` delas e o `N` do `?audio=N` do stream (veja 10.4). A gemea AAC
+  que o remux acrescenta e detalhe de implementacao e nao aparece no contrato.
+  O cliente troca de dublagem trocando de ARQUIVO, nunca escolhendo faixa
+  dentro dele. `subtitleTracks` descreve o fonte tambem - e dele que a rota de
+  legenda extrai.
 - `probe.ts` popula os dois a partir do `-show_streams` que ja era pedido: ele
   ja traz `tags.language`, `tags.title` e `disposition`. Nao ha `-show_entries`
   a acrescentar - ele so restringiria o que ja vem. Stream com
@@ -655,3 +666,109 @@ GET /api/channels/:number/poster   ->  image/jpeg
 
 `cache-control: private, max-age=86400`. Fica **atras do guard de sessao**, como
 todo o resto - nao entra em `PUBLIC_PATHS`.
+
+## 10. Remux - MKV e Dolby tocando no navegador
+
+O `<video>` so garante MP4/WebM, e Chrome/Firefox nao decodificam Dolby
+(ac3/eac3). A resposta do projeto NAO e transcode (a proibicao de recodificar
+video em software continua): e **remux** - copiar os mesmos bytes para um
+container MP4, offline, uma vez por arquivo.
+
+### 10.1 `src/server/library/remux-plan.ts`
+
+```ts
+export interface RemuxPlanInput {
+  relativePath: string;             // extensao decide o container
+  videoCodec: string | null;
+  audioTracks: readonly AudioTrackRef[];  // do arquivo FONTE
+}
+
+export interface RemuxPlan {
+  reason: 'container' | 'audio';
+  args: string[];                   // entre `-i entrada` e a saida
+}
+
+export function planRemux(input: RemuxPlanInput): RemuxPlan | null;
+```
+
+Comportamento obrigatorio:
+
+- `null` quando o arquivo ja toca direto: `.webm`, `.mp4`/`.m4v` com faixa
+  default universal (aac/mp3), e qualquer arquivo sem stream de video.
+- Video **sempre** `-c:v copy`, mapeado por `0:V:0` (nunca a capa embutida).
+  HEVC ganha `-tag:v hvc1`, sem a qual o Safari nao reconhece o stream.
+- Audio, regra do zero perdas:
+  - faixa default Dolby/flac (copiavel em MP4 mas nao universal): entra uma
+    **gemea AAC** como saida 0 com `disposition default` - e ela que toca no
+    Chrome - e a original e **copiada bit a bit** logo depois;
+  - codec que MP4 nao carrega (dts, truehd, pcm): vira AAC **no lugar**, sem
+    gemea. A faixa original continua intacta no arquivo fonte;
+  - as demais faixas sao copiadas quando o MP4 as carrega.
+- `-movflags +faststart` sempre: sem moov na frente o primeiro seek baixa o
+  arquivo inteiro.
+- Legendas ficam fora do MP4: a rota de legenda extrai do arquivo ORIGINAL.
+
+### 10.2 `src/server/library/remux-job.ts`
+
+```ts
+export function runRemux(options: RemuxJobOptions): Promise<RemuxReport>;
+export function remuxFileName(episodeId: string, mtimeMs: number, size: number): string;
+```
+
+- Roda **depois do scan** (dispara no fim do bootstrap e no boot com indice ja
+  populado), um arquivo por vez: o custo e I/O de disco, nao CPU.
+- Idempotente pelo par `(mtime, size)` do fonte, como o cache de probe. O nome
+  do arquivo inclui esse par: fonte trocado gera nome novo e o antigo vira
+  orfao, recolhido no fim da rodada (`listRemuxFiles` e a lista do que fica).
+- Grava em temporario e `rename`: o servidor nunca serve MP4 pela metade.
+- O `audio_tracks` gravado na tabela `remux` vem de um **probe do arquivo
+  gerado**, nao de uma previsao - e essa lista que o painel de trilhas usa.
+- As copias vivem em `<DATA_DIR>/remux`; a biblioteca continua **read-only**.
+- `AUTO_REMUX=false` desliga o automatico; `npm run remux` /
+  `node dist/server/remux.js` roda manualmente (exige indice ja populado).
+
+### 10.3 Entrega
+
+- `/api/stream/:id` serve a copia quando ela existe e e valida; copia sumida
+  do disco cai no original em vez de 404 (`StreamEpisode.remuxPath`).
+
+### 10.4 Troca de dublagem: `?audio=N` e variantes
+
+`GET /api/stream/:id?audio=N` - `N` e o `index` da faixa no arquivo FONTE:
+
+| Situacao | Resposta |
+| --- | --- |
+| `N` e a faixa default do fonte | fluxo normal (copia remuxada ou original) |
+| Variante pronta | 200/206, o MP4 da variante, com Range |
+| Variante em geracao | 202 `{"preparing":true}`, `cache-control: no-store` |
+| Faixa inexistente ou `N` nao numerico | 400 |
+
+- Variante = video copiado + SO a faixa `N` (mais a gemea AAC quando ela nao e
+  universal). Um arquivo por (episodio, faixa), em `<DATA_DIR>/remux`, tabela
+  `audio_variant` (schema 5), invalidacao por (mtime, size) do fonte, mesma
+  coleta de orfaos do remux.
+- Geracao e SOB DEMANDA (`library/variant-queue.ts`), um worker por processo,
+  dedupe por chave. O cliente consulta com HEAD ate sair do 202 e entao
+  recarrega o video na mesma posicao.
+- Cliente web: painel de trilhas ativa as linhas de audio no catalogo (VOD).
+  A preferencia guardada e o IDIOMA (`widetv:audio-lang`), como a legenda.
+  No ao vivo as linhas ficam apagadas: a grade nao espera ffmpeg.
+
+## 11. Historico - onde o usuario parou
+
+Tabela `watch_history` (schema 6), uma linha por episodio, ON DELETE CASCADE.
+Rotas em `history/routes.ts`, atras do guard de sessao:
+
+```
+GET /api/history                 ->  WatchProgress[] (max 100, mais recente primeiro, no-store)
+PUT|POST /api/history/:id        ->  204   corpo: { positionMs, durationMs }
+```
+
+- POST alem de PUT porque `keepalive`/`sendBeacon` na saida da pagina.
+- Posicao >= 95% da duracao APAGA a entrada: episodio assistido recomeca do
+  zero e nao polui a lista de retomadas.
+- Corpo torto 400; episodio fora do indice 404 (nada de lixo orfao).
+- Cliente web (`resume.ts` puro): retoma quando ha >= 30 s assistidos e menos
+  de 95%; grava a cada 10 s, na pausa, no fim (apaga), ao sair do player e no
+  `visibilitychange` para hidden. A lista de episodios pinta uma barra fina de
+  progresso por episodio comecado.

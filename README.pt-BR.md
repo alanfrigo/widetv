@@ -172,6 +172,7 @@ npm run build && npm start
 | `LIBRARY_ROOT` | Pasta raiz do acervo |
 | `DATA_DIR` | Indice SQLite, capas e cache de legenda. Precisa ser gravavel. Nao deixe em branco: em branco vira caminho relativo, que dentro do container e `/app/data`, sem volume e sem permissao de escrita |
 | `AUTO_SCAN` | Indexa sozinho quando o indice esta vazio. So a string exata `false` desliga |
+| `AUTO_REMUX` | Converte episodios MKV/Dolby para MP4 em segundo plano (copia de bytes, sem transcode). As copias vivem em `DATA_DIR/remux` e ocupam mais ou menos o tamanho dos proprios MKV. So a string exata `false` desliga |
 | `TMDB_API_KEY` | Opcional. Poe o TMDB na frente da busca de capa, com sinopse em pt-BR. Sem ela, usa TVMaze e iTunes |
 | `PORT` | Porta HTTP, padrao 8080 |
 | `CHANNEL_EPOCH` | Instante zero da grade ao vivo. Mudar reposiciona todos os canais de uma vez |

@@ -39,6 +39,13 @@ describe('loadConfig', () => {
     expect(loadConfig(env({ AUTO_SCAN: 'sim' })).autoScan).toBe(true);
   });
 
+  test('autoRemux segue a mesma regra do autoScan: ligado por padrao, so "false" desliga', () => {
+    expect(loadConfig(env()).autoRemux).toBe(true);
+    expect(loadConfig(env({ AUTO_REMUX: 'false' })).autoRemux).toBe(false);
+    expect(loadConfig(env({ AUTO_REMUX: 'FALSE' })).autoRemux).toBe(false);
+    expect(loadConfig(env({ AUTO_REMUX: '0' })).autoRemux).toBe(true);
+  });
+
   test('DATA_DIR vazio nao vira caminho relativo silencioso', () => {
     // Uma UI que manda a variavel em branco (TrueNAS faz isso) derrubava o
     // dataDir para ./data, ou seja /app/data dentro do container: diretorio do

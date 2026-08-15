@@ -31,6 +31,10 @@ services:
       # se preferir controlar o scan na mao com:
       #   docker compose exec widetv node dist/server/scan.js /media/biblioteca
       AUTO_SCAN: "true"
+      # Converte MKV/Dolby para MP4 em segundo plano (copia de bytes, sem
+      # transcode). As copias ficam no volume de DATA_DIR e ocupam mais ou
+      # menos o tamanho dos proprios MKV; "false" desliga.
+      AUTO_REMUX: "true"
       # Opcional: melhora as capas e traz sinopse em pt-BR. Sem ela o servidor
       # usa TVMaze e iTunes, que nao pedem chave.
       TMDB_API_KEY: ${TMDB_API_KEY:-}

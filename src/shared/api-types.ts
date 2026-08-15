@@ -78,6 +78,22 @@ export interface NowPlaying {
   next: EpisodeRef;
 }
 
+/** Onde o usuario parou num episodio. Uma entrada por episodio, a mais recente. */
+export interface WatchProgress {
+  episodeId: string;
+  channelNumber: number;
+  positionMs: number;
+  durationMs: number;
+  /** Epoch ms da ultima gravacao. */
+  updatedAt: number;
+}
+
+/** Corpo do PUT/POST de progresso. Posicao perto do fim APAGA a entrada. */
+export interface SaveProgressRequest {
+  positionMs: number;
+  durationMs: number;
+}
+
 export interface LoginRequest {
   password: string;
 }
@@ -104,4 +120,7 @@ export const API = {
    */
   subtitle: (episodeId: string, track: number) =>
     `/api/stream/${encodeURIComponent(episodeId)}/subtitle/${track}`,
+  /** Historico completo (GET) e gravacao por episodio (PUT/POST em `historyOf`). */
+  history: '/api/history',
+  historyOf: (episodeId: string) => `/api/history/${encodeURIComponent(episodeId)}`,
 } as const;

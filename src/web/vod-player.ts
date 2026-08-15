@@ -47,15 +47,23 @@ export class VodPlayer {
   }
 
   /**
-   * Toca o episodio do comeco.
+   * Toca o episodio.
    *
+   * @param options.startMs     posicao inicial (retomada ou troca de dublagem
+   *                            no meio). Default: 0.
+   * @param options.audioIndex  faixa FONTE de dublagem; null/ausente toca a
+   *                            default. Vira `?audio=N` na URL - a troca e um
+   *                            arquivo diferente, nao uma faixa do mesmo.
    * @returns false quando nem mudo o navegador aceitou tocar - so um gesto do
    *          usuario resolve, e quem avisa e o chamador.
    */
-  async play(episodeId: string): Promise<boolean> {
+  async play(
+    episodeId: string,
+    options?: { startMs?: number; audioIndex?: number | null },
+  ): Promise<boolean> {
     try {
       this.active = true;
-      this.video.src = streamUrl(episodeId);
+      this.video.src = streamUrl(episodeId, options?.audioIndex ?? null);
       this.video.load();
       // Uma troca de episodio no meio da maratona nao pode herdar a velocidade
       // que o loop de sincronia do ao vivo tenha deixado no elemento.
@@ -64,8 +72,7 @@ export class VodPlayer {
 
       const ready = await awaitMediaReady(this.video, METADATA_TIMEOUT_MS);
       if (ready === 'ready') {
-        // Catalogo comeca do comeco: aqui nao ha grade para perseguir.
-        this.video.currentTime = 0;
+        this.video.currentTime = Math.max(0, options?.startMs ?? 0) / 1000;
       } else {
         this.events.onStalled?.(ready);
       }

@@ -59,6 +59,61 @@ export interface ShowMetadataRow {
   notFound: boolean;
 }
 
+/**
+ * Copia MP4 de um episodio que o navegador nao toca direto (MKV, audio Dolby
+ * como default). O arquivo vive em `<DATA_DIR>/remux`; aqui vai so o NOME,
+ * pelo mesmo motivo de `poster_file`: DATA_DIR muda entre host e container.
+ */
+export interface RemuxRow {
+  /** `EpisodeRow.id` do episodio fonte. */
+  episodeId: string;
+  /** Nome do arquivo em `<DATA_DIR>/remux`, ex. "ab12...ef.mp4". */
+  file: string;
+  /** mtime do arquivo FONTE no momento do remux; par de invalidacao com `size`. */
+  mtimeMs: number;
+  size: number;
+  /**
+   * Faixas de audio do arquivo REMUXADO, nao do fonte: o remux acrescenta a
+   * gemea AAC e reordena, e o painel de trilhas seleciona por POSICAO no
+   * arquivo que esta tocando.
+   */
+  audioTracks: AudioTrackRef[];
+  createdAt: number;
+}
+
+/**
+ * Variante de dublagem: MP4 com o video copiado e SO a faixa `audioIndex` do
+ * fonte (mais a gemea AAC quando preciso). Gerada sob demanda quando o usuario
+ * troca de audio - o `<video>` nao deixa escolher faixa dentro do arquivo.
+ */
+export interface AudioVariantRow {
+  episodeId: string;
+  /** `index` relativo da faixa no arquivo FONTE. */
+  audioIndex: number;
+  /** Nome do arquivo em `<DATA_DIR>/remux`. */
+  file: string;
+  /** mtime/size do FONTE no momento da geracao; par de invalidacao. */
+  mtimeMs: number;
+  size: number;
+  createdAt: number;
+}
+
+/**
+ * Onde o usuario parou em cada episodio. Uma linha por episodio, sempre a mais
+ * recente: o app e de senha unica, o "usuario" e a casa inteira.
+ */
+export interface WatchHistoryRow {
+  episodeId: string;
+  positionMs: number;
+  durationMs: number;
+  updatedAt: number;
+}
+
+/** Linha do historico enriquecida com o canal, para o cliente montar o retorno. */
+export interface WatchHistoryEntry extends WatchHistoryRow {
+  channelNumber: number;
+}
+
 export interface Store {
   listShows(): ShowRow[];
   getShowByChannel(channelNumber: number): ShowRow | null;
@@ -84,6 +139,33 @@ export interface Store {
 
   /** Probe cacheado, valido apenas se mtime e size baterem. */
   getCachedProbe(id: string, mtimeMs: number, size: number): ProbeResult | null;
+
+  /** Remux valido para o estado ATUAL do fonte; null se nao existe ou envelheceu. */
+  getRemux(episodeId: string, mtimeMs: number, size: number): RemuxRow | null;
+
+  /** Grava (ou regrava) o remux do episodio. */
+  upsertRemux(row: RemuxRow): void;
+
+  /** Nomes de arquivo referenciados; tudo fora desta lista em `remux/` e lixo. */
+  listRemuxFiles(): string[];
+
+  /** Variante valida para o estado atual do fonte; null se nao existe ou envelheceu. */
+  getAudioVariant(episodeId: string, audioIndex: number, mtimeMs: number, size: number): AudioVariantRow | null;
+
+  upsertAudioVariant(row: AudioVariantRow): void;
+
+  /** Nomes de arquivo das variantes; entram na mesma coleta de `remux/`. */
+  listAudioVariantFiles(): string[];
+
+  /** Posicao salva do episodio; null quando nunca foi assistido (ou terminou). */
+  getWatchHistory(episodeId: string): WatchHistoryRow | null;
+
+  upsertWatchHistory(row: WatchHistoryRow): void;
+
+  deleteWatchHistory(episodeId: string): void;
+
+  /** Historico com canal, do mais recente para o mais antigo. */
+  listWatchHistory(limit: number): WatchHistoryEntry[];
 
   close(): void;
 }
@@ -131,7 +213,7 @@ interface ShowMetadataRecord {
   not_found: number;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 6;
 
 const MIGRATIONS: readonly string[] = [
   // versao 1
@@ -198,6 +280,51 @@ const MIGRATIONS: readonly string[] = [
     source TEXT,
     fetched_at INTEGER NOT NULL,
     not_found INTEGER NOT NULL DEFAULT 0
+  );
+  `,
+  // versao 4: copias MP4 remuxadas dos episodios que o navegador nao toca.
+  //
+  // Tabela separada porque o ciclo de vida e outro: `episodes` e reescrita
+  // pelo scan, isto e escrito pelo job de remux. CASCADE para a linha nao
+  // sobreviver ao episodio - o arquivo orfao em disco quem recolhe e o proprio
+  // job, comparando o diretorio com `listRemuxFiles`.
+  //
+  // mtime_ms e size sao do arquivo FONTE: e o mesmo par que invalida o cache
+  // de probe, e um fonte trocado no NAS nao pode continuar servindo o MP4 do
+  // arquivo antigo.
+  `
+  CREATE TABLE IF NOT EXISTS remux (
+    episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+    file TEXT NOT NULL,
+    mtime_ms REAL NOT NULL,
+    size INTEGER NOT NULL,
+    audio_tracks TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
+  // versao 5: variantes de dublagem, geradas sob demanda quando o usuario
+  // troca de audio. Chave composta: um MP4 por (episodio, faixa fonte).
+  // Mesmo par (mtime, size) do fonte como invalidacao, mesma coleta de orfaos.
+  `
+  CREATE TABLE IF NOT EXISTS audio_variant (
+    episode_id TEXT NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    audio_index INTEGER NOT NULL,
+    file TEXT NOT NULL,
+    mtime_ms REAL NOT NULL,
+    size INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (episode_id, audio_index)
+  );
+  `,
+  // versao 6: onde o usuario parou. Uma linha por episodio (senha unica = um
+  // "usuario"). Episodio que sai do indice leva o progresso junto - retomar um
+  // arquivo que nao existe mais nao significa nada.
+  `
+  CREATE TABLE IF NOT EXISTS watch_history (
+    episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+    position_ms INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   );
   `,
 ];
@@ -447,6 +574,56 @@ export function openStore(dbPath: string): Store {
     return result.changes;
   });
 
+  const selectRemux = db.prepare(
+    'SELECT * FROM remux WHERE episode_id = @episodeId AND mtime_ms = @mtimeMs AND size = @size',
+  );
+  const insertRemux = db.prepare(
+    `INSERT INTO remux (episode_id, file, mtime_ms, size, audio_tracks, created_at)
+     VALUES (@episodeId, @file, @mtimeMs, @size, @audioTracks, @createdAt)
+     ON CONFLICT(episode_id) DO UPDATE SET
+       file = excluded.file,
+       mtime_ms = excluded.mtime_ms,
+       size = excluded.size,
+       audio_tracks = excluded.audio_tracks,
+       created_at = excluded.created_at`,
+  );
+  const selectRemuxFiles = db.prepare('SELECT file FROM remux');
+
+  const selectAudioVariant = db.prepare(
+    `SELECT * FROM audio_variant
+     WHERE episode_id = @episodeId AND audio_index = @audioIndex
+       AND mtime_ms = @mtimeMs AND size = @size`,
+  );
+  const insertAudioVariant = db.prepare(
+    `INSERT INTO audio_variant (episode_id, audio_index, file, mtime_ms, size, created_at)
+     VALUES (@episodeId, @audioIndex, @file, @mtimeMs, @size, @createdAt)
+     ON CONFLICT(episode_id, audio_index) DO UPDATE SET
+       file = excluded.file,
+       mtime_ms = excluded.mtime_ms,
+       size = excluded.size,
+       created_at = excluded.created_at`,
+  );
+  const selectAudioVariantFiles = db.prepare('SELECT file FROM audio_variant');
+
+  const selectWatchHistory = db.prepare('SELECT * FROM watch_history WHERE episode_id = ?');
+  const insertWatchHistory = db.prepare(
+    `INSERT INTO watch_history (episode_id, position_ms, duration_ms, updated_at)
+     VALUES (@episodeId, @positionMs, @durationMs, @updatedAt)
+     ON CONFLICT(episode_id) DO UPDATE SET
+       position_ms = excluded.position_ms,
+       duration_ms = excluded.duration_ms,
+       updated_at = excluded.updated_at`,
+  );
+  const deleteWatchHistoryStmt = db.prepare('DELETE FROM watch_history WHERE episode_id = ?');
+  const selectWatchHistoryList = db.prepare(
+    `SELECT h.episode_id, h.position_ms, h.duration_ms, h.updated_at, s.channel_number
+     FROM watch_history h
+     JOIN episodes e ON e.id = h.episode_id
+     JOIN shows s ON s.id = e.show_id
+     ORDER BY h.updated_at DESC
+     LIMIT ?`,
+  );
+
   const selectShowMetadata = db.prepare('SELECT * FROM show_metadata WHERE show_id = ?');
   const insertShowMetadata = db.prepare(
     `INSERT INTO show_metadata (show_id, poster_file, year, overview, source, fetched_at, not_found)
@@ -562,6 +739,123 @@ export function openStore(dbPath: string): Store {
         audioTracks: parseTracks<AudioTrackRef>(record.audio_tracks),
         subtitleTracks: parseTracks<SubtitleTrackRef>(record.subtitle_tracks),
       };
+    },
+
+    getRemux(episodeId, mtimeMs, size): RemuxRow | null {
+      const record = selectRemux.get({ episodeId, mtimeMs, size }) as
+        | {
+            episode_id: string;
+            file: string;
+            mtime_ms: number;
+            size: number;
+            audio_tracks: string | null;
+            created_at: number;
+          }
+        | undefined;
+      if (record === undefined) return null;
+      return {
+        episodeId: record.episode_id,
+        file: record.file,
+        mtimeMs: record.mtime_ms,
+        size: record.size,
+        audioTracks: parseTracks<AudioTrackRef>(record.audio_tracks),
+        createdAt: record.created_at,
+      };
+    },
+
+    upsertRemux(row): void {
+      insertRemux.run({
+        episodeId: row.episodeId,
+        file: row.file,
+        mtimeMs: row.mtimeMs,
+        size: row.size,
+        audioTracks: JSON.stringify(row.audioTracks),
+        createdAt: row.createdAt,
+      });
+    },
+
+    listRemuxFiles(): string[] {
+      return (selectRemuxFiles.all() as { file: string }[]).map((record) => record.file);
+    },
+
+    getAudioVariant(episodeId, audioIndex, mtimeMs, size): AudioVariantRow | null {
+      const record = selectAudioVariant.get({ episodeId, audioIndex, mtimeMs, size }) as
+        | {
+            episode_id: string;
+            audio_index: number;
+            file: string;
+            mtime_ms: number;
+            size: number;
+            created_at: number;
+          }
+        | undefined;
+      if (record === undefined) return null;
+      return {
+        episodeId: record.episode_id,
+        audioIndex: record.audio_index,
+        file: record.file,
+        mtimeMs: record.mtime_ms,
+        size: record.size,
+        createdAt: record.created_at,
+      };
+    },
+
+    upsertAudioVariant(row): void {
+      insertAudioVariant.run({
+        episodeId: row.episodeId,
+        audioIndex: row.audioIndex,
+        file: row.file,
+        mtimeMs: row.mtimeMs,
+        size: row.size,
+        createdAt: row.createdAt,
+      });
+    },
+
+    listAudioVariantFiles(): string[] {
+      return (selectAudioVariantFiles.all() as { file: string }[]).map((record) => record.file);
+    },
+
+    getWatchHistory(episodeId): WatchHistoryRow | null {
+      const record = selectWatchHistory.get(episodeId) as
+        | { episode_id: string; position_ms: number; duration_ms: number; updated_at: number }
+        | undefined;
+      if (record === undefined) return null;
+      return {
+        episodeId: record.episode_id,
+        positionMs: record.position_ms,
+        durationMs: record.duration_ms,
+        updatedAt: record.updated_at,
+      };
+    },
+
+    upsertWatchHistory(row): void {
+      insertWatchHistory.run({
+        episodeId: row.episodeId,
+        positionMs: row.positionMs,
+        durationMs: row.durationMs,
+        updatedAt: row.updatedAt,
+      });
+    },
+
+    deleteWatchHistory(episodeId): void {
+      deleteWatchHistoryStmt.run(episodeId);
+    },
+
+    listWatchHistory(limit): WatchHistoryEntry[] {
+      const records = selectWatchHistoryList.all(limit) as {
+        episode_id: string;
+        position_ms: number;
+        duration_ms: number;
+        updated_at: number;
+        channel_number: number;
+      }[];
+      return records.map((record) => ({
+        episodeId: record.episode_id,
+        positionMs: record.position_ms,
+        durationMs: record.duration_ms,
+        updatedAt: record.updated_at,
+        channelNumber: record.channel_number,
+      }));
     },
 
     close(): void {
