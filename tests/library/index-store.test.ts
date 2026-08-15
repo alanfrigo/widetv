@@ -564,3 +564,192 @@ describe('transacao de upsertEpisodes', () => {
     store.close();
   });
 });
+
+describe('metadata da serie (schema 3)', () => {
+  it('serie sem busca ainda devolve null, nao linha vazia', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    expect(store.getShowMetadata(showId)).toBeNull();
+    store.close();
+  });
+
+  it('roundtrip completo, com boolean e nulos', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+
+    store.upsertShowMetadata({
+      showId,
+      posterFile: `${showId}.jpg`,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tvmaze',
+      fetchedAt: 1_700_000_000_000,
+      notFound: false,
+    });
+
+    expect(store.getShowMetadata(showId)).toEqual({
+      showId,
+      posterFile: `${showId}.jpg`,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tvmaze',
+      fetchedAt: 1_700_000_000_000,
+      notFound: false,
+    });
+
+    store.close();
+  });
+
+  it('linha de "nao encontrado" guarda o instante da tentativa', () => {
+    // E o que o TTL de sete dias mede: sem `fetchedAt` nao ha como re-tentar.
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+
+    store.upsertShowMetadata({
+      showId,
+      posterFile: null,
+      year: null,
+      overview: null,
+      source: null,
+      fetchedAt: 42,
+      notFound: true,
+    });
+
+    const row = store.getShowMetadata(showId)!;
+    expect(row.notFound).toBe(true);
+    expect(row.fetchedAt).toBe(42);
+    expect(row.posterFile).toBeNull();
+
+    store.close();
+  });
+
+  it('upsert sobrescreve a tentativa anterior em vez de duplicar', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+
+    store.upsertShowMetadata({
+      showId,
+      posterFile: null,
+      year: null,
+      overview: null,
+      source: null,
+      fetchedAt: 1,
+      notFound: true,
+    });
+    store.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      year: 1985,
+      overview: 'Achei depois.',
+      source: 'itunes',
+      fetchedAt: 2,
+      notFound: false,
+    });
+
+    expect(store.getShowMetadata(showId)).toMatchObject({
+      posterFile: '1.jpg',
+      source: 'itunes',
+      notFound: false,
+    });
+
+    store.close();
+  });
+
+  it('serie removida do disco leva a metadata junto', () => {
+    const store = openStore(':memory:');
+    const id = makeShow(store, 'serie');
+    const outro = makeShow(store, 'outra');
+    for (const showId of [id, outro]) {
+      store.upsertShowMetadata({
+        showId,
+        posterFile: `${showId}.jpg`,
+        year: null,
+        overview: null,
+        source: 'tvmaze',
+        fetchedAt: 1,
+        notFound: false,
+      });
+    }
+
+    store.pruneShows(['outra']);
+
+    expect(store.getShowMetadata(id)).toBeNull();
+    expect(store.getShowMetadata(outro)).not.toBeNull();
+
+    store.close();
+  });
+
+  it('indice na versao 2 e migrado sem perder episodio', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v2-'));
+    const dbPath = join(base, 'library.db');
+
+    // Um banco exatamente como o schema 2 deixava: sem `show_metadata`.
+    const raw = new Database(dbPath);
+    raw.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version (version) VALUES (2);
+      CREATE TABLE shows (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        channel_number INTEGER NOT NULL UNIQUE,
+        absolute_path TEXT NOT NULL
+      );
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE episodes (
+        id TEXT PRIMARY KEY,
+        show_id INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+        absolute_path TEXT NOT NULL,
+        title TEXT NOT NULL,
+        season INTEGER,
+        episode INTEGER,
+        order_index INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        video_codec TEXT,
+        audio_codec TEXT,
+        width INTEGER,
+        height INTEGER,
+        faststart INTEGER NOT NULL,
+        mtime_ms REAL NOT NULL,
+        size INTEGER NOT NULL,
+        audio_tracks TEXT,
+        subtitle_tracks TEXT
+      );
+      INSERT INTO shows (slug, name, channel_number, absolute_path)
+        VALUES ('serie', 'Serie', 4, '/lib/serie');
+      INSERT INTO episodes (
+        id, show_id, absolute_path, title, order_index, duration_ms, faststart, mtime_ms, size
+      ) VALUES ('serie/ep01.mp4', 1, '/lib/serie/ep01.mp4', 'ep01', 0, 1000, 1, 5, 6);
+    `);
+    raw.close();
+
+    const store = openStore(dbPath);
+
+    // Migrou sem tocar no que ja existia...
+    expect(store.listShows().map((s) => s.channelNumber)).toEqual([4]);
+    expect(store.getEpisode('serie/ep01.mp4')?.title).toBe('ep01');
+    // ...e a tabela nova existe e responde.
+    expect(store.getShowMetadata(1)).toBeNull();
+    store.upsertShowMetadata({
+      showId: 1,
+      posterFile: '1.jpg',
+      year: 1985,
+      overview: null,
+      source: 'tvmaze',
+      fetchedAt: 7,
+      notFound: false,
+    });
+    expect(store.getShowMetadata(1)?.posterFile).toBe('1.jpg');
+
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(3);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});

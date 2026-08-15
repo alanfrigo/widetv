@@ -1,9 +1,38 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.RetroTv" parent="Theme.AppCompat.NoActionBar">
-        <item name="android:windowBackground">@android:color/black</item>
-        <item name="android:colorBackground">@android:color/black</item>
+    <style name="Theme.WideTv" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorBackground">@color/bg</item>
+        <item name="colorAccent">@color/accent</item>
         <!-- A TV nunca deve piscar branco entre Activities. -->
         <item name="android:windowDisablePreview">true</item>
+    </style>
+
+    <!--
+      Campo de acesso: sublinhado proprio, sem a caixa do AppCompat.
+      `parent=""` porque o ponto no nome herdaria de um `WideTv` que nao existe.
+    -->
+    <style name="WideTv.Field" parent="">
+        <item name="android:background">@drawable/field_underline</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textColorHint">@color/text_faint</item>
+        <item name="android:textSize">@dimen/text_field</item>
+        <item name="android:paddingTop">@dimen/space_sm</item>
+        <item name="android:paddingBottom">@dimen/space_sm</item>
+        <item name="android:singleLine">true</item>
+    </style>
+
+    <style name="WideTv.Button" parent="">
+        <item name="android:background">@drawable/button_accent</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textSize">@dimen/text_button</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.06</item>
+        <item name="android:paddingStart">@dimen/space_lg</item>
+        <item name="android:paddingEnd">@dimen/space_lg</item>
+        <item name="android:paddingTop">@dimen/space_sm</item>
+        <item name="android:paddingBottom">@dimen/space_sm</item>
+        <item name="android:focusable">true</item>
+        <item name="android:gravity">center</item>
     </style>
 </resources>

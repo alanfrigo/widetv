@@ -1,7 +1,5 @@
 import { resolve } from 'node:path';
 
-import type { DisplayMode } from '@shared/api-types';
-
 import { isValidPasswordHash } from './auth/password';
 
 /**
@@ -27,8 +25,11 @@ export interface AppConfig {
   secureCookies: boolean;
   /** Indexa o acervo sozinho quando o indice ainda nao existe. */
   autoScan: boolean;
-  /** Modo de apresentacao servido aos clientes em /api/config. */
-  displayMode: DisplayMode;
+  /**
+   * Chave do TMDB, opcional. `null` quando ausente: a busca de capa cai nos
+   * provedores sem chave (TVMaze, iTunes) e o servidor sobe do mesmo jeito.
+   */
+  tmdbApiKey: string | null;
 }
 
 export type Env = Record<string, string | undefined>;
@@ -57,12 +58,6 @@ function parsePort(raw: string | undefined): number {
     throw new ConfigError(`PORT precisa estar entre 1 e 65535, recebeu ${port}.`);
   }
   return port;
-}
-
-function parseDisplayMode(raw: string | undefined): DisplayMode {
-  const value = raw?.trim().toLowerCase() || 'crt';
-  if (value === 'crt' || value === 'widescreen') return value;
-  throw new ConfigError(`DISPLAY_MODE precisa ser "crt" ou "widescreen", recebeu "${value}".`);
 }
 
 function parseEpoch(raw: string | undefined): number {
@@ -105,6 +100,8 @@ export function loadConfig(env: Env): AppConfig {
     // Ligado por padrao: quem sobe isto num NAS nao tem shell no container, e
     // um deploy novo sem indice nao serve canal nenhum.
     autoScan: env.AUTO_SCAN?.trim().toLowerCase() !== 'false',
-    displayMode: parseDisplayMode(env.DISPLAY_MODE),
+    // Variavel em branco (a UI do TrueNAS manda assim) conta como ausente: uma
+    // chave vazia so renderia 401 em toda busca de capa.
+    tmdbApiKey: env.TMDB_API_KEY?.trim() || null,
   };
 }

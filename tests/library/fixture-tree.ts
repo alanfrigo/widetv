@@ -87,7 +87,7 @@ const LINKS: [link: string, target: string][] = [
 
 /** Monta a arvore num diretorio temporario e devolve a raiz. */
 export async function buildFixtureTree(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "retro-tv-fixtures-"));
+  const root = await mkdtemp(join(tmpdir(), "widetv-fixtures-"));
 
   for (const relative of FILES) {
     const target = join(root, relative);

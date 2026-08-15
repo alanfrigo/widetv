@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import type { EpisodeRow, ShowRow } from '../../src/server/library/index-store';
+import type { EpisodeRow, ShowMetadataRow, ShowRow } from '../../src/server/library/index-store';
 import {
   type ChannelSource,
   listChannelEpisodes,
@@ -42,11 +42,29 @@ function episode(showId: number, index: number, durationMs: number): EpisodeRow 
 }
 
 /** Fonte em memoria com o mesmo contrato do Store. */
-function source(shows: ShowRow[], episodes: Record<number, EpisodeRow[]>): ChannelSource {
+function source(
+  shows: ShowRow[],
+  episodes: Record<number, EpisodeRow[]>,
+  metadata: Record<number, ShowMetadataRow> = {},
+): ChannelSource {
   return {
     listShows: () => shows,
     getShowByChannel: (n) => shows.find((s) => s.channelNumber === n) ?? null,
     listEpisodes: (showId) => episodes[showId] ?? [],
+    getShowMetadata: (showId) => metadata[showId] ?? null,
+  };
+}
+
+function metadataRow(showId: number, over: Partial<ShowMetadataRow> = {}): ShowMetadataRow {
+  return {
+    showId,
+    posterFile: `${showId}.jpg`,
+    year: 1985,
+    overview: 'Sinopse.',
+    source: 'tvmaze',
+    fetchedAt: EPOCH,
+    notFound: false,
+    ...over,
   };
 }
 
@@ -71,6 +89,43 @@ describe('listChannels', () => {
   test('serie sem episodio nao vira canal', () => {
     const vazio = source([THUNDER, show(9, 20, 'Vazia')], { 1: [episode(1, 1, MIN)] });
     expect(listChannels(vazio).map((c) => c.number)).toEqual([7]);
+  });
+
+  test('sem metadata, os campos de capa vem null em vez de sumirem', () => {
+    // O contrato promete as tres chaves sempre presentes: um cliente que faz
+    // destructuring nao pode receber `undefined` de um acervo recem indexado.
+    const canal = listChannels(SRC).find((c) => c.number === 7)!;
+    expect(canal.posterUrl).toBeNull();
+    expect(canal.year).toBeNull();
+    expect(canal.overview).toBeNull();
+  });
+
+  test('com metadata, posterUrl aponta para a rota da capa do proprio canal', () => {
+    const src = source([THUNDER], { 1: [episode(1, 1, MIN)] }, { 1: metadataRow(1) });
+    const canal = listChannels(src)[0]!;
+    expect(canal.posterUrl).toBe('/api/channels/7/poster');
+    expect(canal.year).toBe(1985);
+    expect(canal.overview).toBe('Sinopse.');
+  });
+
+  test('metadata sem arquivo de capa mantem posterUrl null, mas conserva ano e sinopse', () => {
+    const src = source(
+      [THUNDER],
+      { 1: [episode(1, 1, MIN)] },
+      { 1: metadataRow(1, { posterFile: null }) },
+    );
+    const canal = listChannels(src)[0]!;
+    expect(canal.posterUrl).toBeNull();
+    expect(canal.year).toBe(1985);
+  });
+
+  test('serie marcada como inexistente no provedor nao ganha capa', () => {
+    const src = source(
+      [THUNDER],
+      { 1: [episode(1, 1, MIN)] },
+      { 1: metadataRow(1, { posterFile: null, year: null, overview: null, notFound: true }) },
+    );
+    expect(listChannels(src)[0]!.posterUrl).toBeNull();
   });
 });
 
@@ -124,7 +179,21 @@ describe('resolveNowPlaying', () => {
 
   test('inclui os dados do canal na resposta', () => {
     const r = resolveNowPlaying(SRC, 7, EPOCH, EPOCH)!;
-    expect(r.channel).toEqual({ number: 7, name: 'ThunderCats', episodeCount: 3 });
+    expect(r.channel).toEqual({
+      number: 7,
+      name: 'ThunderCats',
+      episodeCount: 3,
+      posterUrl: null,
+      year: null,
+      overview: null,
+    });
+  });
+
+  test('o canal do "no ar" carrega a mesma capa da listagem', () => {
+    const src = source([THUNDER], { 1: [episode(1, 1, 20 * MIN)] }, { 1: metadataRow(1) });
+    const r = resolveNowPlaying(src, 7, EPOCH, EPOCH)!;
+    expect(r.channel.posterUrl).toBe('/api/channels/7/poster');
+    expect(r.channel.year).toBe(1985);
   });
 
   test('canais diferentes nao comecam todos no episodio 1 ao mesmo tempo', () => {

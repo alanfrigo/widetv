@@ -58,7 +58,7 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Transforma uma pasta de desenhos animados em canais de TV ao vivo
+            org.opencontainers.image.description=Servidor pessoal de streaming: catalogo com capas, trilhas de audio e legenda, e canais ao vivo por serie
 
       - id: build
         uses: docker/build-push-action@v6

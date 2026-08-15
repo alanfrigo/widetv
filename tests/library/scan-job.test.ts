@@ -44,7 +44,7 @@ async function makeEpisode(show: string, file: string): Promise<string> {
 }
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'retro-tv-scan-'));
+  root = await mkdtemp(join(tmpdir(), 'widetv-scan-'));
   store = openStore(':memory:');
 });
 

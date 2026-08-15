@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Imagem do retro-tv. Tres stages: deps de producao, build, runtime.
+# Imagem do widetv. Tres stages: deps de producao, build, runtime.
 #
 # Cuidado com o modulo nativo: better-sqlite3 compila (ou baixa) um .node por
 # arquitetura e por ABI do Node. O stage que instala as dependencias de
@@ -46,11 +46,11 @@ ARG CREATED
 # `image.source` nao e decorativo: e por ele que o GHCR liga o pacote ao
 # repositorio, mostra o README na pagina do pacote e herda a visibilidade.
 # Sem este label o pacote nasce solto, sem vinculo com o codigo.
-LABEL org.opencontainers.image.source="https://github.com/alanfrigo/retro-tv" \
-      org.opencontainers.image.url="https://github.com/alanfrigo/retro-tv" \
-      org.opencontainers.image.documentation="https://github.com/alanfrigo/retro-tv#readme" \
-      org.opencontainers.image.title="retro-tv" \
-      org.opencontainers.image.description="Transforma uma pasta de desenhos animados em canais de TV ao vivo" \
+LABEL org.opencontainers.image.source="https://github.com/alanfrigo/widetv" \
+      org.opencontainers.image.url="https://github.com/alanfrigo/widetv" \
+      org.opencontainers.image.documentation="https://github.com/alanfrigo/widetv#readme" \
+      org.opencontainers.image.title="widetv" \
+      org.opencontainers.image.description="Servidor pessoal de streaming: catalogo com capas, trilhas de audio e legenda, e canais ao vivo por serie" \
       org.opencontainers.image.licenses="NOASSERTION" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
@@ -64,7 +64,7 @@ RUN apt-get update \
 ENV NODE_ENV=production \
     PORT=8080 \
     DATA_DIR=/data \
-    LIBRARY_ROOT=/media/desenhos
+    LIBRARY_ROOT=/media/biblioteca
 
 WORKDIR /app
 COPY --from=prod-deps /app/node_modules ./node_modules
@@ -73,7 +73,8 @@ COPY --from=builder /app/dist ./dist
 # "type": "module" deste package.json.
 COPY package.json ./
 
-# A biblioteca entra read-only; so o indice precisa de escrita.
+# A biblioteca entra read-only; so o indice (e o cache de capa e legenda)
+# precisa de escrita.
 RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
 

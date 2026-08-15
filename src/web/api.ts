@@ -1,12 +1,4 @@
-import {
-  API,
-  type ChannelSummary,
-  type DisplayMode,
-  type EpisodeRef,
-  type NowPlaying,
-} from '@shared/api-types';
-
-import { parseDisplayMode } from './display-mode';
+import { API, type ChannelSummary, type EpisodeRef, type NowPlaying } from '@shared/api-types';
 
 /**
  * Cliente HTTP. Fino de proposito: a unica coisa que ele acrescenta e medir o
@@ -30,20 +22,6 @@ async function getJson<T>(url: string): Promise<T> {
 
 export async function fetchChannels(): Promise<ChannelSummary[]> {
   return getJson<ChannelSummary[]>(API.channels);
-}
-
-/**
- * Modo de apresentacao. Nunca lanca e nunca devolve promessa rejeitada: um
- * servidor antigo responde 404 nesta rota, e o app precisa subir igual ao que
- * era. Toda falha - 404, 401, rede caida, JSON quebrado - vira `'crt'`.
- */
-export async function fetchConfig(): Promise<DisplayMode> {
-  try {
-    const body = (await getJson<unknown>(API.config)) as { displayMode?: unknown } | null;
-    return parseDisplayMode(body?.displayMode);
-  } catch {
-    return 'crt';
-  }
 }
 
 /**
@@ -103,4 +81,16 @@ export async function login(password: string): Promise<boolean> {
 export async function hasSession(): Promise<boolean> {
   const response = await fetch(API.session, { credentials: 'same-origin' });
   return response.ok;
+}
+
+/**
+ * Encerra a sessao. Nunca lanca: o cookie que interessa e o do navegador, e o
+ * app volta para a tela de senha mesmo que a rota tenha falhado.
+ */
+export async function logout(): Promise<void> {
+  try {
+    await fetch(API.logout, { method: 'POST', credentials: 'same-origin' });
+  } catch {
+    // Rede caida no logout: a tela de senha aparece do mesmo jeito.
+  }
 }

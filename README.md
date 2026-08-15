@@ -1,130 +1,93 @@
-# Retro TV
+# widetv
 
-Turn a folder of cartoons into live TV channels.
+A personal streaming server for your own video library.
 
-Every series in your library becomes a channel that runs 24 hours a day, whether
-or not anyone is watching. Opening a channel does not start an episode: it tunes
-into whatever would be airing right now, mid scene, and keeps going into the next
-episode when that one ends. There is no menu, no library grid and no "continue
-watching". Just change the channel.
+Point it at a folder of series, and it becomes a widescreen catalogue: every
+show gets a cover fetched automatically, a synopsis, its episode list, and the
+embedded audio and subtitle tracks the files already carry. Files are served
+straight from disk, never transcoded.
 
 [Portugues](README.pt-BR.md)
 
-![A channel playing, with the on screen display showing channel number, series and episode](docs/images/channel.jpg)
+## What it does
 
-## How it works
+- **Catalogue.** One channel per folder, with cover art, year and synopsis.
+- **Automatic covers.** Fetched once per show from TVMaze, iTunes or TMDB, then
+  stored locally and served by this server. No client ever talks to a provider.
+- **Audio and subtitles.** Multi-audio MKV files keep every track; embedded text
+  subtitles are converted to WebVTT on demand and cached on disk.
+- **Live mode.** Each series also runs as a 24-hour channel: a pure function of
+  the clock decides what would be airing right now. Nothing about playback
+  position is stored, so the grid survives a restart and two viewers on the same
+  channel see the same frame.
+- **No transcoding.** HTTP range requests over the original file. This is meant
+  to run on a NAS without a GPU.
 
-The schedule is a pure function of the clock. Given a fixed epoch, the total
-duration of a series and the current time, the server computes which episode is
-airing and how far into it we are:
+## How the schedule works
 
 ```
 cycle   = sum of every episode duration
 elapsed = (now - epoch) mod cycle
 ```
 
-Nothing about playback position is stored. That has three useful consequences:
-
-- Restarting the server does not disturb the grid. The epoch is the only state.
-- Two people opening the same channel see the same frame.
-- A channel that nobody watches for a week is exactly where it should be when
-  someone finally tunes in.
-
 Each channel is offset by a stable hash of its slug, so the channels are not all
-sitting on episode 1 at the same instant.
+sitting on episode 1 at the same instant. The client fetches the current
+position, measures the round trip to estimate clock skew, seeks, and then keeps
+itself honest: under 300 ms of drift it does nothing, up to 2 s it nudges the
+playback rate, beyond that it seeks.
 
-The browser fetches the current position, measures the round trip to estimate
-clock skew, seeks to the right offset, and then keeps itself honest. Every second
-it compares the real playback position against the projected one:
+## Covers and metadata
 
-| Drift | Correction |
+The first `GET /api/channels` after a scan kicks off a background pass that
+fills in whatever is missing. The response never waits for the network — covers
+show up on the next load.
+
+Providers are tried in order, and the chain stops at the first one that returns
+an image:
+
+| Provider | Key | Notes |
+| --- | --- | --- |
+| TMDB | `TMDB_API_KEY` | Only when the key is set, and then it goes first: poster-sized art and a pt-BR synopsis |
+| TVMaze | none | Good coverage for TV series |
+| iTunes Search | none | Fallback; also covers films |
+
+The image is downloaded once to `<DATA_DIR>/posters/<showId>.jpg` and served
+from `/api/channels/:number/poster`, behind the same session guard as
+everything else. A show that no provider knows is recorded as such and retried
+only after seven days. A network failure records nothing at all, so it is
+retried on the next pass.
+
+## API
+
+Every route is behind the session cookie.
+
+| Route | Returns |
 | --- | --- |
-| under 300 ms | none |
-| 300 ms to 2 s | playback rate nudged by 5 percent until it closes |
-| over 2 s | hard seek |
+| `POST /api/auth/login` | sets the session cookie |
+| `GET /api/channels` | `ChannelSummary[]` |
+| `GET /api/channels/:number/now` | `NowPlaying` — what is airing right now |
+| `GET /api/channels/:number/episodes` | `EpisodeRef[]` in schedule order |
+| `GET /api/channels/:number/poster` | `image/jpeg`, or 404 when there is no cover |
+| `GET /api/stream/:id` | the file, with range support |
+| `GET /api/stream/:id/subtitle/:track` | embedded subtitle as WebVTT |
 
-Fifteen seconds before an episode ends, the next one is preloaded into a second
-video element, and the swap is a visibility change rather than a reload. No black
-gap between episodes.
-
-Measured on a real 460 channel library: drift held at 163 ms plus or minus 5 ms
-over 30 seconds, well inside the deadband.
-
-## Look
-
-The CRT treatment is CSS and SVG layered over a native `<video>` element. No
-WebGL, no canvas. That keeps the video element real, which matters for the
-planned Android client, and it costs almost nothing on the client GPU.
-
-Layers, in order: scanlines, phosphor mask, roll bar, vignette, animated grain
-via `feTurbulence`, brightness flicker, glass reflection. Everything is driven by
-custom properties on `:root`, so it is tunable without touching the rules:
-
-```css
---crt-scanline-opacity
---crt-mask-opacity
---crt-grain-opacity
---crt-flicker-amount
---crt-vignette
---crt-phosphor      /* default #33ff66 */
+```ts
+interface ChannelSummary {
+  number: number;
+  name: string;
+  episodeCount: number;
+  posterUrl: string | null;  // '/api/channels/7/poster' when a cover exists
+  year: number | null;
+  overview: string | null;
+}
 ```
 
-Adding `.crt-off` to the container disables every effect at once.
-`prefers-reduced-motion` disables the flicker and the animated grain.
-
-The picture fills the full height of the window at 4:3. On a 16:9 television that
-leaves black bars on the sides, which is correct: nothing is stretched and nothing
-is cropped.
-
-![A dark scene showing the scanlines, phosphor mask and vignette over the picture](docs/images/crt-detail.jpg)
-
-## Controls
-
-There is no menu anywhere, so the login screen doubles as the control reference.
-
-| Key | Action |
-| --- | --- |
-| Up / Down | previous or next channel, wrapping around |
-| 0 to 9 | tune directly by number |
-| Left / Right | volume |
-| M | mute |
-
-Typing digits behaves like an old remote: the number is held briefly before it
-commits, and commits immediately once it reaches the width of the highest channel
-number.
-
-The last channel you watched is kept in `localStorage`, so closing the browser
-and coming back later drops you on the same channel rather than back at channel
-one. It is validated against the channels that exist at that moment: if the
-series was removed from the library in the meantime, you land on the first
-channel instead of a dead screen. This is the only thing the app remembers
-between sessions.
-
-![Login screen showing the password prompt and the keyboard reference](docs/images/login.jpg)
-
-### Autoplay
-
-The picture always starts on its own. Sound is a different matter: browsers
-refuse to play audio before the user has interacted with the page, and that rule
-cannot be worked around from JavaScript.
-
-So the player tries with sound, and if the browser refuses it starts muted
-immediately rather than leaving a still frame on screen. The first key press or
-click restores the sound. A short `SEM SOM` notice appears when that happens.
-
-On a machine dedicated to this, launch the browser with the policy disabled and
-sound works from the first frame with no interaction at all:
-
-```
-chromium --kiosk --autoplay-policy=no-user-gesture-required http://your-host/
-```
-
-Chrome also grants autoplay by itself once you have watched enough on a given
-origin, so a browser you use regularly stops asking after a while.
+The contract lives in `src/shared/api-types.ts` and is mirrored in
+`android/app/src/main/java/com/retrotv/app/net/Models.kt`.
 
 ## Library layout
 
-Both of these are understood, and a single series may mix them:
+Both shapes are understood, and a single series may mix them:
 
 ```
 LIBRARY/
@@ -139,48 +102,33 @@ LIBRARY/
       episode 01.mp4
 ```
 
-Deeper nesting also works. Anything below a top level folder is collected
-recursively and ordered by natural sort of the path, so a boxed set with sub
-collections becomes one channel rather than several.
+Deeper nesting works too — anything under a top level folder is collected
+recursively and ordered by natural sort. Season folders are recognised in the
+shapes that actually appear in the wild (`1a Temporada`, `Temporada 4`,
+`Season 5`, `S06`, `T07`, `Terceira Temporada`). Season and episode numbers are
+best effort: when a filename gives nothing reliable the fields stay null rather
+than being invented.
 
-Season folders are recognised in the shapes that actually appear in the wild,
-including the Portuguese convention where the number comes first:
-`1a Temporada`, `2 Temporada`, `1a.Temporada.1959-1960`, `10a Season`,
-`Temporada 4`, `Season 5`, `S06`, `T07`, and written ordinals such as
-`Terceira Temporada`.
-
-Episode and season numbers are best effort. When a filename gives nothing
-reliable the fields stay null rather than being invented, since the position in
-the grid is what actually drives playback.
-
-Hidden files, `@eaDir`, `.AppleDouble` and `#recycle` are skipped. A series whose
-files all fail to probe does not become a channel, because an empty channel would
-divide the schedule by zero.
+Hidden files, `@eaDir`, `.AppleDouble` and `#recycle` are skipped. A series
+whose files all fail to probe does not become a channel.
 
 ## Codecs
 
-There is no transcoding. Files are served straight from disk with HTTP range
-requests, which is the only sane choice on a NAS without a GPU.
+There is no transcoding, so the client has to decode the source directly. AV1 in
+MP4 decodes everywhere current; H.265 only plays where the OS exposes a hardware
+decoder. Check your library before assuming:
 
-That works because the browser is expected to decode the source directly. AV1 in
-MP4 decodes in software on every current Chrome and natively on Android. H.265
-only plays where the operating system exposes a hardware decoder, so an H.265
-heavy library may not survive direct play on every client.
-
-Check yours before assuming:
-
-```
+```bash
 npm run survey -- "/path/to/library"
 ```
 
-It reports the codec distribution, the container distribution, how many files
-carry the `moov` atom up front (which is what makes seeking into the middle of a
-file fast), and a plain verdict on whether direct play is viable.
+It reports codec and container distribution, how many files carry the `moov`
+atom up front, and a plain verdict on whether direct play is viable.
 
 ## Requirements
 
 - Node 22 or newer
-- `ffprobe` on the PATH, for indexing
+- `ffmpeg`/`ffprobe` on the PATH — indexing and subtitle extraction
 - A library of video files
 
 ## Quick start
@@ -188,44 +136,33 @@ file fast), and a plain verdict on whether direct play is viable.
 ```bash
 npm install
 cp .env.example .env
-```
 
-Generate the two secrets and put them in `.env`:
-
-```bash
 openssl rand -hex 32        # SESSION_SECRET
 npm run hash-password       # AUTH_PASSWORD_HASH
 ```
 
-Index the library. This is the only expensive step, since it runs `ffprobe` once
-per file. A second run is nearly instant because results are cached by modified
-time and size:
+Indexing is the only expensive step, since it runs `ffprobe` once per file. A
+second run is nearly instant, because results are cached by modified time and
+size:
 
 ```bash
 npm run scan -- "/path/to/library"
 ```
 
-You can skip that command if you want to. When the index is empty the server
-indexes the library by itself, in the background, without delaying startup. That
-is the normal path for a container deployment, where there is no shell to run
-commands in. Inside a container the scan binary is the compiled one, since `tsx`
-is a development dependency and does not ship in the image:
+You can skip it: when the index is empty the server indexes in the background
+without delaying startup, which is the normal path in a container. Inside the
+container the scan binary is the compiled one, since `tsx` does not ship in the
+image:
 
 ```bash
-docker compose exec retro-tv node dist/server/scan.js /media/desenhos
+docker compose exec widetv node dist/server/scan.js /media/biblioteca
 ```
 
-Then run it:
+Then:
 
 ```bash
 npm run dev      # Vite on 5173, API on 8080
-```
-
-For production:
-
-```bash
-npm run build
-npm start
+npm run build && npm start
 ```
 
 ## Configuration
@@ -233,33 +170,30 @@ npm start
 | Variable | Meaning |
 | --- | --- |
 | `LIBRARY_ROOT` | Root folder of the library |
-| `DATA_DIR` | Where the SQLite index lives. Must be writable. Do not leave it blank: blank falls back to a relative path, which inside the container is `/app/data`, with no volume and no write permission |
-| `AUTO_SCAN` | Indexes the library on its own when the index is empty. Only the exact string `false` turns it off |
-| `DISPLAY_MODE` | `crt` (default) keeps the 4:3 CRT look. `widescreen` switches clients to 16:9 without the CRT filter, with a channel list plus an on-demand catalogue — for FullHD/4K libraries |
+| `DATA_DIR` | SQLite index, covers and subtitle cache. Must be writable. Do not leave it blank: blank falls back to a relative path, which inside the container is `/app/data`, with no volume and no write permission |
+| `AUTO_SCAN` | Indexes on its own when the index is empty. Only the exact string `false` turns it off |
+| `TMDB_API_KEY` | Optional. Puts TMDB first in the cover chain, with pt-BR synopses. Without it, TVMaze and iTunes are used |
 | `PORT` | HTTP port, default 8080 |
-| `CHANNEL_EPOCH` | Instant zero of the schedule. Changing it moves every channel at once |
+| `CHANNEL_EPOCH` | Instant zero of the live schedule. Changing it moves every channel at once |
 | `AUTH_PASSWORD_HASH` | Output of `npm run hash-password` |
 | `SESSION_SECRET` | 32 bytes or more of randomness, signs the session cookie |
 | `SECURE_COOKIES` | `false` only for local HTTP. Anything else keeps the `Secure` flag |
 
-`.env` is read once, at startup. Changing the password in the file does nothing
-until the process restarts, which looks exactly like a wrong password in the UI.
-`npm run dev` watches `.env` and restarts for you; a production container needs
-`docker compose up -d --force-recreate`.
+`.env` is read once, at startup. `npm run dev` watches it; a production
+container needs `docker compose up -d --force-recreate`.
 
-`AUTH_PASSWORD_HASH` holds the hash, not the password. Pasting the plain password
-there used to produce a server that started fine and then rejected the correct
-password, so the server now refuses to start and says so.
+`AUTH_PASSWORD_HASH` holds the hash, not the password. Pasting the plain
+password there makes the server refuse to start, and say so.
 
 ## Deploying
 
-`docker compose up` builds and runs it with the library mounted read only and the
-index on a named volume. See [docs/DEPLOY.md](docs/DEPLOY.md) for the TrueNAS
-SCALE walkthrough and the reverse proxy configuration.
+`docker compose up` builds and runs it with the library mounted read only and
+the index on a named volume. See [docs/DEPLOY.md](docs/DEPLOY.md) for the
+TrueNAS SCALE walkthrough and the reverse proxy configuration.
 
-One thing worth repeating here: if you expose this beyond your LAN, put HTTPS in
-front of it. Without TLS the password and the session cookie travel in clear text.
-The compose file publishes to `127.0.0.1` by default for exactly that reason.
+If you expose this beyond your LAN, put HTTPS in front of it. Without TLS the
+password and the session cookie travel in clear text; the compose file publishes
+to `127.0.0.1` by default for exactly that reason.
 
 ## Security
 
@@ -269,33 +203,28 @@ The session cookie is stateless, signed with HMAC-SHA256, `HttpOnly` and
 expiry cannot be moved by the client. Repeated failures from one address are
 locked out for fifteen minutes.
 
-This is a lock on a door, not a fortress. It is appropriate for a personal media
-server behind a reverse proxy. It is not an authentication system for multiple
-users, and it does not pretend to be.
+This is a lock on a door, not a fortress. It suits a personal media server
+behind a reverse proxy; it is not a multi-user authentication system.
 
 ## Project layout
 
 ```
 src/
-  shared/     API contract types, used by server and client
+  shared/     API contract types, used by server and clients
   server/
     library/  scanner, ffprobe wrapper, SQLite index, scan job
-    schedule/ clock.ts, the pure function behind the whole thing
+    schedule/ clock.ts, the pure function behind the live grid
     channels/ maps the index onto channels, HTTP routes
-    stream/   range parsing and file delivery
+    metadata/ cover and synopsis providers, background enrichment
+    stream/   range parsing, file delivery, subtitle extraction
     auth/     password hashing, session cookie, routes
     cli/      scan, survey, hash-password
-  web/
-    sync.ts   clock skew and drift correction, pure
-    tuner.ts  keyboard to channel number, pure reducer
-    player.ts video elements, preload and swap
-    crt/      the CRT skin
+  web/        browser client
 ```
 
 The interesting logic is deliberately pure and lives away from the I/O:
-`clock.ts`, `sync.ts`, `tuner.ts`, `osd.ts` and `range.ts` have no filesystem, no
-DOM and no `Date.now()`. That is what makes the schedule testable at its edges,
-which is where a live grid actually breaks.
+`clock.ts`, `range.ts` and the provider parsers have no filesystem and no
+`Date.now()`.
 
 ## Tests
 
@@ -303,16 +232,6 @@ which is where a live grid actually breaks.
 npm test
 npm run typecheck
 ```
-
-382 tests. The clock is covered at every boundary that matters: the exact instant
-between two episodes, the loop wrap, an epoch in the future, a one episode series,
-and a 300 episode cycle running for several laps.
-
-## Android
-
-Not built yet. The client keeps no business state and the API is the only source
-of truth, so the path is either wrapping the web client or writing a native
-client against the same endpoints. Nothing in the API is browser specific.
 
 ## Licence
 

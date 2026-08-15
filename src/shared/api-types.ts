@@ -8,13 +8,16 @@ export interface ChannelSummary {
   number: number;
   name: string;
   episodeCount: number;
-}
-
-/** Modo de apresentacao servido pelo servidor via /api/config. */
-export type DisplayMode = 'crt' | 'widescreen';
-
-export interface ConfigResponse {
-  displayMode: DisplayMode;
+  /**
+   * Rota da capa (`/api/channels/:number/poster`), ou null quando o servidor
+   * ainda nao tem capa para este show. E rota propria, nao URL do provedor: a
+   * imagem e baixada uma vez e servida daqui, atras do mesmo guard de sessao.
+   */
+  posterUrl: string | null;
+  /** Ano de estreia segundo o provedor de metadata; null quando desconhecido. */
+  year: number | null;
+  /** Sinopse em texto puro, ja sem HTML; null quando desconhecida. */
+  overview: string | null;
 }
 
 /** Faixa de audio embutida. `index` e relativo entre audios (0-based). */
@@ -91,8 +94,9 @@ export const API = {
   now: (channelNumber: number) => `/api/channels/${channelNumber}/now`,
   /** Recebe o id JA percent-encoded (o cliente web faz isso em `streamUrl`). */
   stream: (episodeId: string) => `/api/stream/${episodeId}`,
-  config: '/api/config',
   episodes: (channelNumber: number) => `/api/channels/${channelNumber}/episodes`,
+  /** Capa do canal em JPEG. Mesmo valor que `ChannelSummary.posterUrl` carrega. */
+  poster: (channelNumber: number) => `/api/channels/${channelNumber}/poster`,
   /**
    * Legenda embutida ja convertida para WebVTT. `track` e o `index` de
    * `EpisodeRef.subtitleTracks`. Diferente de `stream`, encoda o id aqui

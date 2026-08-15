@@ -56,7 +56,7 @@ const source: SubtitleSource = {
 
 beforeAll(async () => {
   if (!HAS_FFMPEG) return;
-  base = await mkdtemp(join(tmpdir(), 'retro-tv-subtitle-'));
+  base = await mkdtemp(join(tmpdir(), 'widetv-subtitle-'));
   libraryRoot = join(base, 'acervo');
   dataDir = join(base, 'data');
   await mkdir(join(libraryRoot, 'Serie'), { recursive: true });

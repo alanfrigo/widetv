@@ -1,6 +1,6 @@
 # Deploy
 
-Como subir o retro-tv em casa, no TrueNAS SCALE, atras de um reverse proxy com
+Como subir o widetv em casa, no TrueNAS SCALE, atras de um reverse proxy com
 HTTPS.
 
 ---
@@ -88,7 +88,7 @@ O sintoma da versao quebrada e sempre o mesmo: senha correta, login recusado,
 nenhum erro no log. Se acontecer, confira o valor de dentro do container:
 
 ```bash
-docker compose exec retro-tv node -e "console.log(process.env.AUTH_PASSWORD_HASH)"
+docker compose exec widetv node -e "console.log(process.env.AUTH_PASSWORD_HASH)"
 ```
 
 Tem que sair identico ao que o `hash-password` imprimiu.
@@ -104,7 +104,7 @@ cp .env.example .env
 ```
 
 ```dotenv
-# Caminho da biblioteca NO HOST. O compose monta isso em /media/desenhos:ro.
+# Caminho da biblioteca NO HOST. O compose monta isso em /media/biblioteca:ro.
 LIBRARY_ROOT=/mnt/tank/midia/desenhos
 
 # Onde a porta fica publicada no host. 127.0.0.1 = so o proxy alcanca.
@@ -126,7 +126,7 @@ TZ=America/Sao_Paulo
 
 `LIBRARY_ROOT` e `DATA_DIR` aparecem duas vezes com sentidos diferentes, e isso
 e de proposito: no `.env` valem para o **host**, e o `docker-compose.yml`
-sobrescreve os dois dentro do container para `/media/desenhos` e `/data`.
+sobrescreve os dois dentro do container para `/media/biblioteca` e `/data`.
 
 ---
 
@@ -135,7 +135,7 @@ sobrescreve os dois dentro do container para `/media/desenhos` e `/data`.
 ```bash
 docker compose build
 docker compose up -d
-docker compose logs -f retro-tv
+docker compose logs -f widetv
 ```
 
 Conferir saude:
@@ -151,7 +151,7 @@ de canais nasce vazia e vai se enchendo. Com acervo grande a indexacao leva
 minutos; acompanhe pelo log.
 
 ```bash
-docker compose logs -f retro-tv | grep scan
+docker compose logs -f widetv | grep scan
 # scan 4200/14139  Pica-Pau
 # scan concluido: 460 canais, 14139 episodios (0 arquivos falharam)
 ```
@@ -174,20 +174,20 @@ saidas:
 **A) Construir na propria NAS (mais simples).** Por SSH:
 
 ```bash
-cd /mnt/tank/apps/retro-tv        # clone do projeto aqui
-docker compose build              # gera retro-tv:latest na NAS
+cd /mnt/tank/apps/widetv        # clone do projeto aqui
+docker compose build              # gera widetv:latest na NAS
 ```
 
 **B) Construir na sua maquina e transferir:**
 
 ```bash
 docker compose build
-docker save retro-tv:latest | ssh truenas 'docker load'
+docker save widetv:latest | ssh truenas 'docker load'
 ```
 
 Se a NAS for arm64 e voce estiver num Mac Apple Silicon, isso ja bate. Vindo de
 um PC x86, force o alvo: `docker compose build --builder default` nao resolve -
-use `docker buildx build --platform linux/arm64 -t retro-tv:latest --load .`.
+use `docker buildx build --platform linux/arm64 -t widetv:latest --load .`.
 O `better-sqlite3` e um binario nativo: imagem da arquitetura errada quebra no
 primeiro acesso ao banco.
 
@@ -196,7 +196,7 @@ primeiro acesso ao banco.
 | Dataset | Uso | Permissao |
 | --- | --- | --- |
 | `/mnt/tank/midia/desenhos` | biblioteca | leitura para uid 1000 |
-| volume `retro-tv_retro-tv-data` | indice SQLite | criado pelo Docker |
+| volume `widetv_widetv-data` | indice SQLite | criado pelo Docker |
 
 O container roda como o usuario `node`, **uid 1000**, nao-root. O dataset da
 biblioteca precisa ser legivel por esse uid (ele e montado `:ro`, entao
@@ -204,7 +204,7 @@ escrita nao importa). Se preferir bind mount para os dados no lugar do volume
 nomeado, o dataset precisa ser **do uid 1000**, senao o SQLite nao abre:
 
 ```bash
-chown -R 1000:1000 /mnt/tank/apps/retro-tv-data
+chown -R 1000:1000 /mnt/tank/apps/widetv-data
 ```
 
 ### Instalar como Custom App
@@ -223,13 +223,13 @@ YAML minimo para a UI, ja sem `build`:
 
 ```yaml
 services:
-  retro-tv:
-    image: retro-tv:latest
+  widetv:
+    image: widetv:latest
     restart: unless-stopped
     init: true
     environment:
       PORT: "8080"
-      LIBRARY_ROOT: /media/desenhos
+      LIBRARY_ROOT: /media/biblioteca
       # Nao deixe DATA_DIR em branco na UI: vazio vira /app/data, que nao tem
       # volume nem permissao de escrita.
       DATA_DIR: /data
@@ -243,10 +243,10 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - /mnt/tank/midia/desenhos:/media/desenhos:ro
-      - retro-tv-data:/data
+      - /mnt/tank/midia/desenhos:/media/biblioteca:ro
+      - widetv-data:/data
 volumes:
-  retro-tv-data:
+  widetv-data:
 ```
 
 ---
@@ -319,18 +319,18 @@ O Caddy tira certificado sozinho e ja manda `X-Forwarded-Proto`.
 **Logs e saude**
 
 ```bash
-docker compose logs -f retro-tv
-docker inspect --format '{{json .State.Health}}' retro-tv | jq
+docker compose logs -f widetv
+docker inspect --format '{{json .State.Health}}' widetv | jq
 ```
 
-**Backup.** O que importa e o volume `retro-tv-data` (indice e cache de probe).
+**Backup.** O que importa e o volume `widetv-data` (indice e cache de probe).
 Ele e reconstrutivel a partir da biblioteca, mas reconstruir custa um novo
 `ffprobe` em tudo. Alem disso, os **numeros de canal** vivem la: perder o volume
 renumera os canais.
 
 ```bash
-docker run --rm -v retro-tv_retro-tv-data:/data -v "$PWD:/backup" \
-  node:22-slim tar czf /backup/retro-tv-data.tgz -C /data .
+docker run --rm -v widetv_widetv-data:/data -v "$PWD:/backup" \
+  node:22-slim tar czf /backup/widetv-data.tgz -C /data .
 ```
 
 **Reindexar depois de mexer no acervo**
@@ -339,7 +339,7 @@ O scan automatico so dispara quando o indice esta vazio. Depois de adicionar ou
 remover desenhos, chame na mao:
 
 ```bash
-docker compose exec retro-tv node dist/server/scan.js /media/desenhos
+docker compose exec widetv node dist/server/scan.js /media/biblioteca
 ```
 
 E `node dist/server/scan.js`, nao `npm run scan`: o `npm run scan` depende do
@@ -381,7 +381,7 @@ tambem o `SESSION_SECRET`.
 | `SQLITE_CANTOPEN` | `/data` sem permissao para o uid 1000 |
 | `nao consegui criar o diretorio de dados /app/data` | `DATA_DIR` chegou em branco e virou caminho relativo. A UI do TrueNAS manda campo vazio como string vazia: ponha `/data` explicitamente |
 | `sem permissao de escrita em ...` | `DATA_DIR` aponta para fora do volume, ou o volume nao pertence ao uid 1000 |
-| Sobe, loga, mas nenhum canal aparece | indexacao ainda rodando. `docker compose logs -f retro-tv \| grep scan` |
+| Sobe, loga, mas nenhum canal aparece | indexacao ainda rodando. `docker compose logs -f widetv \| grep scan` |
 | `scan terminou sem nenhum canal` | `LIBRARY_ROOT` errado dentro do container, ou volume montado vazio. A raiz e a pasta que contem **uma pasta por desenho** |
 | Canais renumerados do nada | volume de dados perdido ou recriado |
 | Video nao busca (seek) | proxy com buffering ligado, ou arquivo sem faststart - rode `npm run survey` |

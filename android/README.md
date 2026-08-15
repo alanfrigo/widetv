@@ -1,4 +1,4 @@
-# App nativo para Google TV
+# WideTV — app nativo para Google TV
 
 Cliente Android do mesmo servidor: ExoPlayer no lugar do `<video>`, controle
 remoto no lugar do teclado. Nada muda no servidor — o app so consome a API
@@ -9,18 +9,80 @@ descrita em `docs/CONTRACTS.md`.
 O navegador da TV funciona, mas exige teclado para a senha toda vez que a sessao
 vence, nao entende D-pad e nao guarda o canal. O app resolve os tres.
 
-O nucleo veio pronto do cliente web, que ja era codigo puro e testado:
+Sem Leanback e sem Compose: Views com ViewBinding, uma Activity so, quatro telas
+trocadas por visibilidade. O acervo cabe numa grade e o player numa tecla — nao
+ha o que uma biblioteca de navegacao resolveria aqui.
 
-| Web | Android | Papel |
-| --- | --- | --- |
-| `src/web/sync.ts` | `player/Sync.kt` | desvio de relogio e correcao de deriva |
-| `src/web/tuner.ts` | `tuner/Tuner.kt` | teclas em "va para o canal N" |
-| `src/web/osd.ts` | `ui/Osd.kt` | formatacao do display verde |
-| `src/shared/api-types.ts` | `net/Models.kt` | contrato HTTP |
+## Telas
 
-Os testes tambem foram portados: `SyncTest`, `TunerTest` e `OsdTest` repetem caso
-a caso os arquivos de `tests/web/`. Se um dia os dois clientes discordarem, a
-divergencia aparece la e nao na sala.
+| Tela | O que e |
+| --- | --- |
+| Acesso | endereco do servidor e senha. Aparece so quando nao ha sessao valida |
+| Acervo | grade de 5 colunas de capas 2:3, com nome e "ano · N EP" |
+| Serie | capa grande, sinopse, ASSISTIR AO VIVO / DO INICIO e o catalogo de episodios |
+| Player | tela cheia, sem controles desenhados; OSD curto na troca de episodio |
+| Trilhas | painel lateral de audio e legenda, aberto com OK durante a reproducao |
+
+O nucleo veio pronto do cliente web, que ja era codigo puro e testado, e ganhou
+os reducers das telas novas:
+
+| Arquivo | Papel |
+| --- | --- |
+| `player/Sync.kt` | desvio de relogio e correcao de deriva (porte de `src/web/sync.ts`) |
+| `tuner/Tuner.kt` | teclas em "va para o canal N" (porte de `src/web/tuner.ts`) |
+| `ui/Osd.kt` | linha da pilula e selo de resolucao |
+| `ui/Catalog.kt` | texto do acervo e da serie; reducao da capa |
+| `ui/Nav.kt` | para onde cada tecla leva entre as quatro telas |
+| `ui/TrackPanel.kt` | cursor e marcacao do painel de audio/legenda |
+| `net/Models.kt` | contrato HTTP (espelho de `src/shared/api-types.ts`) |
+
+Todos sao funcoes puras e todos tem teste JVM. Nao ha teste instrumentado: o que
+sobra na `MainActivity` e cola de View, que um emulador verificaria pior do que
+uma pessoa olhando a tela.
+
+## Controle remoto
+
+No acervo e na tela de serie, quem anda e o foco nativo do Android (setas e OK).
+As teclas abaixo sao as do player:
+
+| Tecla | Efeito |
+| --- | --- |
+| OK / ENTER / MENU | abre o painel de trilhas |
+| ↑ / ↓ | ao vivo: canal anterior / proximo. Segurar acelera: 1, 5, depois 20 canais por passo |
+| 0-9 | ao vivo: sintonia direta. Espera 1,2s ou completa a largura do maior canal |
+| ← / → | sob demanda: -10s / +10s |
+| Play/Pause | sob demanda: pausa. Ao vivo a tecla morre — a grade nao tem pausa |
+| VOLTAR | volta para a tela da serie |
+
+No painel de trilhas: ↑/↓ escolhe (cabecalhos sao pulados), OK aplica sem
+fechar, VOLTAR fecha. O volume fica com as teclas de volume do proprio aparelho.
+
+Segurar a seta nao sintoniza canal por canal — move um alvo no OSD e so sintoniza
+quando a mao solta. Sem isso, atravessar 460 canais viraria centenas de requests.
+
+## Audio e legenda
+
+O ExoPlayer le MKV com varios audios (E-AC-3) e legendas SubRip embutidas
+nativamente; o servidor nao participa da escolha. O painel lista os grupos de
+`player.currentTracks` e a selecao acontece em duas camadas:
+
+- **agora**: `TrackSelectionOverride` no grupo escolhido, que resolve o caso de
+  duas faixas dividirem a mesma tag de idioma;
+- **daqui em diante**: `setPreferredAudioLanguage` / `setPreferredTextLanguage`,
+  gravados no `Store`. O override morre junto com o episodio (ele aponta para um
+  `TrackGroup` concreto); o idioma atravessa a maratona e os reinicios do app.
+
+Legenda desligada e `setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)`, e e o estado
+de fabrica: numa TV de sala, legenda que aparece sem ninguem ter pedido incomoda
+mais do que legenda que falta.
+
+## Capas
+
+Sem biblioteca de imagem. `ui/PosterLoader.kt` baixa pelo MESMO OkHttp da API
+(a capa esta atras do guard de sessao — um cliente novo nasceria sem cookie),
+reduz com `inSampleSize` para o tamanho do card e guarda num `LruCache` de 48MB.
+O `Job` fica no ViewHolder e e cancelado na reciclagem. Sem capa, o card mostra
+as iniciais da serie sobre um gradiente.
 
 ## Requisitos
 
@@ -39,10 +101,10 @@ o endereco padrao do servidor:
 
 ```properties
 sdk.dir=/Users/voce/Library/Android/sdk
-retrotv.defaultServer=https://tv.exemplo.tld
+widetv.defaultServer=https://tv.exemplo.tld
 ```
 
-Sem `retrotv.defaultServer` o app abre com o campo de endereco vazio e pergunta
+Sem `widetv.defaultServer` o app abre com o campo de endereco vazio e pergunta
 na primeira vez — que e o comportamento certo para quem clonar isto sem ser o
 dono do servidor. O endereco tambem pode ser trocado na propria tela de acesso,
 sem recompilar: util para apontar para o IP da LAN e pular o proxy quando a TV
@@ -62,21 +124,19 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 Aceite o pedido de autorizacao que aparece na TV.
 
-Para o build de release assinado, veja "Assinatura" abaixo.
-
 ## Assinatura
 
 `keystore.properties` na raiz de `android/` (tambem fora do repositorio):
 
 ```properties
-storeFile=retro-tv.jks
+storeFile=widetv.jks
 storePassword=...
-keyAlias=retro-tv
+keyAlias=widetv
 keyPassword=...
 ```
 
 ```bash
-keytool -genkey -v -keystore retro-tv.jks -alias retro-tv \
+keytool -genkey -v -keystore widetv.jks -alias widetv \
   -keyalg RSA -keysize 2048 -validity 10000
 JAVA_HOME=$(/usr/libexec/java_home -v 17) ./gradlew assembleRelease
 ```
@@ -86,18 +146,18 @@ Sem `keystore.properties` o release ainda compila, assinado com a chave de debug
 ## Emulador
 
 O AVD "Television" do Android Studio serve para tudo menos medir decodificacao:
-ele decodifica AV1 por software, e o acervo e 100% AV1.
+ele decodifica AV1 por software.
 
 ```bash
 $ANDROID_HOME/emulator/emulator -avd Television_4K &
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.retrotv.app/.MainActivity
+adb shell am start -n com.widetv.app/.MainActivity
 ```
 
-## AV1: o unico risco tecnico
+## Codec: o unico risco tecnico
 
-O acervo inteiro (14 mil arquivos) e AV1 em resolucao SD. Antes de culpar o app
-por tela preta, confira se o aparelho tem decoder:
+Acervo em AV1 depende de decoder no aparelho. Antes de culpar o app por tela
+preta, confira:
 
 ```bash
 adb shell "cat /vendor/etc/media_codecs*.xml | grep -i av01"
@@ -110,22 +170,8 @@ adb shell "cat /vendor/etc/media_codecs*.xml | grep -i av01"
   e ligar `EXTENSION_RENDERER_MODE_ON` no `DefaultRenderersFactory`. Caro; so se
   a medicao exigir.
 
-## Controle remoto
-
-| Tecla | Efeito |
-| --- | --- |
-| ↑ / ↓ | canal anterior / proximo. Segurar acelera: 1, depois 5, depois 20 canais por passo |
-| 0-9 | sintonia direta, como controle antigo. Espera 1,2s ou completa a largura do maior canal |
-| ← / → | volume |
-| Mudo / M | corta o som |
-| Play/Pause | ignorado de proposito: a grade nao tem pausa |
-
-Segurar a seta nao sintoniza canal por canal — move um alvo no OSD e so sintoniza
-quando a mao solta. Sem isso, atravessar 460 canais viraria centenas de requests.
-
 ## Fonte
 
-O OSD usa `monospace` do sistema. Para a fonte pixel do cliente web, coloque o
-arquivo em `app/src/main/res/font/` e troque o `android:fontFamily` em
-`res/layout/activity_main.xml`. O repositorio nao versiona binario de fonte, pela
-mesma razao do web (veja `src/web/public/fonts/README.md`).
+Sans-serif do sistema (Roboto), sem binario de fonte no repositorio — mesma
+razao do web (veja `src/web/public/fonts/README.md`). O banner da Google TV e um
+`VectorDrawable` pelo mesmo motivo.

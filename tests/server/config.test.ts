@@ -108,20 +108,25 @@ describe('loadConfig', () => {
     );
   });
 
-  test('displayMode tem default crt', () => {
-    expect(loadConfig(env({ DISPLAY_MODE: undefined })).displayMode).toBe('crt');
-    expect(loadConfig(env({ DISPLAY_MODE: '' })).displayMode).toBe('crt');
-    expect(loadConfig(env({ DISPLAY_MODE: '   ' })).displayMode).toBe('crt');
+  test('TMDB_API_KEY e opcional: sem ela o servidor sobe e usa os provedores sem chave', () => {
+    expect(loadConfig(env()).tmdbApiKey).toBeNull();
+    expect(loadConfig(env({ TMDB_API_KEY: undefined })).tmdbApiKey).toBeNull();
   });
 
-  test('displayMode aceita widescreen, com trim e case-insensitive', () => {
-    expect(loadConfig(env({ DISPLAY_MODE: 'widescreen' })).displayMode).toBe('widescreen');
-    expect(loadConfig(env({ DISPLAY_MODE: ' WIDESCREEN ' })).displayMode).toBe('widescreen');
+  test('TMDB_API_KEY em branco conta como ausente, nao como chave vazia', () => {
+    // A UI do TrueNAS manda variavel nao preenchida como string vazia; uma chave
+    // vazia so renderia 401 em toda busca de capa.
+    expect(loadConfig(env({ TMDB_API_KEY: '   ' })).tmdbApiKey).toBeNull();
   });
 
-  test.each(['widescren', '4k'])('displayMode invalido (%s) e recusado', (value) => {
-    expect(() => loadConfig(env({ DISPLAY_MODE: value }))).toThrow(ConfigError);
-    expect(() => loadConfig(env({ DISPLAY_MODE: value }))).toThrow(/DISPLAY_MODE/);
+  test('TMDB_API_KEY chega sem espaco em volta', () => {
+    expect(loadConfig(env({ TMDB_API_KEY: ' abc123 ' })).tmdbApiKey).toBe('abc123');
+  });
+
+  test('DISPLAY_MODE nao existe mais e nao derruba o boot', () => {
+    // widetv e widescreen-only: a variavel do fork antigo ainda pode estar no
+    // .env de quem migrou, e ela tem que ser simplesmente ignorada.
+    expect(() => loadConfig(env({ DISPLAY_MODE: 'crt' }))).not.toThrow();
   });
 
   test('mensagem de erro nomeia a variavel e nao vaza o segredo', () => {

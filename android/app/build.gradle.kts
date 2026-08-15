@@ -27,20 +27,20 @@ val keystoreProperties = Properties().apply {
  * clonar isto sem ser o dono do servidor.
  *
  *   # android/local.properties
- *   retrotv.defaultServer=https://tv.exemplo.tld
+ *   widetv.defaultServer=https://tv.exemplo.tld
  */
 val localProperties = Properties().apply {
   val file = rootProject.file("local.properties")
   if (file.exists()) file.inputStream().use { load(it) }
 }
-val defaultServerUrl: String = localProperties.getProperty("retrotv.defaultServer", "")
+val defaultServerUrl: String = localProperties.getProperty("widetv.defaultServer", "")
 
 android {
-  namespace = "com.retrotv.app"
+  namespace = "com.widetv.app"
   compileSdk = 35
 
   defaultConfig {
-    applicationId = "com.retrotv.app"
+    applicationId = "com.widetv.app"
     minSdk = 23
     targetSdk = 35
     versionCode = 1

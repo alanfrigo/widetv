@@ -3,72 +3,30 @@
 Esta pasta e o `publicDir` do vite (veja `vite.config.ts`), servida como
 `/fonts/` no app. **Nada de CDN**: o app tem que subir numa maquina sem
 internet de saida, entao nenhum `<link>` para Google Fonts, nenhum `@import`
-remoto. O arquivo da fonte mora aqui, versionado junto com o codigo.
+remoto. Se um dia entrar arquivo de fonte, ele mora aqui, versionado junto com
+o codigo.
 
-## O arquivo que falta
+## Hoje esta vazia de proposito
 
-O repositorio nao traz binario de fonte. Baixe **um** arquivo e coloque aqui
-com exatamente este nome:
-
-```
-src/web/public/fonts/PressStart2P-Regular.woff2
-```
-
-Fonte recomendada: **Press Start 2P**, de CodeMan38 - pixel font 8-bit,
-licenca SIL Open Font License 1.1 (uso comercial e redistribuicao liberados,
-basta manter o texto da licenca).
-
-Onde pegar:
-
-- Google Fonts: <https://fonts.google.com/specimen/Press+Start+2P> (botao
-  "Get font" -> "Download all"; o zip vem com `PressStart2P-Regular.ttf`)
-- Repositorio upstream: <https://github.com/google/fonts/tree/main/ofl/pressstart2p>
-
-Se o download vier em `.ttf`, converta para `woff2` (bem menor, ~1/3 do
-tamanho) com o utilitario oficial:
-
-```sh
-# macOS
-brew install woff2
-woff2_compress PressStart2P-Regular.ttf   # gera PressStart2P-Regular.woff2
-```
-
-Guarde tambem o `OFL.txt` do pacote nesta pasta: a licenca pede que o texto
-acompanhe a fonte quando ela e redistribuida, e o app redistribui ao servir o
-arquivo.
-
-## Como o CSS acha o arquivo
-
-O `@font-face` esta em `src/web/crt/tv.css`, com dois `src` de proposito:
+O app usa a fonte do sistema, declarada uma unica vez em `--font`, no
+`app.css`:
 
 ```css
-@font-face {
-  font-family: 'CRT Pixel';
-  src:
-    url('/fonts/PressStart2P-Regular.woff2') format('woff2'),      /* app servido */
-    url('../public/fonts/PressStart2P-Regular.woff2') format('woff2'); /* demo em file:// */
-  font-display: swap;
-}
+--font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Inter', 'Helvetica Neue',
+  Arial, sans-serif;
 ```
 
-O browser tenta na ordem e cai para o proximo quando um falha. O primeiro
-caminho vale quando o app e servido (vite ou `@fastify/static`); o segundo vale
-quando alguem abre `src/web/crt/demo.html` direto do disco, sem servidor.
+Isso resolve o mesmo problema sem baixar nada: cada sistema entrega a fonte de
+interface que ja tem instalada (San Francisco no macOS e iOS, Segoe UI no
+Windows, Roboto no Android e na maioria das TVs), e a pagina nao espera nenhum
+byte extra para desenhar o primeiro texto.
 
-## Sem o arquivo, nada quebra
+## Para trocar por uma fonte propria
 
-`--tv-font-pixel` termina em `'Courier New', ui-monospace, monospace`. Faltando
-o `.woff2`, o browser registra um 404 no console e usa a monoespacada do
-sistema: a demo abre, a TV desenha, so a tipografia perde o charme de pixel.
-E por isso que a ausencia da fonte nao trava o desenvolvimento.
-
-## Trocar por outra fonte
-
-Duas fontes pixel que tambem servem, ambas OFL:
-
-- **VT323**: imita terminal de tubo, tem minusculas melhores para texto corrido.
-- **Silkscreen**: mais estreita, boa quando o OSD tem muito texto.
-
-Para trocar, ponha o `.woff2` aqui e ajuste **so** o bloco `@font-face` e a
-variavel `--tv-font-pixel` em `src/web/crt/tv.css`. O resto do CSS referencia
-sempre a variavel, nunca o nome da familia.
+1. Ponha o `.woff2` nesta pasta (e o `OFL.txt`, se a licenca pedir que o texto
+   acompanhe a redistribuicao - o app redistribui ao servir o arquivo).
+2. Declare o `@font-face` na secao de tokens do `app.css`, apontando para
+   `/fonts/<arquivo>.woff2`.
+3. Ponha o nome da familia **na frente** de `--font`, sem tirar o resto: a
+   lista continua sendo o plano B enquanto o arquivo nao carrega, e o CSS
+   inteiro referencia sempre a variavel, nunca o nome da familia.

@@ -9,7 +9,7 @@ import { DataDirError, ensureDataDir } from '../../src/server/data-dir';
 let base: string;
 
 beforeAll(async () => {
-  base = await mkdtemp(join(tmpdir(), 'retro-tv-datadir-'));
+  base = await mkdtemp(join(tmpdir(), 'widetv-datadir-'));
 });
 
 afterAll(async () => {

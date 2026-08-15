@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pilula do OSD: escura o bastante para o texto branco ler sobre qualquer cena. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/scrim" />
+    <corners android:radius="24dp" />
+</shape>

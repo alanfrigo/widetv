@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!--
-  Chuvisco. Tile em `drawable-nodpi` de proposito: ruido escalado por densidade
-  vira borrao, e o que se quer aqui e o pixel cru.
--->
-<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
-    android:src="@drawable/crt_static_tile"
-    android:tileMode="repeat" />

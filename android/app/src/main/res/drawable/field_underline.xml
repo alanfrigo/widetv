@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Campo de texto do portao: so um fio embaixo, que acende no acento quando o
+  campo tem o foco. Sem caixa e sem preenchimento — a moldura do AppCompat
+  padrao destoaria do resto do app.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <layer-list>
+            <item android:gravity="bottom">
+                <shape android:shape="rectangle">
+                    <size android:height="2dp" />
+                    <solid android:color="@color/accent" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item>
+        <layer-list>
+            <item android:gravity="bottom">
+                <shape android:shape="rectangle">
+                    <size android:height="2dp" />
+                    <solid android:color="@color/divider" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</selector>

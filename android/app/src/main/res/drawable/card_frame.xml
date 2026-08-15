@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Moldura do card de capa, desenhada POR CIMA da imagem (`android:foreground`):
+  contorno no acento so quando o card tem o foco. A escala e a elevacao ficam
+  na animacao do ViewHolder; aqui e so a borda.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <stroke
+                android:width="@dimen/stroke_focus"
+                android:color="@color/accent" />
+            <corners android:radius="@dimen/card_radius" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <corners android:radius="@dimen/card_radius" />
+        </shape>
+    </item>
+</selector>

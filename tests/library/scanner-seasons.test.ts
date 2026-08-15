@@ -54,7 +54,7 @@ let root: string;
 let show: ScannedShow;
 
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), 'retro-tv-seasons-'));
+  root = await mkdtemp(join(tmpdir(), 'widetv-seasons-'));
   for (const folder of SEASON_FOLDERS) {
     const dir = join(root, 'Serie', folder);
     await mkdir(dir, { recursive: true });
@@ -77,7 +77,7 @@ describe('temporadas com os nomes reais do acervo', () => {
   });
 
   test('pasta que nao e temporada continua sem numero', async () => {
-    const outro = await mkdtemp(join(tmpdir(), 'retro-tv-nao-temporada-'));
+    const outro = await mkdtemp(join(tmpdir(), 'widetv-nao-temporada-'));
     const dir = join(outro, 'Serie', 'Episodios Censurados');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'arquivo.mp4'), '');

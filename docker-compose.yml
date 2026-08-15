@@ -1,12 +1,12 @@
-name: retro-tv
+name: widetv
 
 services:
-  retro-tv:
+  widetv:
     build:
       context: .
       target: runtime
-    image: retro-tv:latest
-    container_name: retro-tv
+    image: widetv:latest
+    container_name: widetv
     restart: unless-stopped
     # PID 1 que enterra processo zumbi do ffprobe.
     init: true
@@ -25,15 +25,15 @@ services:
     # caminho DENTRO do container. `environment` tem prioridade sobre env_file.
     environment:
       PORT: "8080"
-      LIBRARY_ROOT: /media/desenhos
+      LIBRARY_ROOT: /media/biblioteca
       DATA_DIR: /data
       # Primeiro boot indexa o acervo sozinho, em segundo plano. Ponha "false"
       # se preferir controlar o scan na mao com:
-      #   docker compose exec retro-tv node dist/server/scan.js /media/desenhos
+      #   docker compose exec widetv node dist/server/scan.js /media/biblioteca
       AUTO_SCAN: "true"
-      # Modo de apresentacao: crt (default) ou widescreen. Vem do .env do host;
-      # no TrueNAS, defina na UI do app.
-      DISPLAY_MODE: ${DISPLAY_MODE:-crt}
+      # Opcional: melhora as capas e traz sinopse em pt-BR. Sem ela o servidor
+      # usa TVMaze e iTunes, que nao pedem chave.
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
       TZ: ${TZ:-America/Sao_Paulo}
 
     # Publicado so no loopback: sem HTTPS na frente, o cookie de sessao anda em
@@ -44,9 +44,10 @@ services:
 
     volumes:
       # Biblioteca read-only: o app so le e nunca renomeia nada do acervo.
-      - "${LIBRARY_ROOT:?defina LIBRARY_ROOT no .env com o caminho da biblioteca no host}:/media/desenhos:ro"
-      # Indice SQLite em volume nomeado: sobrevive a recriacao do container.
-      - retro-tv-data:/data
+      - "${LIBRARY_ROOT:?defina LIBRARY_ROOT no .env com o caminho da biblioteca no host}:/media/biblioteca:ro"
+      # Indice SQLite, capas e legendas em volume nomeado: sobrevivem a
+      # recriacao do container.
+      - widetv-data:/data
 
     security_opt:
       - no-new-privileges:true
@@ -72,4 +73,4 @@ services:
         max-file: "3"
 
 volumes:
-  retro-tv-data:
+  widetv-data:

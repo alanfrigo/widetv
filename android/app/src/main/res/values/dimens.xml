@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Uma TV de 1080p entrega ~960dp de largura util. Todos os tamanhos daqui foram
+  escolhidos para caber nesse retangulo: 5 colunas de capa, cabecalho e a tela de
+  serie com poster e sinopse lado a lado.
+-->
+<resources>
+    <!-- Ritmo de espacamento. Tudo no app sai de um destes cinco. -->
+    <dimen name="space_xs">4dp</dimen>
+    <dimen name="space_sm">10dp</dimen>
+    <dimen name="space_md">18dp</dimen>
+    <dimen name="space_lg">28dp</dimen>
+    <dimen name="space_xl">48dp</dimen>
+
+    <!-- Meia folga de cada lado do card: junta com a do vizinho e vira o vao. -->
+    <dimen name="card_gap">5dp</dimen>
+    <dimen name="card_radius">8dp</dimen>
+
+    <!--
+      Alvo de decodificacao da capa. Nao precisa bater com a largura real do
+      card: o `inSampleSize` so trabalha em potencias de dois.
+    -->
+    <dimen name="poster_decode_width">200dp</dimen>
+
+    <dimen name="series_poster_width">240dp</dimen>
+
+    <dimen name="track_panel_width">380dp</dimen>
+
+    <dimen name="stroke_focus">3dp</dimen>
+
+    <dimen name="text_wordmark">56sp</dimen>
+    <dimen name="text_title">32sp</dimen>
+    <dimen name="text_section">14sp</dimen>
+    <dimen name="text_body">15sp</dimen>
+    <dimen name="text_field">20sp</dimen>
+    <dimen name="text_button">14sp</dimen>
+    <dimen name="text_card">14sp</dimen>
+    <dimen name="text_meta">12sp</dimen>
+    <dimen name="text_osd">18sp</dimen>
+    <dimen name="text_initials">40sp</dimen>
+</resources>

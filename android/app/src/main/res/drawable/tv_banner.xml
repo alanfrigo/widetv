@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Banner da Google TV (320x180). Substitui as barras SMPTE do app antigo: um
+  padrao de teste de tubo nao diz mais nada sobre o que este app faz.
+
+  Vetor, e nao PNG, para o repositorio nao versionar binario — mesma razao das
+  fontes. As letras sao tracos (`strokeColor`), o que dispensa uma fonte
+  embutida so para escrever seis caracteres.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <path
+        android:fillColor="#0A0A0F"
+        android:pathData="M0,0 L320,0 L320,180 L0,180 Z" />
+
+    <!-- WIDETV -->
+    <group>
+        <path
+            android:pathData="M47,68 L57.5,112 L68,84 L78.5,112 L89,68"
+            android:strokeColor="#F5F5F7"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeWidth="7" />
+        <path
+            android:pathData="M103,68 L103,112"
+            android:strokeColor="#F5F5F7"
+            android:strokeLineCap="round"
+            android:strokeWidth="7" />
+        <path
+            android:pathData="M117,112 L117,68 L130,68 C139,68 145,78 145,90 C145,102 139,112 130,112 Z"
+            android:strokeColor="#F5F5F7"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeWidth="7" />
+        <path
+            android:pathData="M183,68 L159,68 L159,112 L183,112 M159,90 L178,90"
+            android:strokeColor="#F5F5F7"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeWidth="7" />
+        <path
+            android:pathData="M197,68 L225,68 M211,68 L211,112"
+            android:strokeColor="#F5F5F7"
+            android:strokeLineCap="round"
+            android:strokeWidth="7" />
+        <path
+            android:pathData="M239,68 L256,112 L273,68"
+            android:strokeColor="#F5F5F7"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:strokeWidth="7" />
+    </group>
+
+    <!-- Fio de acento, o mesmo indigo do foco dentro do app. -->
+    <path
+        android:fillColor="#6366F1"
+        android:pathData="M47,126 L109,126 L109,132 L47,132 Z" />
+</vector>

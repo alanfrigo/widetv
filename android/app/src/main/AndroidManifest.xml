@@ -28,7 +28,7 @@
         android:label="@string/app_name"
         android:supportsRtl="false"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.RetroTv">
+        android:theme="@style/Theme.WideTv">
 
         <activity
             android:name=".MainActivity"
@@ -36,7 +36,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
-            android:theme="@style/Theme.RetroTv">
+            android:theme="@style/Theme.WideTv">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <!-- Sem LEANBACK_LAUNCHER o app nao aparece na home da Google TV. -->

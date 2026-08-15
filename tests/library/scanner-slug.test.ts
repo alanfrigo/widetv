@@ -20,7 +20,7 @@ async function serie(name: string, episodio = 'ep 01.mp4'): Promise<void> {
 }
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'retro-tv-slug-'));
+  root = await mkdtemp(join(tmpdir(), 'widetv-slug-'));
 });
 
 afterEach(async () => {

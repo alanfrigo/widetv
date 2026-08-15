@@ -7,10 +7,10 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuthGuard, registerAuthRoutes } from './auth/routes';
 import { registerChannelRoutes } from './channels/routes';
 import { loadConfig } from './config';
-import { registerConfigRoutes } from './config-routes';
 import { ensureDataDir } from './data-dir';
 import { openStore, type Store } from './library/index-store';
 import { runScan } from './library/scan-job';
+import { createEnricher, type Enricher } from './metadata/service';
 import { registerStreamRoutes } from './stream/direct';
 import { registerSubtitleRoutes } from './stream/subtitle';
 
@@ -38,7 +38,12 @@ function scanCommand(libraryRoot: string): string {
  * antes do primeiro canal aparecer transformava um deploy novo em beco sem
  * saida.
  */
-function bootstrapScan(app: FastifyInstance, store: Store, libraryRoot: string): void {
+function bootstrapScan(
+  app: FastifyInstance,
+  store: Store,
+  libraryRoot: string,
+  enricher: Enricher,
+): void {
   app.log.info(`indice vazio, indexando ${libraryRoot} em segundo plano`);
 
   let ultimoLog = 0;
@@ -66,6 +71,9 @@ function bootstrapScan(app: FastifyInstance, store: Store, libraryRoot: string):
         `scan concluido: ${report.shows} canais, ${report.episodes} episodios ` +
           `(${report.failed.length} arquivos falharam)`,
       );
+      // Capas depois dos canais, e sem esperar: os canais ja funcionam sem elas,
+      // e uma rodada de rede em 460 series nao pode atrasar nada.
+      enricher.trigger();
     })
     .catch((error: unknown) => {
       app.log.error(
@@ -85,11 +93,20 @@ async function main(): Promise<void> {
   const store = openStore(dbPath);
   const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
 
+  // Busca de capa/sinopse. Uma instancia so no processo inteiro: e ela que
+  // segura a trava de "ja rodando" entre o fim do scan e a rota de canais.
+  const enricher = createEnricher(store, config.dataDir, {
+    tmdbApiKey: config.tmdbApiKey,
+    log: (message) => {
+      app.log.info(message);
+    },
+  });
+
   // Indice existente mas sem nenhuma serie conta como vazio: e o estado de um
   // scan que nunca rodou e o de um scan interrompido no comeco.
   if (store.listShows().length === 0) {
     if (config.autoScan) {
-      bootstrapScan(app, store, config.libraryRoot);
+      bootstrapScan(app, store, config.libraryRoot, enricher);
     } else {
       app.log.warn(
         `indice vazio em ${dbPath} e AUTO_SCAN=false. Rode: ${scanCommand(config.libraryRoot)}`,
@@ -108,8 +125,15 @@ async function main(): Promise<void> {
 
   registerAuthGuard(app, { session, now });
   registerAuthRoutes(app, { passwordHash: config.authPasswordHash, session, now });
-  registerChannelRoutes(app, { source: store, epochMs: config.channelEpochMs, now });
-  registerConfigRoutes(app, { displayMode: config.displayMode });
+  registerChannelRoutes(app, {
+    source: store,
+    epochMs: config.channelEpochMs,
+    now,
+    dataDir: config.dataDir,
+    onMetadataMissing: () => {
+      enricher.trigger();
+    },
+  });
   // `EpisodeRow.id` JA e o caminho relativo a raiz: e assim que o mesmo indice
   // funciona no host e dentro do container.
   registerStreamRoutes(

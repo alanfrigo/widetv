@@ -1,7 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Fosforo verde do OSD, o mesmo hex do cliente web. -->
-    <color name="phosphor">#33ff66</color>
-    <color name="phosphor_dim">#1f9940</color>
-    <color name="tv_black">#000000</color>
+    <!--
+      Paleta unica do app. Escura o suficiente para nao competir com o video, e
+      com um acento so — o indigo — que marca foco e acao.
+    -->
+    <color name="bg">#0A0A0F</color>
+    <color name="surface">#14141C</color>
+    <color name="surface_high">#1E1E2A</color>
+
+    <color name="accent">#6366F1</color>
+    <color name="accent_dim">#3F3F7A</color>
+
+    <color name="text">#F5F5F7</color>
+    <color name="text_dim">#9A9AA8</color>
+    <color name="text_faint">#5E5E70</color>
+
+    <color name="danger">#F87171</color>
+
+    <!-- Fundo do OSD e dos paineis por cima do video: o desenho continua legivel. -->
+    <color name="scrim">#CC0A0A0F</color>
+    <color name="scrim_strong">#F20A0A0F</color>
+
+    <color name="divider">#22222E</color>
+
+    <!-- Pontas do gradiente do placeholder de capa. -->
+    <color name="placeholder_top">#232336</color>
+    <color name="placeholder_bottom">#12121C</color>
 </resources>

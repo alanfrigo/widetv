@@ -38,11 +38,38 @@ export interface EpisodeRow {
   size: number;
 }
 
+/**
+ * Metadata externa da serie (capa, ano, sinopse), buscada uma vez por show.
+ *
+ * A linha existir ja significa "ja tentei": `notFound` distingue "o provedor
+ * nao conhece esta serie" de "achei". Falha de REDE nao grava linha nenhuma -
+ * senao um NAS sem internet no primeiro boot marcaria o acervo inteiro como
+ * inexistente e so tentaria de novo depois do TTL.
+ */
+export interface ShowMetadataRow {
+  showId: number;
+  /** Nome do arquivo em `<DATA_DIR>/posters`, ex. "12.jpg". null quando sem capa. */
+  posterFile: string | null;
+  year: number | null;
+  overview: string | null;
+  /** Provedor que respondeu, ex. "tvmaze". null quando nao houve resposta util. */
+  source: string | null;
+  /** Epoch ms da tentativa; e o que o TTL de re-tentativa mede. */
+  fetchedAt: number;
+  notFound: boolean;
+}
+
 export interface Store {
   listShows(): ShowRow[];
   getShowByChannel(channelNumber: number): ShowRow | null;
   listEpisodes(showId: number): EpisodeRow[];
   getEpisode(id: string): EpisodeRow | null;
+
+  /** Metadata externa da serie; null quando nunca foi buscada. */
+  getShowMetadata(showId: number): ShowMetadataRow | null;
+
+  /** Grava (ou regrava) o resultado da busca de metadata. */
+  upsertShowMetadata(row: ShowMetadataRow): void;
 
   /** Cria a serie se nova e atribui o proximo numero de canal livre. Idempotente por slug. */
   upsertShow(input: { slug: string; name: string; absolutePath: string }): ShowRow;
@@ -93,7 +120,18 @@ interface EpisodeRecord {
   size: number;
 }
 
-const SCHEMA_VERSION = 2;
+/** Formato das linhas de `show_metadata` como o SQLite devolve. */
+interface ShowMetadataRecord {
+  show_id: number;
+  poster_file: string | null;
+  year: number | null;
+  overview: string | null;
+  source: string | null;
+  fetched_at: number;
+  not_found: number;
+}
+
+const SCHEMA_VERSION = 3;
 
 const MIGRATIONS: readonly string[] = [
   // versao 1
@@ -141,6 +179,26 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE episodes ADD COLUMN audio_tracks TEXT;
   ALTER TABLE episodes ADD COLUMN subtitle_tracks TEXT;
+  `,
+  // versao 3: metadata externa da serie (capa, ano, sinopse).
+  //
+  // Tabela separada, e nao colunas em `shows`, porque o ciclo de vida e outro:
+  // `shows` e reescrita pelo scan, isto e reescrito pela rede. ON DELETE
+  // CASCADE para a capa nao sobreviver a serie que sumiu do disco.
+  //
+  // `poster_file` guarda so o NOME do arquivo, nao o caminho: DATA_DIR muda
+  // entre o host e o container, e um caminho absoluto no banco viraria capa
+  // quebrada no primeiro deploy.
+  `
+  CREATE TABLE IF NOT EXISTS show_metadata (
+    show_id INTEGER PRIMARY KEY REFERENCES shows(id) ON DELETE CASCADE,
+    poster_file TEXT,
+    year INTEGER,
+    overview TEXT,
+    source TEXT,
+    fetched_at INTEGER NOT NULL,
+    not_found INTEGER NOT NULL DEFAULT 0
+  );
   `,
 ];
 
@@ -389,6 +447,19 @@ export function openStore(dbPath: string): Store {
     return result.changes;
   });
 
+  const selectShowMetadata = db.prepare('SELECT * FROM show_metadata WHERE show_id = ?');
+  const insertShowMetadata = db.prepare(
+    `INSERT INTO show_metadata (show_id, poster_file, year, overview, source, fetched_at, not_found)
+     VALUES (@showId, @posterFile, @year, @overview, @source, @fetchedAt, @notFound)
+     ON CONFLICT(show_id) DO UPDATE SET
+       poster_file = excluded.poster_file,
+       year = excluded.year,
+       overview = excluded.overview,
+       source = excluded.source,
+       fetched_at = excluded.fetched_at,
+       not_found = excluded.not_found`,
+  );
+
   const deleteShowsNotKept = db.prepare('DELETE FROM shows WHERE slug NOT IN (SELECT id FROM keep_ids)');
 
   const pruneShowsTx = db.transaction((keepSlugs: readonly string[]): number => {
@@ -418,6 +489,32 @@ export function openStore(dbPath: string): Store {
     getEpisode(id): EpisodeRow | null {
       const record = selectEpisodeById.get(id) as EpisodeRecord | undefined;
       return record === undefined ? null : toEpisodeRow(record);
+    },
+
+    getShowMetadata(showId): ShowMetadataRow | null {
+      const record = selectShowMetadata.get(showId) as ShowMetadataRecord | undefined;
+      if (record === undefined) return null;
+      return {
+        showId: record.show_id,
+        posterFile: record.poster_file,
+        year: record.year,
+        overview: record.overview,
+        source: record.source,
+        fetchedAt: record.fetched_at,
+        notFound: record.not_found !== 0,
+      };
+    },
+
+    upsertShowMetadata(row): void {
+      insertShowMetadata.run({
+        showId: row.showId,
+        posterFile: row.posterFile,
+        year: row.year,
+        overview: row.overview,
+        source: row.source,
+        fetchedAt: row.fetchedAt,
+        notFound: row.notFound ? 1 : 0,
+      });
     },
 
     upsertShow(input): ShowRow {

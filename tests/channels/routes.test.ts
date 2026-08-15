@@ -1,7 +1,15 @@
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import Fastify, { type FastifyInstance } from 'fastify';
 import { beforeAll, afterAll, describe, expect, test } from 'vitest';
 
-import type { EpisodeRow, ShowRow } from '../../src/server/library/index-store';
+import type {
+  EpisodeRow,
+  ShowMetadataRow,
+  ShowRow,
+} from '../../src/server/library/index-store';
 import { registerChannelRoutes } from '../../src/server/channels/routes';
 import type { ChannelSource } from '../../src/server/channels/service';
 import type { ChannelSummary, EpisodeRef, NowPlaying } from '../../src/shared/api-types';
@@ -36,31 +44,161 @@ const EPISODES: EpisodeRow[] = [1, 2].map((n) => ({
   size: 1,
 }));
 
+/** Metadata por showId; os testes de capa mexem neste mapa. */
+const METADATA = new Map<number, ShowMetadataRow>();
+
 const SOURCE: ChannelSource = {
   listShows: () => SHOWS,
   getShowByChannel: (n) => SHOWS.find((s) => s.channelNumber === n) ?? null,
   listEpisodes: (showId) => (showId === 1 ? EPISODES : []),
+  getShowMetadata: (showId) => METADATA.get(showId) ?? null,
 };
 
 let app: FastifyInstance;
 let agora = EPOCH;
+let dataDir: string;
+let disparos = 0;
 
 beforeAll(async () => {
+  dataDir = await mkdtemp(join(tmpdir(), 'widetv-poster-'));
+  await mkdir(join(dataDir, 'posters'), { recursive: true });
+  // JPEG de mentira: a rota entrega bytes, nao decodifica imagem.
+  await writeFile(join(dataDir, 'posters', '1.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+
   app = Fastify();
-  registerChannelRoutes(app, { source: SOURCE, epochMs: EPOCH, now: () => agora });
+  registerChannelRoutes(app, {
+    source: SOURCE,
+    epochMs: EPOCH,
+    now: () => agora,
+    dataDir,
+    onMetadataMissing: () => {
+      disparos += 1;
+    },
+  });
   await app.ready();
 });
 
 afterAll(async () => {
   await app.close();
+  await rm(dataDir, { recursive: true, force: true });
 });
 
 describe('GET /api/channels', () => {
   test('lista os canais com episodio', async () => {
+    METADATA.clear();
     const r = await app.inject({ method: 'GET', url: '/api/channels' });
     expect(r.statusCode).toBe(200);
     const body = r.json<ChannelSummary[]>();
-    expect(body).toEqual([{ number: 7, name: 'ThunderCats', episodeCount: 2 }]);
+    expect(body).toEqual([
+      {
+        number: 7,
+        name: 'ThunderCats',
+        episodeCount: 2,
+        posterUrl: null,
+        year: null,
+        overview: null,
+      },
+    ]);
+  });
+
+  test('serie sem metadata dispara o enriquecimento, sem a resposta esperar por ele', async () => {
+    METADATA.clear();
+    disparos = 0;
+    const r = await app.inject({ method: 'GET', url: '/api/channels' });
+    expect(r.statusCode).toBe(200);
+    expect(disparos).toBe(1);
+  });
+
+  test('com todo mundo ja buscado, nao dispara nada', async () => {
+    METADATA.clear();
+    for (const show of SHOWS) {
+      METADATA.set(show.id, {
+        showId: show.id,
+        posterFile: `${show.id}.jpg`,
+        year: 1985,
+        overview: 'Sinopse.',
+        source: 'tvmaze',
+        fetchedAt: EPOCH,
+        notFound: false,
+      });
+    }
+    disparos = 0;
+    const r = await app.inject({ method: 'GET', url: '/api/channels' });
+    expect(disparos).toBe(0);
+    expect(r.json<ChannelSummary[]>()[0]!.posterUrl).toBe('/api/channels/7/poster');
+    METADATA.clear();
+  });
+});
+
+describe('GET /api/channels/:number/poster', () => {
+  test('serve a capa em jpeg quando o arquivo existe', async () => {
+    METADATA.set(1, {
+      showId: 1,
+      posterFile: '1.jpg',
+      year: 1985,
+      overview: null,
+      source: 'tvmaze',
+      fetchedAt: EPOCH,
+      notFound: false,
+    });
+
+    const r = await app.inject({ url: '/api/channels/7/poster' });
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['content-type']).toBe('image/jpeg');
+    expect(r.headers['cache-control']).toBe('private, max-age=86400');
+    expect(r.rawPayload.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xd8]));
+    METADATA.clear();
+  });
+
+  test('canal sem metadata devolve 404', async () => {
+    METADATA.clear();
+    const r = await app.inject({ url: '/api/channels/7/poster' });
+    expect(r.statusCode).toBe(404);
+  });
+
+  test('metadata sem arquivo de capa devolve 404', async () => {
+    METADATA.set(1, {
+      showId: 1,
+      posterFile: null,
+      year: null,
+      overview: null,
+      source: null,
+      fetchedAt: EPOCH,
+      notFound: true,
+    });
+    const r = await app.inject({ url: '/api/channels/7/poster' });
+    expect(r.statusCode).toBe(404);
+    METADATA.clear();
+  });
+
+  test('linha no indice com arquivo sumido do volume devolve 404, nao 500', async () => {
+    METADATA.set(2, {
+      showId: 2,
+      posterFile: '2.jpg',
+      year: null,
+      overview: null,
+      source: 'tvmaze',
+      fetchedAt: EPOCH,
+      notFound: false,
+    });
+    const r = await app.inject({ url: '/api/channels/9/poster' });
+    expect(r.statusCode).toBe(404);
+    METADATA.clear();
+  });
+
+  test('canal inexistente devolve 404', async () => {
+    const r = await app.inject({ url: '/api/channels/42/poster' });
+    expect(r.statusCode).toBe(404);
+  });
+
+  test('numero de canal nao numerico devolve 400', async () => {
+    const r = await app.inject({ url: '/api/channels/abc/poster' });
+    expect(r.statusCode).toBe(400);
+  });
+
+  test('numero negativo devolve 400', async () => {
+    const r = await app.inject({ url: '/api/channels/-1/poster' });
+    expect(r.statusCode).toBe(400);
   });
 });
 

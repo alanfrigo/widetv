@@ -20,5 +20,5 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "retro-tv"
+rootProject.name = "widetv"
 include(":app")

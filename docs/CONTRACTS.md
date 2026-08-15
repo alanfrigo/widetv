@@ -1,8 +1,12 @@
-# Contratos internos
+# widetv - contratos internos
 
 Cada modulo abaixo e implementado de forma independente. As assinaturas sao
 fixas: outro modulo ja depende delas. Se uma assinatura parecer errada durante a
 implementacao, **nao mude sozinho** - reporte, porque a mudanca quebra o vizinho.
+
+O widetv e widescreen-only: nao existe modo de apresentacao, nem `/api/config`,
+nem skin de CRT. O que existe e um catalogo (com capa, ano e sinopse) somado a
+uma grade ao vivo por serie.
 
 Regras validas para todos:
 
@@ -256,6 +260,10 @@ export interface Store {
   /** Probe cacheado, valido apenas se mtime e size baterem. */
   getCachedProbe(id: string, mtimeMs: number, size: number): ProbeResult | null;
 
+  /** Metadata externa da serie; null quando nunca foi buscada. Veja 9. */
+  getShowMetadata(showId: number): ShowMetadataRow | null;
+  upsertShowMetadata(row: ShowMetadataRow): void;
+
   close(): void;
 }
 
@@ -275,7 +283,8 @@ Comportamento obrigatorio:
 - Schema criado no `openStore` se nao existir, com tabela `schema_version` e
   migracao por versao. `dbPath` `:memory:` funciona (os testes usam isso).
   Migracao ja aplicada e imutavel: schema novo entra como uma entrada nova em
-  `MIGRATIONS` (a versao 2 e o `ALTER TABLE` das trilhas), nunca editando a 1.
+  `MIGRATIONS` (versao 2 = `ALTER TABLE` das trilhas; versao 3 = tabela
+  `show_metadata`), nunca editando a 1.
 - `faststart` guardado como INTEGER 0/1 e devolvido como boolean.
 - Diretorio de `dbPath` e criado se faltar.
 
@@ -318,41 +327,19 @@ Reusa `scanLibrary` e `probeFile`. Nao toca em SQLite.
 
 ---
 
-## 6. `src/web/crt/` - skin CRT
+## 6. Paridade entre os clientes
 
-Puro CSS/SVG sobre um `<video>` nativo. **Sem WebGL, sem canvas** - o video
-continua sendo um elemento `<video>` de verdade para não quebrar o port Android.
+Nao ha contrato de camadas de CSS aqui - o visual e livre. O que e contrato:
 
-Entrega:
-
-- `src/web/crt/crt.css` - camadas de efeito
-- `src/web/crt/tv.css` - moldura, layout, tipografia
-- `src/web/crt/demo.html` - pagina isolada que carrega um `<video>` de teste com
-  a skin aplicada, para ajustar o efeito sem depender do servidor
-
-Requisitos:
-
-- Viewport de video em `aspect-ratio: 4 / 3`, centralizado, com bezel de TV
-  desenhado em CSS (gradientes e sombras, sem imagem externa).
-- Camadas sobre o video, em ordem: scanlines
-  (`repeating-linear-gradient`), mascara de fosforo sutil, vinheta radial,
-  grao animado via `<filter><feTurbulence>` SVG inline, flicker de brilho em
-  `@keyframes` com amplitude baixa (nao pode dar dor de cabeca).
-- Curvatura: falsa, via `border-radius` grande + vinheta + um leve
-  `box-shadow inset`. Nao distorca o video.
-- Tudo controlado por custom properties em `:root` para dar pra afinar:
-  `--crt-scanline-opacity`, `--crt-grain-opacity`, `--crt-flicker-amount`,
-  `--crt-vignette`, `--crt-phosphor` (default `#33ff66`).
-- Classe `.crt-off` no container desliga todos os efeitos de uma vez.
-- Fonte pixel **auto-hospedada** em `src/web/public/fonts/`. Nada de CDN: o app
-  precisa funcionar sem internet de saida. Se nao puder baixar a fonte, declare
-  `@font-face` apontando para o caminho e deixe um `README.md` na pasta dizendo
-  qual arquivo colocar ali; nao use `<link>` para Google Fonts.
-- `@media (prefers-reduced-motion: reduce)` desliga flicker e grao animado.
-- O efeito nao pode capturar eventos de ponteiro: `pointer-events: none` em
-  todas as camadas.
-
-Sem testes automatizados aqui. A verificacao e o `demo.html`.
+- O video e um elemento `<video>` de verdade. **Sem WebGL, sem canvas** como
+  caminho de imagem: o cliente Android usa um player nativo, e qualquer efeito
+  que dependa de pintar quadro a quadro no navegador nao teria equivalente la.
+- Nada de CDN. O app precisa funcionar sem internet de saida: fonte, icone e
+  qualquer asset ficam auto-hospedados. A unica coisa que sai para a internet e
+  a busca de metadata (secao 8), no servidor, nunca no cliente.
+- O cliente nao guarda estado de negocio. A API e a unica fonte de verdade; o
+  unico dado local aceitavel e preferencia de quem assiste (ultimo canal,
+  volume).
 
 ---
 
@@ -408,44 +395,11 @@ expirado falha, cookie malformado falha.
 
 ---
 
-## 8. Modo de apresentacao e catalogo sob demanda
+## 8. Catalogo sob demanda
 
-A mesma imagem passa a suportar dois modos de apresentacao, escolhidos por env
-no servidor e expostos aos clientes (web e Android) via `/api/config`. O
-catalogo VOD (`/api/channels/:number/episodes`) existe nos dois modos - quem
-decide se usa e o cliente, nao o servidor.
-
-```ts
-// src/server/config.ts
-export type DisplayMode = 'crt' | 'widescreen'; // de @shared/api-types
-
-export interface AppConfig {
-  // ...
-  /** Modo de apresentacao servido aos clientes em /api/config. */
-  displayMode: DisplayMode;
-}
-```
-
-Comportamento obrigatorio:
-
-- Env `DISPLAY_MODE`: `trim().toLowerCase()`. Vazio ou ausente vira `'crt'`.
-  Qualquer outro valor que nao seja `'crt'` nem `'widescreen'` lanca
-  `ConfigError` com `DISPLAY_MODE` na mensagem - derruba o boot de proposito,
-  em vez de cair num default calado.
-
-```ts
-// src/server/config-routes.ts
-export interface ConfigRoutesDeps {
-  displayMode: DisplayMode;
-}
-
-export function registerConfigRoutes(app: FastifyInstance, deps: ConfigRoutesDeps): void;
-```
-
-- `GET /api/config` devolve `{ displayMode }` puro, sem envelope.
-  `cache-control: no-store` (um redeploy pode trocar o modo). Fica atras do
-  guard de sessao existente - **nao adicione a `PUBLIC_PATHS`** em
-  `src/server/auth/routes.ts`, a tela de senha e igual nos dois modos.
+O catalogo VOD (`/api/channels/:number/episodes`) e a grade ao vivo
+(`/api/channels/:number/now`) convivem: o servidor serve os dois, e o cliente
+decide o que mostrar.
 
 ```ts
 // src/server/channels/service.ts
@@ -482,12 +436,12 @@ export interface EpisodeRef {
 Os dados ja existem no SQLite (`EpisodeRow.width`/`height`, populados pelo
 probe) - sem migracao.
 
-Regra de espelhamento: todo campo novo do contrato HTTP (`DisplayMode`,
-`ConfigResponse`, `EpisodeRef.width`/`height`, as novas entradas de `API`) tem
-que aparecer tambem em `android/app/src/main/java/com/retrotv/app/net/Models.kt`.
-`ConfigResponse.displayMode` no Android e `String`, nao enum: um enum kotlinx
-quebraria o parse no dia em que o servidor ganhar um modo novo; o app trata
-valor desconhecido como `"crt"`.
+Regra de espelhamento: todo campo novo do contrato HTTP (`EpisodeRef.width`/
+`height`, `ChannelSummary.posterUrl`/`year`/`overview`, as novas entradas de
+`API`) tem que aparecer tambem em
+`android/app/src/main/java/com/retrotv/app/net/Models.kt`. No Kotlin, todo
+campo novo entra com **default null** (ou `emptyList()`): um servidor mais
+antigo nao manda o campo, e o app tem que continuar tocando do mesmo jeito.
 
 ### 8.1 Trilhas de audio e legenda
 
@@ -576,3 +530,128 @@ GET /api/stream/:id/subtitle/:track   ->  text/vtt; charset=utf-8
   `cache-control: private, max-age=3600`.
 - A rota fica **atras do guard de sessao**, como o stream: nao entra em
   `PUBLIC_PATHS`.
+
+---
+
+## 9. `src/server/metadata/` - capa, ano e sinopse
+
+Cada serie ganha capa e sinopse buscadas na internet uma unica vez. A regra que
+manda em tudo aqui: **nenhum request de usuario espera pela rede.** A rota de
+canais no maximo dispara uma rodada e responde com o que ja existe no indice.
+
+### 9.1 Provedores (`providers.ts`)
+
+Sem dependencia nova: o `fetch` global do Node 22 basta.
+
+```ts
+export interface ShowMetadata {
+  posterUrl: string | null;   // URL no provedor; quem baixa e o servico
+  year: number | null;
+  overview: string | null;    // SEMPRE texto puro, sem HTML
+  source: 'tmdb' | 'tvmaze' | 'itunes';
+}
+
+export type LookupResult =
+  | { status: 'found'; metadata: ShowMetadata }
+  | { status: 'not-found' }
+  | { status: 'error'; reason: string };
+
+export function lookupShowMetadata(showName: string, options?: ChainOptions): Promise<LookupResult>;
+```
+
+Ordem da cadeia, parando no primeiro que devolver **capa**:
+
+1. **TMDB** - so quando `TMDB_API_KEY` existe, e ai vem primeiro (melhor arte,
+   sinopse em pt-BR): `/3/search/tv?query=&api_key=&language=pt-BR`, poster em
+   `https://image.tmdb.org/t/p/w500<poster_path>`.
+2. **TVMaze**, sem chave: `singlesearch/shows?q=`. O `summary` vem com HTML e e
+   limpo antes de virar `overview`.
+3. **iTunes Search**, sem chave: `media=tvShow` e, se vazio, `media=movie`. O
+   `artworkUrl100` e um template - trocar `100x100` por `600x600` da a arte
+   grande.
+
+- Termo de busca = nome da pasta com o sufixo de ano entre parenteses removido
+  (`Batman (1989)` -> `Batman`).
+- Provedor que responde **sem** capa nao encerra a cadeia, mas o que ele achou
+  fica guardado: se ninguem depois tiver capa, o resultado e `found` com
+  `posterUrl: null`.
+- HTTP 404 e "nao conheco" (`null`); qualquer outro status fora de 2xx, JSON
+  invalido ou falha de transporte **lanca**. Um provedor que lanca nao derruba
+  a cadeia: os proximos ainda sao tentados.
+- Veredito final: `found` > `error` > `not-found`. Se qualquer provedor falhou
+  por rede e ninguem achou nada, o resultado e `error` - marcar `not_found` por
+  causa de um DNS fora do ar congelaria o acervo inteiro sem capa ate o TTL.
+
+### 9.2 Persistencia (migracao 3)
+
+```sql
+CREATE TABLE show_metadata (
+  show_id INTEGER PRIMARY KEY REFERENCES shows(id) ON DELETE CASCADE,
+  poster_file TEXT,          -- so o NOME do arquivo, ex. "12.jpg"
+  year INTEGER,
+  overview TEXT,
+  source TEXT,
+  fetched_at INTEGER NOT NULL,
+  not_found INTEGER NOT NULL DEFAULT 0
+);
+```
+
+- `poster_file` guarda **nome**, nao caminho: `DATA_DIR` muda entre o host e o
+  container, e caminho absoluto no banco viraria capa quebrada no deploy.
+- A capa vive em `<DATA_DIR>/posters/<showId>.jpg`, escrita em temporario e
+  renomeada (rename e atomico: ninguem le um JPEG pela metade).
+- `not_found = 1` com `fetched_at`: so e reconsultado depois de **7 dias**.
+- Serie ja encontrada nunca e reconsultada.
+- **Erro de rede nao grava linha nenhuma** - inclusive quando a busca deu certo
+  mas o download da capa falhou. Linha sem capa selaria o show como resolvido e
+  a imagem nunca mais seria tentada.
+
+### 9.3 Servico (`service.ts`)
+
+```ts
+export function enrichMissing(store: MetadataStore, dataDir: string, options?: EnrichOptions): Promise<EnrichReport>;
+export function createEnricher(store: MetadataStore, dataDir: string, options?: EnrichOptions): Enricher;
+```
+
+- Concorrencia **2**. O gargalo nao e CPU, e educacao com uma API publica de
+  graca: paralelismo alto so rende 429.
+- `createEnricher` tem trava de "ja rodando": chamadas concorrentes recebem a
+  MESMA promessa, e um show em voo nao entra em outra rodada.
+- Uma serie que falha nao aborta as outras; tudo vira contador no `EnrichReport`.
+- Disparado em dois lugares, sempre fire-and-forget: ao final do scan de
+  bootstrap (`index.ts`) e quando `GET /api/channels` ve serie sem linha de
+  metadata.
+
+### 9.4 Contrato HTTP
+
+```ts
+export interface ChannelSummary {
+  number: number;
+  name: string;
+  episodeCount: number;
+  /** Rota da capa quando ha arquivo, senao null. Nunca URL de provedor. */
+  posterUrl: string | null;
+  year: number | null;
+  overview: string | null;
+}
+```
+
+Os tres campos sao obrigatorios e nulaveis (o projeto liga
+`exactOptionalPropertyTypes`). `posterUrl` sai da coluna `poster_file`, nao de
+um `stat` no disco: `listChannels` roda a cada request e 460 chamadas sincronas
+ao filesystem custariam mais do que valem.
+
+```
+GET /api/channels/:number/poster   ->  image/jpeg
+```
+
+| Situacao | Status |
+| --- | --- |
+| `:number` nao casa `/^\d+$/` | 400 |
+| Canal inexistente | 404 |
+| Canal sem linha de metadata, ou linha sem `poster_file` | 404 |
+| Arquivo apagado do volume | 404 |
+| Capa presente | 200 |
+
+`cache-control: private, max-age=86400`. Fica **atras do guard de sessao**, como
+todo o resto - nao entra em `PUBLIC_PATHS`.

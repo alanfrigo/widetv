@@ -4,126 +4,139 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <title>TV</title>
+    <meta name="theme-color" content="#0a0a0f" />
+    <title>WideTV</title>
   </head>
   <body>
     <!--
-      Sem gabinete: so o tubo, na altura maxima da janela.
-      .crt e o container e e nele que .crt-off e .crt-mono entram.
+      Quatro telas, uma visivel por vez. Quem decide qual e o reducer de
+      `screen.ts`; aqui so existe a casca. Todo conteudo que vem da API (nome de
+      serie, sinopse, titulo de episodio) e escrito por `textContent` no
+      `main.ts`, nunca por markup montado com string.
     -->
-    <div class="crt" id="crt">
-      <div class="crt-screen" id="screen">
+    <header class="topbar" id="topbar" hidden>
+      <p class="wordmark">wide<span class="wordmark__tv">tv</span></p>
+      <button class="button button--ghost topbar__logout" id="logout" type="button">Sair</button>
+    </header>
+
+    <main class="app" id="app">
+      <!-- 1. Senha --------------------------------------------------------- -->
+      <section class="screen screen--login" id="screen-login" hidden>
+        <form class="login" id="login-form">
+          <p class="wordmark wordmark--hero">wide<span class="wordmark__tv">tv</span></p>
+          <label class="login__label" for="login-password">Senha</label>
+          <input
+            class="login__input"
+            id="login-password"
+            type="password"
+            autocomplete="current-password"
+            spellcheck="false"
+          />
+          <button class="button button--primary login__submit" id="login-submit" type="submit">
+            Entrar
+          </button>
+          <p class="login__error" id="login-error" role="alert"></p>
+        </form>
+      </section>
+
+      <!-- 2. Catalogo ------------------------------------------------------ -->
+      <section class="screen screen--home" id="screen-home" hidden>
+        <div class="grid" id="grid"></div>
+
+        <div class="empty" id="home-empty" hidden>
+          <h2 class="empty__title" id="home-empty-title">Nenhuma série no acervo</h2>
+          <p class="empty__text" id="home-empty-text">
+            O servidor não encontrou nada para indexar. Confira se
+            <code>LIBRARY_ROOT</code> aponta para a pasta das séries e rode um novo scan.
+          </p>
+        </div>
+      </section>
+
+      <!-- 3. Serie --------------------------------------------------------- -->
+      <section class="screen screen--series" id="screen-series" hidden>
+        <div class="series">
+          <div class="series__hero">
+            <div class="poster poster--hero" id="series-poster"></div>
+
+            <div class="series__info">
+              <h1 class="series__title" id="series-title"></h1>
+              <p class="series__meta" id="series-meta"></p>
+              <p class="series__overview" id="series-overview"></p>
+
+              <div class="series__actions">
+                <button class="button button--primary" id="watch-live" type="button">
+                  <span aria-hidden="true">▶</span> Assistir ao vivo
+                </button>
+                <button class="button" id="watch-first" type="button">Do início</button>
+              </div>
+            </div>
+          </div>
+
+          <h2 class="series__section">Episódios</h2>
+          <ol class="episodes" id="episode-list"></ol>
+        </div>
+      </section>
+
+      <!-- 4. Player -------------------------------------------------------- -->
+      <section class="screen screen--player" id="screen-player" hidden>
         <!--
           Dois elementos de video: enquanto um toca, o outro pre-carrega o
-          proximo episodio. A troca e um swap de visibilidade, sem buraco preto
-          na virada.
+          proximo episodio da grade ao vivo. A troca e um swap de visibilidade,
+          sem buraco preto na virada. O `ChannelPlayer` e dono dos dois.
         -->
-        <video class="crt-video is-live" id="video-a" playsinline></video>
-        <video class="crt-video" id="video-b" playsinline hidden></video>
+        <video class="video is-live" id="video-a" playsinline></video>
+        <video class="video" id="video-b" playsinline hidden></video>
 
-        <!--
-          Sem `crt-osd--auto`: aquela classe roda uma animacao que termina em
-          opacity 0, e animacao vence declaracao normal - a classe .is-visible
-          do JS nunca conseguiria mostrar nada. Quem controla o tempo aqui e o
-          `showOsd` do main.ts.
-        -->
-        <p class="crt-osd" id="osd"></p>
+        <div class="overlay" id="overlay">
+          <div class="overlay__top">
+            <p class="live-badge" id="live-badge" hidden>
+              <span class="live-badge__dot" aria-hidden="true"></span>Ao vivo
+            </p>
+          </div>
 
-        <!-- Estalo de estatica na troca de canal. -->
-        <div class="crt-layer app-static" id="static"></div>
+          <div class="overlay__bottom">
+            <div class="overlay__head">
+              <div class="overlay__titles">
+                <p class="overlay__show" id="overlay-show"></p>
+                <p class="overlay__title" id="overlay-title"></p>
+              </div>
+              <button class="button button--ghost" id="tracks-open" type="button">Trilhas</button>
+            </div>
 
-        <!-- Camadas de efeito, na ordem documentada em crt.css. -->
-        <div class="crt-layer crt-scanlines"></div>
-        <div class="crt-layer crt-mask"></div>
-        <div class="crt-layer crt-roll"></div>
-        <div class="crt-layer crt-vignette"></div>
+            <div class="scrub" id="scrub" hidden>
+              <div class="scrub__bar" id="scrub-bar">
+                <div class="scrub__fill" id="scrub-fill"></div>
+              </div>
+              <p class="scrub__time" id="scrub-time"></p>
+            </div>
 
-        <svg
-          class="crt-layer crt-grain"
-          preserveAspectRatio="none"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <filter id="crt-grain-filter" x="0" y="0" width="100%" height="100%">
-            <feTurbulence
-              type="fractalNoise"
-              baseFrequency="0.85"
-              numOctaves="2"
-              stitchTiles="stitch"
-              seed="3"
-            >
-              <animate
-                attributeName="seed"
-                values="1;7;13;19;25;31;37;43"
-                dur="0.72s"
-                calcMode="discrete"
-                repeatCount="indefinite"
-              />
-            </feTurbulence>
-            <feColorMatrix type="saturate" values="0" />
-          </filter>
-          <rect width="100%" height="100%" filter="url(#crt-grain-filter)" />
-        </svg>
-
-        <div class="crt-layer crt-flicker"></div>
-        <div class="crt-layer crt-glass"></div>
-
-        <!-- Tela de senha: mora dentro do tubo para nao quebrar a ilusao. -->
-        <div class="app-gate" id="gate" hidden>
-          <form class="app-gate__form" id="gate-form">
-            <label class="app-gate__label" for="gate-password">SENHA</label>
-            <input
-              class="app-gate__input"
-              id="gate-password"
-              type="password"
-              autocomplete="current-password"
-              autofocus
-            />
-            <p class="app-gate__error" id="gate-error"></p>
-          </form>
-
-          <!--
-            No modo CRT nao ha menu em lugar nenhum depois daqui, entao a tela de
-            senha e a unica chance de dizer quais teclas existem. No widescreen
-            existe o menu, e as duas ultimas linhas - escondidas por atributo e
-            reveladas por widescreen.css - contam como chegar nele.
-          -->
-          <dl class="app-help">
-            <dt class="app-help__key">&uarr; &darr;</dt>
-            <dd class="app-help__what">TROCAR DE CANAL</dd>
-
-            <dt class="app-help__key">0 - 9</dt>
-            <dd class="app-help__what">SINTONIZAR DIRETO</dd>
-
-            <dt class="app-help__key">&larr; &rarr;</dt>
-            <dd class="app-help__what">VOLUME</dd>
-
-            <dt class="app-help__key">M</dt>
-            <dd class="app-help__what">MUDO</dd>
-
-            <dt class="app-help__key app-help__ws" hidden>ENTER</dt>
-            <dd class="app-help__what app-help__ws" hidden>MENU</dd>
-
-            <dt class="app-help__key app-help__ws" hidden>ESC</dt>
-            <dd class="app-help__what app-help__ws" hidden>VOLTAR</dd>
-          </dl>
+            <p class="overlay__hint" id="overlay-hint"></p>
+          </div>
         </div>
-      </div>
-    </div>
 
-    <!--
-      Menu do modo widescreen. Irmao do tubo, nao filho: dentro de .crt-screen
-      ele herdaria `overflow: hidden`, a curvatura falsa e as camadas de efeito -
-      e no CRT ele simplesmente nao existe, porque o `hidden` so sai quando o
-      main.ts abre o menu, o que nunca acontece naquele modo.
-    -->
-    <div class="app-menu" id="menu" hidden>
-      <header class="app-menu__head">
-        <h1 class="app-menu__title" id="menu-title"></h1>
-      </header>
-      <ul class="app-menu__list" id="menu-list"></ul>
-      <footer class="app-menu__hints" id="menu-hints"></footer>
-    </div>
+        <p class="player-notice" id="player-notice" hidden></p>
+
+        <aside class="tracks" id="tracks-panel" hidden aria-label="Trilhas de legenda e áudio">
+          <header class="tracks__head">
+            <h2 class="tracks__title">Trilhas</h2>
+            <button class="button button--ghost" id="tracks-close" type="button">Fechar</button>
+          </header>
+
+          <section class="tracks__section">
+            <h3 class="tracks__legend">Legendas</h3>
+            <ul class="tracks__list" id="subtitle-list"></ul>
+          </section>
+
+          <section class="tracks__section">
+            <h3 class="tracks__legend">Áudio</h3>
+            <ul class="tracks__list" id="audio-list"></ul>
+            <p class="tracks__note" id="audio-note" hidden>
+              Troca de áudio indisponível neste navegador.
+            </p>
+          </section>
+        </aside>
+      </section>
+    </main>
 
     <script type="module" src="./main.ts"></script>
   </body>

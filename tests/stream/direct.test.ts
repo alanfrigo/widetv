@@ -13,7 +13,7 @@ let app: FastifyInstance;
 let fora: string;
 
 beforeAll(async () => {
-  const base = await mkdtemp(join(tmpdir(), 'retro-tv-stream-'));
+  const base = await mkdtemp(join(tmpdir(), 'widetv-stream-'));
   dir = join(base, 'acervo');
   await mkdir(join(dir, 'Serie'), { recursive: true });
   await writeFile(join(dir, 'Serie', 'ep 01 (piloto).mp4'), BODY);

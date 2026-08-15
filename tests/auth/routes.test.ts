@@ -23,7 +23,7 @@ async function build(): Promise<FastifyInstance> {
   registerAuthGuard(instance, { session: SESSION, now: () => agora });
   registerAuthRoutes(instance, { passwordHash: hash, session: SESSION, now: () => agora });
   instance.get('/api/channels', async () => []);
-  instance.get('/api/config', async () => ({ displayMode: 'crt' }));
+  instance.get('/api/channels/1/poster', async () => 'jpeg');
   await instance.ready();
   return instance;
 }
@@ -106,8 +106,8 @@ describe('portao de autenticacao', () => {
     expect(r.statusCode).toBe(200);
   });
 
-  test('/api/config tambem fica atras do guard', async () => {
-    const r = await app.inject({ method: 'GET', url: '/api/config' });
+  test('a capa tambem fica atras do guard', async () => {
+    const r = await app.inject({ method: 'GET', url: '/api/channels/1/poster' });
     expect(r.statusCode).toBe(401);
   });
 
