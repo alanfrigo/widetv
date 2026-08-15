@@ -46,6 +46,12 @@ export type LookupResult =
        * a serie sem arte 16:9 para sempre.
        */
       providerFailed: boolean;
+      /**
+       * O QUE falhou, quando `providerFailed`. Sem isto, uma chave de TMDB
+       * invalida (401 em toda busca) seria invisivel: as capas continuam
+       * vindo do TVMaze e nenhum log conta que o provedor forte esta morto.
+       */
+      failureReason: string | null;
     }
   | { status: 'not-found' }
   /** Rede/servidor falhou: NAO grave nada, tente de novo na proxima rodada. */
@@ -309,7 +315,12 @@ export async function lookupShowMetadata(
       const found = await provider(term);
       if (found === null) continue;
       if (found.posterUrl !== null) {
-        return { status: 'found', metadata: found, providerFailed: firstError !== null };
+        return {
+          status: 'found',
+          metadata: found,
+          providerFailed: firstError !== null,
+          failureReason: firstError,
+        };
       }
       fallback ??= found;
     } catch (error) {
@@ -318,16 +329,33 @@ export async function lookupShowMetadata(
   }
 
   if (fallback !== null) {
-    return { status: 'found', metadata: fallback, providerFailed: firstError !== null };
+    return {
+      status: 'found',
+      metadata: fallback,
+      providerFailed: firstError !== null,
+      failureReason: firstError,
+    };
   }
   if (firstError !== null) return { status: 'error', reason: firstError };
   return { status: 'not-found' };
 }
 
 /**
- * Baixa uma arte (capa ou 16:9). Lanca em qualquer problema: quem chama trata
- * isso como falha de rede, ou seja, "tente de novo depois", nunca como
- * not_found.
+ * A imagem NAO EXISTE mais no provedor (404): permanente, nao vale re-tentar a
+ * cada rodada. Diferente de rede fora do ar, que e transitorio.
+ */
+export class ImageGoneError extends Error {
+  constructor(url: string) {
+    super(`imagem sumiu do provedor (404): ${url}`);
+    this.name = 'ImageGoneError';
+  }
+}
+
+/**
+ * Baixa uma arte (capa ou 16:9). Lanca em qualquer problema. 404 vira
+ * `ImageGoneError` (permanente: grave a linha sem a imagem, senao a serie
+ * volta para a fila a cada abertura do catalogo, para sempre); o resto e
+ * falha de rede - "tente de novo depois", nunca not_found.
  */
 export async function downloadImage(
   url: string,
@@ -336,6 +364,9 @@ export async function downloadImage(
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const doFetch: FetchLike = options?.fetch ?? ((u, init) => fetch(u, init));
   const response = await doFetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (response.status === 404) {
+    throw new ImageGoneError(url);
+  }
   if (!response.ok) {
     throw new Error(`imagem respondeu ${String(response.status)}`);
   }

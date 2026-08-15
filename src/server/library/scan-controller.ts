@@ -54,8 +54,12 @@ export interface LibraryController {
    * devolve `started:false` quando ja ha uma em voo.
    */
   startThumbs(reset: boolean): TaskAccepted;
-  /** Dispara a rodada de quadros quando ligada; no-op quando desligada. */
-  triggerThumbs(): void;
+  /**
+   * Dispara a rodada de quadros quando ligada; no-op quando desligada.
+   * `retryFailed` (rodada de boot): reoferece tambem os episodios carimbados
+   * sem arquivo - tentativas falhadas de rodadas antigas ganham nova chance.
+   */
+  triggerThumbs(options?: { retryFailed?: boolean }): void;
   /** Indice vazio: indexa em segundo plano. Chamado uma vez, no boot. */
   bootstrap(): void;
   /** Reage a mudanca de preferencia sem reiniciar o servidor. */
@@ -71,6 +75,9 @@ export interface LibraryControllerDeps {
   dataDir: string;
   settings: SettingsService;
   log: (message: string) => void;
+  /** Caminho dos binarios quando fora do PATH (launchd, container). */
+  ffmpegPath?: string;
+  ffprobePath?: string;
   /** Injetaveis para teste. */
   scan?: (options: ScanJobOptions) => Promise<ScanReport>;
   remux?: (options: RemuxJobOptions) => Promise<RemuxReport>;
@@ -167,6 +174,8 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
       store: deps.store,
       libraryRoot: deps.libraryRoot,
       dataDir: deps.dataDir,
+      ffmpegPath: deps.ffmpegPath ?? 'ffmpeg',
+      ffprobePath: deps.ffprobePath ?? 'ffprobe',
       onProgress: ({ done, total, episode }) => {
         const agora = now();
         if (agora - ultimoLog < SCAN_LOG_INTERVAL_MS && done < total) return;
@@ -200,7 +209,7 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
    *
    * Nunca lanca e nunca espera: um acervo de 15 mil episodios leva horas aqui.
    */
-  function beginThumbs(reset: boolean, origem: string): TaskAccepted {
+  function beginThumbs(reset: boolean, origem: string, retryFailed = false): TaskAccepted {
     if (thumbsRunning) return { started: false, reason: 'extracao de quadros ja esta em andamento' };
 
     thumbsRunning = true;
@@ -212,6 +221,8 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
       libraryRoot: deps.libraryRoot,
       dataDir: deps.dataDir,
       reset,
+      retryFailed,
+      ffmpegPath: deps.ffmpegPath ?? 'ffmpeg',
       // Prioridade do remux sobre o quadro: veja o cabecalho de thumb-job.ts. O
       // remux e o que faz o MKV TOCAR; a miniatura e ilustracao, e a tela ja
       // tem um desenho para quando ela falta. Uma fila unica poria 15 mil
@@ -261,11 +272,11 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
     return { started: true };
   }
 
-  function triggerThumbs(): void {
+  function triggerThumbs(options?: { retryFailed?: boolean }): void {
     // Desligado no painel: nao ha rodada nova. Desligar tambem nao apaga o que
     // ja existe - as miniaturas em disco continuam sendo servidas.
     if (!autoThumbs) return;
-    beginThumbs(false, 'quadros');
+    beginThumbs(false, 'quadros', options?.retryFailed ?? false);
   }
 
   function concluirScan(report: ScanReport, origem: string): void {
@@ -350,6 +361,7 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
     currentScan = scan({
       root: deps.libraryRoot,
       store: deps.store,
+      ffprobePath: deps.ffprobePath ?? 'ffprobe',
       // Vale a fotografia do momento do disparo: trocar a preferencia no meio
       // de uma varredura reagruparia metade do acervo por um criterio e metade
       // por outro.

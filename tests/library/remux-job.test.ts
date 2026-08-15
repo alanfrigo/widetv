@@ -151,6 +151,35 @@ describe('runRemux', () => {
     expect(files).not.toContain(antigo);
   });
 
+  test('remux gravado por versao antiga do plano reconverte e apaga o MP4 antigo', async () => {
+    // Simula rodada anterior: linha valida no indice, mas com o nome que uma
+    // versao antiga do plano gerava (ex.: gemea AAC sem aformat, muda no Safari).
+    await mkdir(join(dataDir, 'remux'), { recursive: true });
+    await writeFile(join(dataDir, 'remux', 'plano-antigo.mp4'), 'mp4 velho');
+    store.upsertRemux({
+      episodeId: 'Serie/ep1.mkv',
+      file: 'plano-antigo.mp4',
+      mtimeMs: 111,
+      size: 1000,
+      audioTracks: REMUXED_TRACKS,
+      createdAt: 1,
+    });
+
+    const report = await runRemux({
+      store,
+      libraryRoot,
+      dataDir,
+      convert: fakeConvert([]),
+      probe: fakeProbe,
+    });
+
+    expect(report.converted).toBe(1);
+    expect(report.skipped).toBe(0);
+    expect(await readdir(join(dataDir, 'remux'))).toEqual([
+      remuxFileName('Serie/ep1.mkv', 111, 1000),
+    ]);
+  });
+
   test('linha valida com arquivo apagado do disco reconverte em vez de pular', async () => {
     await runRemux({ store, libraryRoot, dataDir, convert: fakeConvert([]), probe: fakeProbe });
     const file = remuxFileName('Serie/ep1.mkv', 111, 1000);

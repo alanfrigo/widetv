@@ -109,6 +109,30 @@ export type Grab = (options: {
   outputPath: string;
 }) => Promise<void>;
 
+/**
+ * Falha de AMBIENTE, nao do arquivo: o binario nem chegou a virar processo
+ * (ausente do PATH, sem permissao). Aborta a rodada inteira - carimbar o
+ * acervo todo como "sem quadro" por causa de um PATH torto envenenaria a fila
+ * para sempre.
+ */
+export class GrabSpawnError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GrabSpawnError';
+  }
+}
+
+/**
+ * Timeout: transitorio (NAS lento, disco ocupado). O episodio e pulado SEM
+ * carimbo, como o arquivo sumido - a proxima rodada tenta de novo.
+ */
+export class GrabTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GrabTimeoutError';
+  }
+}
+
 export interface ThumbJobOptions {
   store: Store;
   libraryRoot: string;
@@ -116,6 +140,12 @@ export interface ThumbJobOptions {
   dataDir: string;
   /** true refaz o quadro de TODO episodio, inclusive os que ja tem. */
   reset?: boolean;
+  /**
+   * true da segunda chance aos episodios carimbados SEM arquivo (tentativas
+   * falhadas de rodadas antigas). E o modo da rodada de boot: recupera um
+   * acervo envenenado por falha ambiental sem os milhares de ffmpeg do reset.
+   */
+  retryFailed?: boolean;
   ffmpegPath?: string;
   timeoutMs?: number;
   /** Extrator; injetavel para teste. */
@@ -200,11 +230,11 @@ export function ffmpegGrab(ffmpegPath: string, timeoutMs: number): Grab {
         child.once('error', (error) => {
           // Binario ausente no PATH cai aqui, sem nunca ter havido processo.
           child.stderr.destroy();
-          reject(error);
+          reject(new GrabSpawnError(error instanceof Error ? error.message : String(error)));
         });
         child.once('exit', (code, signal) => {
           if (timedOut) {
-            reject(new Error(`ffmpeg passou de ${String(timeoutMs)} ms e foi morto`));
+            reject(new GrabTimeoutError(`ffmpeg passou de ${String(timeoutMs)} ms e foi morto`));
           } else if (code === 0) {
             resolve();
           } else {
@@ -384,6 +414,8 @@ async function runBackdrops(
       });
       report.backdrops += 1;
     } catch (error) {
+      // Sem ffmpeg nao ha rodada nenhuma; os outros erros nao derrubam nada.
+      if (error instanceof GrabSpawnError) throw error;
       // Um canal sem hero cai no padrao listrado, que e um desenho previsto:
       // nada aqui pode derrubar a rodada das miniaturas.
       log(
@@ -394,7 +426,10 @@ async function runBackdrops(
   }
 }
 
-/** Um episodio da fila. Nunca lanca: falha vira carimbo e contador. */
+/**
+ * Um episodio da fila. Falha do ARQUIVO vira carimbo e contador; so a falha de
+ * ambiente (`GrabSpawnError`) sobe, porque sem ffmpeg nao ha rodada.
+ */
 async function thumbOne(
   candidate: ThumbCandidate,
   options: ThumbJobOptions,
@@ -439,10 +474,21 @@ async function thumbOne(
     store.setEpisodeThumb({ episodeId: candidate.episodeId, file, checkedAt: now() });
     report.generated += 1;
   } catch (error) {
-    // ffmpeg ausente do PATH, arquivo corrompido, codec que este build nao
-    // decodifica: tudo isso e um episodio sem miniatura, nunca uma rodada
-    // interrompida. O carimbo (sem arquivo) e o que impede a fila de tentar de
-    // novo amanha, e no dia seguinte, com o mesmo resultado.
+    // Ambiente sem ffmpeg: nao ha rodada possivel. Deixa subir para abortar
+    // tudo - o oposto de carimbar o acervo inteiro como "sem quadro".
+    if (error instanceof GrabSpawnError) throw error;
+
+    // Timeout e transitorio (NAS lento): mesmo tratamento do arquivo sumido -
+    // pula sem carimbo, a proxima rodada tenta de novo.
+    if (error instanceof GrabTimeoutError) {
+      report.skipped += 1;
+      log(`quadro de ${candidate.episodeId} pulado: ${error.message}`);
+      return;
+    }
+
+    // Arquivo corrompido, codec que este build nao decodifica: um episodio sem
+    // miniatura, nunca uma rodada interrompida. O carimbo (sem arquivo) e o que
+    // impede a fila de gastar um ffmpeg por dia, para sempre, no mesmo arquivo.
     store.setEpisodeThumb({ episodeId: candidate.episodeId, file: null, checkedAt: now() });
     report.failed += 1;
     log(
@@ -484,7 +530,10 @@ export async function runThumbs(options: ThumbJobOptions): Promise<ThumbReport> 
 
   // A lista sai do banco de uma vez, e a partir daqui nenhuma consulta fica
   // aberta: cada ffmpeg roda com o SQLite livre para o resto do servidor.
-  const pending = store.listThumbCandidates({ all: options.reset ?? false });
+  const pending = store.listThumbCandidates({
+    all: options.reset ?? false,
+    retryFailed: options.retryFailed ?? false,
+  });
   report.considered = pending.length;
 
   let done = 0;

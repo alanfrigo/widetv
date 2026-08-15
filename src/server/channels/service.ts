@@ -70,14 +70,21 @@ export function toRef(row: EpisodeRow): EpisodeRef {
  * que a lentidao aqui.
  */
 export function posterUrlOf(channelNumber: number, metadata: ShowMetadataRow | null): string | null {
-  return metadata?.posterFile == null ? null : API.poster(channelNumber);
+  // `?v=`: a URL e estavel e a rota manda cache de um dia - sem a versao, uma
+  // arte rebuscada ("refazer tudo", TMDB substituindo o quadro) ficaria presa
+  // no cache do navegador por ate 24h e o botao pareceria nao funcionar.
+  return metadata?.posterFile == null
+    ? null
+    : `${API.poster(channelNumber)}?v=${String(metadata.fetchedAt)}`;
 }
 
 export function backdropUrlOf(
   channelNumber: number,
   metadata: ShowMetadataRow | null,
 ): string | null {
-  return metadata?.backdropFile == null ? null : API.backdrop(channelNumber);
+  return metadata?.backdropFile == null
+    ? null
+    : `${API.backdrop(channelNumber)}?v=${String(metadata.backdropCheckedAt ?? metadata.fetchedAt)}`;
 }
 
 function toSummary(

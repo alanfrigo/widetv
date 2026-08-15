@@ -8,7 +8,7 @@ import { resolveWithinRoot } from '../stream/direct';
 import type { EpisodeRow, Store } from './index-store';
 import { probeFile } from './probe';
 import type { ProbeResult } from './probe-types';
-import { planRemux, type RemuxPlan } from './remux-plan';
+import { planRemux, REMUX_PLAN_VERSION, type RemuxPlan } from './remux-plan';
 
 /**
  * Orquestracao do remux: converte para MP4 os episodios que o navegador nao
@@ -57,6 +57,8 @@ export interface RemuxJobOptions {
   /** DATA_DIR do servidor; as copias vivem em `<dataDir>/remux`. */
   dataDir: string;
   ffmpegPath?: string;
+  /** Caminho do ffprobe usado no arquivo GERADO; mesmo motivo do ffmpegPath. */
+  ffprobePath?: string;
   /** Teto por arquivo. Default: 30 min - um MKV grande num disco de rede demora. */
   timeoutMs?: number;
   /** Probe do ARQUIVO GERADO; injetavel para teste. */
@@ -72,10 +74,11 @@ const DEFAULT_TIMEOUT_MS = 30 * 60_000;
 /**
  * Nome do arquivo convertido. mtime e size do FONTE entram na chave: fonte
  * trocado gera outro nome, e o antigo vira orfao que a coleta remove - nunca
- * ha meia-troca servindo video novo com nome velho.
+ * ha meia-troca servindo video novo com nome velho. A versao do plano tambem
+ * entra: receita nova de ffmpeg invalida o nome antigo e forca a reconversao.
  */
 export function remuxFileName(episodeId: string, mtimeMs: number, size: number): string {
-  const key = `${episodeId} ${String(mtimeMs)} ${String(size)}`;
+  const key = `${episodeId} ${String(mtimeMs)} ${String(size)} plan:${String(REMUX_PLAN_VERSION)}`;
   return `${createHash('sha1').update(key).digest('hex')}.mp4`;
 }
 
@@ -136,6 +139,84 @@ interface PlannedEpisode {
   plan: RemuxPlan;
 }
 
+export interface RemuxEpisodeOptions {
+  store: Store;
+  libraryRoot: string;
+  /** `<dataDir>/remux`, ja criado pelo chamador. */
+  remuxDir: string;
+  convert: Convert;
+  probe: (filePath: string) => Promise<ProbeResult>;
+  now: () => number;
+}
+
+/**
+ * Converte UM episodio ja planejado: tmp + rename atomico, registro no indice
+ * e limpeza do MP4 de versao antiga do plano. E o miolo compartilhado entre a
+ * rodada de catalogo (runRemux) e a fila sob demanda (remux-queue).
+ *
+ * @returns 'skipped' quando a copia atual ja vale; 'converted' quando gerou.
+ * @throws quando o ffmpeg/probe falham ou o caminho escapa da raiz.
+ */
+export async function remuxEpisode(
+  options: RemuxEpisodeOptions,
+  row: EpisodeRow,
+  plan: RemuxPlan,
+): Promise<'converted' | 'skipped'> {
+  const { store, remuxDir } = options;
+  const file = remuxFileName(row.id, row.mtimeMs, row.size);
+
+  // mtime e size vem do INDICE, nao de um stat novo: o scan e a fonte da
+  // verdade, e um arquivo trocado depois dele sera revisto no proximo scan.
+  // O nome tambem tem que bater: linha com nome de outra versao do plano e
+  // um MP4 gravado com a receita antiga - reconverte.
+  const existing = store.getRemux(row.id, row.mtimeMs, row.size);
+  if (existing !== null && existing.file === file) {
+    try {
+      await stat(join(remuxDir, existing.file));
+      return 'skipped';
+    } catch {
+      // Linha sem arquivo (volume trocado, limpeza manual): reconverte.
+    }
+  }
+
+  const inputPath = resolveWithinRoot(options.libraryRoot, row.id);
+  if (inputPath === null) {
+    throw new Error('caminho fora da raiz da biblioteca');
+  }
+
+  const targetPath = join(remuxDir, file);
+  // Grava num temporario e renomeia: rename e atomico no mesmo filesystem,
+  // entao o servidor nunca enxerga (nem serve) um MP4 pela metade.
+  const tmpPath = `${targetPath}.${randomUUID()}.tmp`;
+
+  try {
+    await options.convert({ inputPath, args: plan.args, outputPath: tmpPath });
+    // Probe do RESULTADO, nao previsao: e a lista que o painel de trilhas vai
+    // usar para selecionar por posicao, entao ela tem que vir do arquivo real.
+    const result = await options.probe(tmpPath);
+    await rename(tmpPath, targetPath);
+    store.upsertRemux({
+      episodeId: row.id,
+      file,
+      mtimeMs: row.mtimeMs,
+      size: row.size,
+      audioTracks: result.audioTracks,
+      createdAt: options.now(),
+    });
+  } catch (error) {
+    await unlink(tmpPath).catch(() => undefined);
+    throw error;
+  }
+
+  // Apaga o MP4 da versao antiga ja, em vez de esperar a coleta do fim da
+  // rodada: numa reconversao em massa (bump de versao do plano) os orfaos
+  // acumulados dobrariam o espaco do diretorio ate a rodada acabar.
+  if (existing !== null && existing.file !== file) {
+    await unlink(join(remuxDir, existing.file)).catch(() => undefined);
+  }
+  return 'converted';
+}
+
 /** Episodios que o plano manda converter, na ordem da grade. */
 function collectPlanned(store: Store): PlannedEpisode[] {
   const planned: PlannedEpisode[] = [];
@@ -156,7 +237,9 @@ export async function runRemux(options: RemuxJobOptions): Promise<RemuxReport> {
   const now = options.now ?? Date.now;
   const startedAt = now();
   const { store, libraryRoot } = options;
-  const probe = options.probe ?? probeFile;
+  const probe =
+    options.probe ??
+    ((filePath: string) => probeFile(filePath, { ffprobePath: options.ffprobePath ?? 'ffprobe' }));
   const convert =
     options.convert ??
     ffmpegConvert(options.ffmpegPath ?? 'ffmpeg', options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -174,48 +257,15 @@ export async function runRemux(options: RemuxJobOptions): Promise<RemuxReport> {
     options.onProgress?.({ done, total: planned.length, episode: row.id });
     done += 1;
 
-    // mtime e size vem do INDICE, nao de um stat novo: o scan e a fonte da
-    // verdade, e um arquivo trocado depois dele sera revisto no proximo scan.
-    const existing = store.getRemux(row.id, row.mtimeMs, row.size);
-    if (existing !== null) {
-      try {
-        await stat(join(remuxDir, existing.file));
-        skipped += 1;
-        continue;
-      } catch {
-        // Linha sem arquivo (volume trocado, limpeza manual): reconverte.
-      }
-    }
-
-    const inputPath = resolveWithinRoot(libraryRoot, row.id);
-    if (inputPath === null) {
-      failed.push({ path: row.id, reason: 'caminho fora da raiz da biblioteca' });
-      continue;
-    }
-
-    const file = remuxFileName(row.id, row.mtimeMs, row.size);
-    const targetPath = join(remuxDir, file);
-    // Grava num temporario e renomeia: rename e atomico no mesmo filesystem,
-    // entao o servidor nunca enxerga (nem serve) um MP4 pela metade.
-    const tmpPath = `${targetPath}.${randomUUID()}.tmp`;
-
     try {
-      await convert({ inputPath, args: plan.args, outputPath: tmpPath });
-      // Probe do RESULTADO, nao previsao: e a lista que o painel de trilhas vai
-      // usar para selecionar por posicao, entao ela tem que vir do arquivo real.
-      const result = await probe(tmpPath);
-      await rename(tmpPath, targetPath);
-      store.upsertRemux({
-        episodeId: row.id,
-        file,
-        mtimeMs: row.mtimeMs,
-        size: row.size,
-        audioTracks: result.audioTracks,
-        createdAt: now(),
-      });
-      converted += 1;
+      const outcome = await remuxEpisode(
+        { store, libraryRoot, remuxDir, convert, probe, now },
+        row,
+        plan,
+      );
+      if (outcome === 'converted') converted += 1;
+      else skipped += 1;
     } catch (error) {
-      await unlink(tmpPath).catch(() => undefined);
       failed.push({
         path: row.id,
         reason: error instanceof Error ? error.message : String(error),

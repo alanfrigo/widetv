@@ -12,6 +12,7 @@ import {
   NOT_FOUND_TTL_MS,
   type MetadataStore,
 } from '../../src/server/metadata/service';
+import { ImageGoneError } from '../../src/server/metadata/providers';
 import type { LookupResult, ShowMetadata } from '../../src/server/metadata/providers';
 
 /**
@@ -58,6 +59,7 @@ function found(
       ...over,
     },
     providerFailed,
+    failureReason: providerFailed ? 'tmdb respondeu 500' : null,
   };
 }
 
@@ -171,6 +173,8 @@ describe('enrichMissing', () => {
 
     const report = await enrichMissing(store, dataDir, {
       now: () => AGORA,
+      // Com TMDB na cadeia: e o que autoriza o carimbo de "ja procurei arte".
+      tmdbApiKey: 'chave-de-teste',
       lookup: () => Promise.resolve(found()),
       download: () => Promise.resolve(new Uint8Array([0xff, 0xd8, 0xff])),
     });
@@ -338,6 +342,7 @@ describe('enrichMissing', () => {
 
     const report = await enrichMissing(store, dataDir, {
       now: () => AGORA,
+      tmdbApiKey: 'chave-de-teste',
       lookup: () => Promise.resolve(found('https://img/a.jpg', { backdropUrl: 'https://img/b.jpg' })),
       download: (url) =>
         url.endsWith('b.jpg')
@@ -361,6 +366,7 @@ describe('enrichMissing', () => {
 
     const report = await enrichMissing(store, dataDir, {
       now: () => AGORA,
+      tmdbApiKey: 'chave-de-teste',
       lookup: () => Promise.resolve({ status: 'not-found' }),
     });
 
@@ -546,7 +552,11 @@ describe('rebusca funde, nunca sobrescreve', () => {
     await enrichMissing(
       store,
       dataDir,
-      { now: () => AGORA, lookup: () => Promise.resolve<LookupResult>({ status: 'not-found' }) },
+      {
+        now: () => AGORA,
+        tmdbApiKey: 'chave-de-teste',
+        lookup: () => Promise.resolve<LookupResult>({ status: 'not-found' }),
+      },
       'refresh',
     );
 
@@ -636,7 +646,12 @@ describe('rebusca funde, nunca sobrescreve', () => {
     await capaNoDisco([0xaa]);
 
     const lookup = vi.fn(() => Promise.resolve(found('https://img/a.jpg', { source: 'tmdb' })));
-    const opcoes = { now: () => AGORA, lookup, download: () => Promise.resolve(new Uint8Array([1])) };
+    const opcoes = {
+      now: () => AGORA,
+      tmdbApiKey: 'chave-de-teste',
+      lookup,
+      download: () => Promise.resolve(new Uint8Array([1])),
+    };
 
     await enrichMissing(store, dataDir, opcoes, 'refresh');
     expect(store.rows.get(1)?.backdropFile).toBeNull();
@@ -696,6 +711,7 @@ describe('rebusca funde, nunca sobrescreve', () => {
       dataDir,
       {
         now: () => AGORA,
+        tmdbApiKey: 'chave-de-teste',
         lookup: () =>
           Promise.resolve(found('https://img/nova.jpg', { source: 'tmdb', overview: 'Serie certa.' })),
         download: () => Promise.resolve(new Uint8Array([0xcc])),
@@ -712,6 +728,56 @@ describe('rebusca funde, nunca sobrescreve', () => {
       backdropSource: null,
     });
     expect(Array.from(await readFile(join(dataDir, 'posters', '1.jpg')))).toEqual([0xcc]);
+  });
+
+  test('sem TMDB na cadeia, a arte 16:9 NAO e carimbada: a chave pode chegar depois', async () => {
+    // Sem chave, so o TVMaze/iTunes respondem - e eles nunca tem arte 16:9.
+    // Carimbar aqui transformaria "depois eu ponho a chave" em estado
+    // permanente: o refresh nunca mais ofereceria a serie.
+    const store = makeStore([show(1, 'ThunderCats')]);
+
+    await enrichMissing(store, dataDir, {
+      now: () => AGORA,
+      lookup: () => Promise.resolve(found()),
+      download: () => Promise.resolve(new Uint8Array([0xaa])),
+    });
+
+    expect(store.rows.get(1)?.backdropCheckedAt).toBeNull();
+    // Chave configurada, "so o que falta" clicado: a serie volta para a fila.
+    expect(listShowsMissingMetadata(store, AGORA, NOT_FOUND_TTL_MS, 'refresh')).toHaveLength(1);
+  });
+
+  test('serie encontrada SEM capa continua no escopo refresh, nunca selada', async () => {
+    const store = makeStore([show(1, 'Obscura')]);
+
+    await enrichMissing(store, dataDir, {
+      now: () => AGORA,
+      tmdbApiKey: 'chave-de-teste',
+      lookup: () => Promise.resolve(found(null)),
+    });
+
+    expect(store.rows.get(1)).toMatchObject({ posterFile: null, notFound: false });
+    // A rodada automatica nao insiste, mas o botao "so o que falta" reoferece.
+    expect(listShowsMissingMetadata(store, AGORA, NOT_FOUND_TTL_MS, 'missing')).toEqual([]);
+    expect(listShowsMissingMetadata(store, AGORA, NOT_FOUND_TTL_MS, 'refresh')).toHaveLength(1);
+  });
+
+  test('capa que sumiu do CDN (404) grava a linha em vez de re-tentar toda rodada', async () => {
+    const store = makeStore([show(1, 'ThunderCats')]);
+
+    const report = await enrichMissing(store, dataDir, {
+      now: () => AGORA,
+      tmdbApiKey: 'chave-de-teste',
+      lookup: () => Promise.resolve(found()),
+      download: (url) => Promise.reject(new ImageGoneError(url)),
+    });
+
+    // Nao e falha de rede: a linha foi gravada (sem capa) e a serie sai da
+    // fila automatica - sem isto, toda abertura do catalogo bateria na mesma
+    // URL morta para sempre.
+    expect(report.failed).toBe(0);
+    expect(store.rows.get(1)).toMatchObject({ posterFile: null, notFound: false });
+    expect(listShowsMissingMetadata(store, AGORA, NOT_FOUND_TTL_MS, 'missing')).toEqual([]);
   });
 
   test('not-found numa serie NOVA continua virando linha marcada', async () => {

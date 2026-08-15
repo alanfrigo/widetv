@@ -28,7 +28,7 @@ import {
   login,
   logout,
   patchSettings,
-  probeVariant,
+  probeStream,
   refreshMetadata,
   saveProgress,
   startScan,
@@ -358,6 +358,8 @@ let history = new Map<string, WatchProgress>();
 let progressTimer: number | null = null;
 /** Invalida um poll de variante antigo quando o usuario troca de novo no meio. */
 let variantPoll = 0;
+/** Mesma ideia, para a espera do arquivo default (202 de remux em geracao). */
+let streamWait = 0;
 
 let overlayTimer: number | null = null;
 let noticeTimer: number | null = null;
@@ -640,13 +642,23 @@ function episodeArtInto(art: HTMLElement, url: string | null): void {
 
 /* --- players -------------------------------------------------------------- */
 
+/** true enquanto o aviso "Preparando o episódio…" do ao vivo esta na tela. */
+let livePreparing = false;
+
 const live = new ChannelPlayer(dom.videoA, dom.videoB, {
   onTuned: (playing) => {
+    livePreparing = false;
     notice(null);
     renderOverlay();
     applyPreferredSubtitle(playing.episode);
   },
   onEpisodeChange: (playing) => {
+    // So o aviso de "preparando" sai daqui: apagar qualquer aviso na virada
+    // engoliria o "Clique na tela para começar" de um autoplay bloqueado.
+    if (livePreparing) {
+      livePreparing = false;
+      notice(null);
+    }
     renderOverlay();
     // Virada da grade: o overlay volta por alguns segundos anunciando o que
     // entrou no ar, como o rodape de canal de TV.
@@ -658,6 +670,12 @@ const live = new ChannelPlayer(dom.videoA, dom.videoB, {
   },
   onBlocked: () => notice('Clique na tela para começar', { sticky: true }),
   onStalled: (reason) => notice(reason === 'error' ? 'Sem sinal' : 'Sinal fraco'),
+  // O player espera sozinho e segue quando o remux fica pronto; o aviso existe
+  // so para a tela nao ficar preta sem explicacao.
+  onPreparing: () => {
+    livePreparing = true;
+    notice('Preparando o episódio…', { sticky: true });
+  },
   onError: (error) => failed(error),
 });
 
@@ -955,9 +973,10 @@ function renderHero(): void {
   dom.hero.hidden = channel === null;
   if (channel === null) return;
 
-  artInto(dom.heroArt, backdropOf(channel), 'hero__img');
-
   const playing = nowOf(channel.number);
+  // Arte do canal na frente; sem ela, o quadro do episodio no ar. A maior
+  // superficie da tela nao pode ficar no listrado tendo imagem valida a mao.
+  artInto(dom.heroArt, backdropOf(channel) ?? episodeArtUrl(playing?.episode ?? null), 'hero__img');
   const onAir = playing !== null;
   dom.heroChip.classList.toggle('chip--live', onAir);
   if (heroDot !== null) heroDot.hidden = !onAir;
@@ -2140,6 +2159,11 @@ async function playVod(
   const startMs = options?.startMs ?? resumeStartMs(history.get(episode.id));
   const resumed = options?.resumed ?? options?.startMs === undefined;
 
+  // O arquivo default tambem pode responder 202: e o episodio cujo original
+  // tocaria mudo e o servidor esta remuxando com prioridade. Espera com aviso
+  // em vez de entregar o <video> a um erro generico de "Sem sinal".
+  if (!(await waitStreamReady(episode.id, audioIndex))) return;
+
   const ok = await session.player.play(episode.id, { startMs, audioIndex });
   if (!ok) {
     notice('Clique na tela para começar', { sticky: true });
@@ -2168,6 +2192,44 @@ const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(r
 /** De quanto em quanto tempo perguntar se a variante de dublagem ficou pronta. */
 const VARIANT_POLL_MS = 3_000;
 const VARIANT_POLL_LIMIT = 100;
+
+/**
+ * Espera o arquivo do episodio existir no servidor.
+ *
+ * 202 = remux em geracao (o original tocaria mudo). O poll respeita as mesmas
+ * travas da troca de dublagem: outro play, outro episodio ou outra espera no
+ * meio cancelam este.
+ *
+ * @returns false quando quem esperava deve desistir (outro play assumiu, erro
+ *          de verdade ou prazo esgotado); o proprio aviso ja foi dado aqui.
+ */
+async function waitStreamReady(episodeId: string, audioIndex: number | null): Promise<boolean> {
+  let state = await probeStream(episodeId, audioIndex);
+  // 'error' nao desiste: um HEAD bloqueado nao prova nada, e o play de verdade
+  // e quem sabe mostrar 'Sem sinal'.
+  if (state !== 'preparing') return true;
+
+  const myWait = ++streamWait;
+  notice('Preparando o episódio… começa sozinho', { sticky: true });
+  for (let attempt = 0; attempt < VARIANT_POLL_LIMIT; attempt += 1) {
+    await sleep(VARIANT_POLL_MS);
+    if (streamWait !== myWait) return false;
+    const current = vod;
+    if (current === null || current.episodes[current.index]?.id !== episodeId) return false;
+
+    state = await probeStream(episodeId, audioIndex);
+    if (state === 'ready') {
+      notice(null);
+      return true;
+    }
+    if (state === 'error') {
+      notice('Sem sinal');
+      return false;
+    }
+  }
+  notice('O episódio ainda não ficou pronto; tente de novo');
+  return false;
+}
 
 /**
  * Troca a dublagem do episodio em reproducao.
@@ -2207,7 +2269,7 @@ async function switchVodAudio(trackIndex: number, options: { announce: boolean }
     return;
   }
 
-  let state = await probeVariant(episode.id, target);
+  let state = await probeStream(episode.id, target);
   if (state === 'ready') {
     await replay();
     return;
@@ -2224,7 +2286,7 @@ async function switchVodAudio(trackIndex: number, options: { announce: boolean }
     if (variantPoll !== myPoll) return;
     if (vod === null || vod.episodes[vod.index]?.id !== episode.id) return;
 
-    state = await probeVariant(episode.id, target);
+    state = await probeStream(episode.id, target);
     if (state === 'ready') {
       if (options.announce) notice(null);
       await replay();
@@ -2909,6 +2971,11 @@ window.addEventListener('keydown', (event) => {
       return;
     case 'player':
       poke();
+      // Tecla e gesto valido para o navegador: destrava o som que a politica
+      // de autoplay calou. Sem isto, quem so usa teclado (TV) nunca teria como
+      // sair do mudo de politica - o unlock so existia no clique do mouse.
+      if (isVodScreen()) vod?.player.unlock();
+      else void live.unlock();
       playerKeys(event);
       return;
     default:
@@ -2931,6 +2998,8 @@ for (const video of [dom.videoA, dom.videoB]) {
       return;
     }
     if (isVodScreen()) {
+      // O mesmo clique que pausa tambem e o gesto que libera o som de politica.
+      vod?.player.unlock();
       togglePause();
       return;
     }

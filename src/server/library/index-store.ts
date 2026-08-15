@@ -298,7 +298,7 @@ export interface Store {
    * episodio e nao pode segurar uma consulta (nem uma transacao) aberta no
    * banco enquanto isso.
    */
-  listThumbCandidates(options: { all: boolean }): ThumbCandidate[];
+  listThumbCandidates(options: { all: boolean; retryFailed?: boolean }): ThumbCandidate[];
 
   /**
    * Resultado de UMA tentativa de quadro. `file` null carimba a tentativa sem
@@ -894,6 +894,16 @@ export function openStore(dbPath: string): Store {
      FROM episodes e JOIN shows s ON s.id = e.show_id
      ORDER BY s.channel_number, e.order_index, e.id`,
   );
+  // Rodada de boot: alem dos nunca-tentados, reoferece os carimbados SEM
+  // arquivo - tentativas que falharam por ambiente (ffmpeg fora do PATH,
+  // volume sem permissao) em rodadas de versoes antigas. Uma vez por boot, e
+  // so os falhos: recupera o acervo envenenado sem o custo do "refazer tudo".
+  const selectThumbRetry = db.prepare(
+    `SELECT e.rowid AS row_id, e.id, e.duration_ms, s.name AS show_name
+     FROM episodes e JOIN shows s ON s.id = e.show_id
+     WHERE e.thumb_checked_at IS NULL OR e.thumb_file IS NULL
+     ORDER BY s.channel_number, e.order_index, e.id`,
+  );
   const updateEpisodeThumb = db.prepare(
     'UPDATE episodes SET thumb_file = @file, thumb_checked_at = @checkedAt WHERE id = @episodeId',
   );
@@ -1019,8 +1029,13 @@ export function openStore(dbPath: string): Store {
      VALUES (@showId, NULL, @file, NULL, @source, NULL, NULL, NULL, 0, 1)
      ON CONFLICT(show_id) DO UPDATE SET
        backdrop_file = excluded.backdrop_file,
-       backdrop_source = excluded.backdrop_source`,
+       backdrop_source = excluded.backdrop_source
+     WHERE show_metadata.backdrop_file IS NULL OR show_metadata.backdrop_source = 'frame'`,
   );
+  // O WHERE do UPDATE e a garantia (e nao so o filtro do chamador) de que um
+  // quadro de video nunca rebaixa arte de provedor: a lista de shows sem
+  // backdrop e lida no comeco de uma rodada LONGA de ffmpeg, e o enricher pode
+  // gravar a arte do TMDB no meio dela.
 
   const deleteShowsNotKept = db.prepare('DELETE FROM shows WHERE slug NOT IN (SELECT id FROM keep_ids)');
 
@@ -1188,8 +1203,9 @@ export function openStore(dbPath: string): Store {
       };
     },
 
-    listThumbCandidates({ all }): ThumbCandidate[] {
-      const records = (all ? selectThumbAll : selectThumbPending).all() as {
+    listThumbCandidates({ all, retryFailed }): ThumbCandidate[] {
+      const query = all ? selectThumbAll : retryFailed === true ? selectThumbRetry : selectThumbPending;
+      const records = query.all() as {
         row_id: number;
         id: string;
         duration_ms: number;

@@ -9,6 +9,8 @@ import {
   type Store,
 } from '../../src/server/library/index-store';
 import {
+  GrabSpawnError,
+  GrabTimeoutError,
   pickBackdropEpisode,
   runThumbs,
   thumbFileName,
@@ -173,8 +175,8 @@ describe('runThumbs', () => {
     expect(await readFile(join(dataDir, 'thumbs', fileOf('Serie/ep1.mkv')), 'utf8')).toBe(CHAPADO);
   });
 
-  test('ffmpeg que falha carimba o episodio e NAO tenta de novo na proxima rodada', async () => {
-    const falha: Grab = () => Promise.reject(new Error('spawn ffmpeg ENOENT'));
+  test('ffmpeg que falha no ARQUIVO carimba o episodio e NAO tenta de novo na proxima rodada', async () => {
+    const falha: Grab = () => Promise.reject(new Error('ffmpeg saiu com 1: moov atom not found'));
     const primeiro = await runThumbs({ store, libraryRoot, dataDir, grab: falha });
 
     expect(primeiro).toMatchObject({ considered: 2, generated: 0, failed: 2 });
@@ -191,6 +193,64 @@ describe('runThumbs', () => {
     // Mas o botao "refazer todos" ignora o carimbo.
     const reset = await runThumbs({ store, libraryRoot, dataDir, reset: true, grab: fakeGrab(calls) });
     expect(reset.generated).toBe(2);
+  });
+
+  test('binario ausente (spawn) aborta a rodada SEM envenenar o acervo', async () => {
+    const semFfmpeg: Grab = () => Promise.reject(new GrabSpawnError('spawn ffmpeg ENOENT'));
+    await expect(runThumbs({ store, libraryRoot, dataDir, grab: semFfmpeg })).rejects.toThrow(
+      'ENOENT',
+    );
+
+    // Nenhum episodio carimbado: com o ffmpeg de volta (PATH consertado), a
+    // proxima rodada automatica refaz tudo. Carimbar 15 mil linhas por causa
+    // de um binario ausente seria a pior resposta possivel.
+    expect(store.getEpisode('Serie/ep1.mkv')?.thumbCheckedAt).toBeNull();
+    expect(store.getEpisode('Serie/ep2.mkv')?.thumbCheckedAt).toBeNull();
+  });
+
+  test('timeout e transitorio: pula sem carimbo e a proxima rodada tenta de novo', async () => {
+    let chamadas = 0;
+    const lento: Grab = async ({ outputPath }) => {
+      chamadas += 1;
+      if (chamadas === 1) throw new GrabTimeoutError('ffmpeg passou de 60000 ms e foi morto');
+      await writeFile(outputPath, CHEIO);
+    };
+
+    const primeira = await runThumbs({ store, libraryRoot, dataDir, grab: lento });
+    expect(primeira).toMatchObject({ skipped: 1, generated: 1, failed: 0 });
+    expect(store.getEpisode('Serie/ep1.mkv')?.thumbCheckedAt).toBeNull();
+
+    const segunda = await runThumbs({ store, libraryRoot, dataDir, grab: lento });
+    expect(segunda.generated).toBe(1);
+    expect(store.getEpisode('Serie/ep1.mkv')?.thumbFile).not.toBeNull();
+  });
+
+  test('retryFailed reprocessa so quem falhou, sem refazer os prontos', async () => {
+    // ep1 falha de arquivo (NADA nas duas tentativas), ep2 sai bem.
+    const primeira = await runThumbs({
+      store,
+      libraryRoot,
+      dataDir,
+      grab: fakeGrab([], [NADA, NADA, CHEIO]),
+    });
+    expect(primeira).toMatchObject({ generated: 1, failed: 1 });
+
+    // Rodada normal nao insiste no carimbado...
+    const normal = await runThumbs({ store, libraryRoot, dataDir, grab: fakeGrab([]) });
+    expect(normal.considered).toBe(0);
+
+    // ...mas a rodada de boot (retryFailed) da a segunda chance so a ele.
+    const calls: Chamada[] = [];
+    const retry = await runThumbs({
+      store,
+      libraryRoot,
+      dataDir,
+      retryFailed: true,
+      grab: fakeGrab(calls),
+    });
+    expect(retry.considered).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(store.getEpisode('Serie/ep1.mkv')?.thumbFile).not.toBeNull();
   });
 
   test('ffmpeg que sai sem escrever nada conta como falha, e nao como quadro vazio', async () => {

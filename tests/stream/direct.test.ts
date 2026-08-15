@@ -195,6 +195,64 @@ describe('copia remuxada', () => {
   });
 });
 
+describe('remuxPending: original com dolby tocaria mudo, melhor preparar', () => {
+  let pendente: FastifyInstance;
+  const avisados: string[] = [];
+
+  beforeAll(async () => {
+    pendente = Fastify({ maxParamLength: 2048 });
+    registerStreamRoutes(
+      pendente,
+      {
+        getEpisode: (id) =>
+          id === 'mudo'
+            ? { relativePath: 'Serie/ep 02.mkv', remuxPending: true }
+            : id === 'pronto'
+              ? { relativePath: 'Serie/ep 02.mkv', remuxPath: remuxado, remuxPending: false }
+              : id === 'copia-sumiu'
+                ? {
+                    relativePath: 'Serie/ep 02.mkv',
+                    remuxPath: join(dir, '..', 'data', 'remux', 'nao-existe.mp4'),
+                    remuxPending: true,
+                  }
+                : null,
+      },
+      dir,
+      undefined,
+      (episodeId) => avisados.push(episodeId),
+    );
+    await pendente.ready();
+  });
+
+  afterAll(async () => {
+    await pendente.close();
+  });
+
+  test('devolve 202 preparando em vez do MKV mudo, e avisa a fila de prioridade', async () => {
+    const r = await pendente.inject({ method: 'GET', url: '/api/stream/mudo' });
+    expect(r.statusCode).toBe(202);
+    expect(r.headers['cache-control']).toBe('no-store');
+    expect(JSON.parse(r.body)).toEqual({ preparing: true });
+    expect(avisados).toContain('mudo');
+  });
+
+  test('HEAD tambem responde 202: e o probe que o cliente usa', async () => {
+    const r = await pendente.inject({ method: 'HEAD', url: '/api/stream/mudo' });
+    expect(r.statusCode).toBe(202);
+  });
+
+  test('com remux pronto a flag nao interfere: sai o MP4', async () => {
+    const r = await pendente.inject({ method: 'GET', url: '/api/stream/pronto' });
+    expect(r.statusCode).toBe(200);
+    expect(r.rawPayload.equals(REMUXED)).toBe(true);
+  });
+
+  test('copia sumida com pendencia vira 202, nunca o original mudo', async () => {
+    const r = await pendente.inject({ method: 'GET', url: '/api/stream/copia-sumiu' });
+    expect(r.statusCode).toBe(202);
+  });
+});
+
 describe('?audio=N (troca de dublagem)', () => {
   let comAudio: FastifyInstance;
 

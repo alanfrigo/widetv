@@ -1,6 +1,6 @@
 import type { NowPlaying } from '@shared/api-types';
 
-import { fetchNow, streamUrl, type TimedNow } from './api';
+import { fetchNow, probeStream, streamUrl, type TimedNow } from './api';
 import { awaitMediaReady, startPlayback, type ReadyOutcome } from './playback';
 import { decideCorrection, expectedOffsetMs, type NowSample } from './sync';
 
@@ -24,6 +24,11 @@ const RESYNC_INTERVAL_MS = 60_000;
 /** Prazo para a metadata do arquivo chegar antes de seguir sem posicionar. */
 const METADATA_TIMEOUT_MS = 8_000;
 
+/** De quanto em quanto tempo perguntar se o episodio "preparando" ficou pronto. */
+const STREAM_POLL_MS = 3_000;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
 export interface PlayerEvents {
   onTuned?: (playing: NowPlaying) => void;
   onEpisodeChange?: (playing: NowPlaying) => void;
@@ -31,6 +36,12 @@ export interface PlayerEvents {
   onBlocked?: () => void;
   /** Metadata do arquivo nao chegou no prazo, ou o arquivo deu erro. */
   onStalled?: (reason: ReadyOutcome) => void;
+  /**
+   * O episodio da grade respondeu 202: o servidor esta gerando o remux (o
+   * original tocaria mudo). O player espera sozinho e segue quando pronto;
+   * este aviso existe so para a tela nao ficar preta sem explicacao.
+   */
+  onPreparing?: () => void;
   onError?: (error: unknown) => void;
 }
 
@@ -53,6 +64,10 @@ export class ChannelPlayer {
   private lastResyncMs = 0;
   private timer: number | null = null;
   private channelNumber: number | null = null;
+  /** Invalida a espera de "preparando" de um load antigo quando outro assume. */
+  private loadToken = 0;
+  /** Ultimo id cuja pre-carga foi PEDIDA; evita reprovar o mesmo arquivo. */
+  private preloadRequestedId: string | null = null;
   private volume = 1;
   private muted = false;
   /** Mudo imposto pela politica de autoplay, nao escolhido pelo usuario. */
@@ -109,6 +124,7 @@ export class ChannelPlayer {
     this.stopLoop();
     this.channelNumber = channelNumber;
     this.preloadedEpisodeId = null;
+    this.preloadRequestedId = null;
 
     const timed = await fetchNow(channelNumber);
     if (timed === null) return false;
@@ -184,6 +200,7 @@ export class ChannelPlayer {
     this.playing = null;
     this.sample = null;
     this.preloadedEpisodeId = null;
+    this.preloadRequestedId = null;
     this.activeEpisodeId = null;
     this.showOnly(this.active);
     for (const video of [this.active, this.spare]) {
@@ -224,6 +241,23 @@ export class ChannelPlayer {
     this.playing = timed.data;
     this.lastResyncMs = Date.now();
     this.activeEpisodeId = timed.data.episode.id;
+
+    // Episodio respondendo 202 (remux com prioridade em andamento): espera
+    // antes de entregar a URL ao <video>, senao o elemento morre num erro
+    // generico e o canal fica sem som ou sem imagem ate a proxima sintonia.
+    // O offset nao se perde: `expectedOffsetMs` projeta a grade pelo relogio,
+    // entao ao ficar pronto o video entra na posicao em que a grade ja esta.
+    const token = ++this.loadToken;
+    let probe = await probeStream(timed.data.episode.id);
+    if (probe === 'preparing') this.events.onPreparing?.();
+    while (probe === 'preparing') {
+      await sleep(STREAM_POLL_MS);
+      // Outro load, stop() ou tune() assumiu no meio: esta espera morreu.
+      if (token !== this.loadToken || this.channelNumber === null) return;
+      probe = await probeStream(timed.data.episode.id);
+    }
+    // 'error' segue em frente: um HEAD bloqueado nao prova nada, e o fluxo
+    // normal ja sabe avisar 'Sem sinal' quando o arquivo realmente nao vem.
 
     video.src = streamUrl(timed.data.episode.id);
     video.load();
@@ -300,11 +334,18 @@ export class ChannelPlayer {
   }
 
   private preload(episodeId: string): void {
-    if (this.preloadedEpisodeId === episodeId) return;
-    this.preloadedEpisodeId = episodeId;
-    this.spare.src = streamUrl(episodeId);
-    this.spare.currentTime = 0;
-    this.spare.load();
+    if (this.preloadRequestedId === episodeId) return;
+    this.preloadRequestedId = episodeId;
+    // So pre-carrega arquivo que ja existe: um 202 no spare morreria num erro
+    // de media e a virada entraria com um elemento quebrado. Sem preload, a
+    // virada cai no resync/load, que sabe esperar o "preparando".
+    void probeStream(episodeId).then((probe) => {
+      if (probe !== 'ready' || this.preloadRequestedId !== episodeId) return;
+      this.preloadedEpisodeId = episodeId;
+      this.spare.src = streamUrl(episodeId);
+      this.spare.currentTime = 0;
+      this.spare.load();
+    });
   }
 
   /**
@@ -336,6 +377,7 @@ export class ChannelPlayer {
 
         this.spare.pause();
         this.preloadedEpisodeId = null;
+        this.preloadRequestedId = null;
       }
       await this.resync(channelNumber, true);
     } finally {

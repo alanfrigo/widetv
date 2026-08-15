@@ -36,6 +36,9 @@ async function main(): Promise<void> {
     store,
     libraryRoot: root,
     dataDir,
+    // Mesmo override do servidor: fora do PATH em launchd/container.
+    ffmpegPath: process.env.FFMPEG_PATH?.trim() || 'ffmpeg',
+    ffprobePath: process.env.FFPROBE_PATH?.trim() || 'ffprobe',
     onProgress: ({ done, total, episode }) => {
       // Progresso vai para stderr para nao sujar um stdout redirecionado.
       const agora = Date.now();

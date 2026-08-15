@@ -118,15 +118,20 @@ export function streamUrl(episodeId: string, audioIndex?: number | null): string
   return audioIndex == null ? base : `${base}?audio=${String(audioIndex)}`;
 }
 
-export type VariantProbe = 'ready' | 'preparing' | 'error';
+export type StreamProbe = 'ready' | 'preparing' | 'error';
 
 /**
- * Pergunta se a variante de dublagem ja existe, sem baixar nada. 202 significa
- * "o servidor esta gerando": pergunte de novo daqui a alguns segundos.
+ * Pergunta se o arquivo que o stream serviria ja existe, sem baixar nada.
+ * Vale para a dublagem (`?audio=N`) e para o proprio episodio: 202 significa
+ * "o servidor esta gerando" (variante ou remux do episodio que tocaria mudo) -
+ * pergunte de novo daqui a alguns segundos.
  */
-export async function probeVariant(episodeId: string, audioIndex: number): Promise<VariantProbe> {
+export async function probeStream(
+  episodeId: string,
+  audioIndex?: number | null,
+): Promise<StreamProbe> {
   try {
-    const response = await fetch(streamUrl(episodeId, audioIndex), {
+    const response = await fetch(streamUrl(episodeId, audioIndex ?? null), {
       method: 'HEAD',
       credentials: 'same-origin',
     });

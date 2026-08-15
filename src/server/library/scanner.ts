@@ -386,7 +386,14 @@ export async function scanLibrary(
       const info = await resolveEntry(entry, showPath, rootReal, rootReal);
       if (info?.kind !== 'directory') return null;
 
-      const parsed = parseFolderTitle(entry.name);
+      let parsed = parseFolderTitle(entry.name);
+      // Pasta que e SO temporada ("Temporada 37", "S05") solta na raiz: o
+      // parser nao tira titulo nenhum dela (a busca do corte comeca no token
+      // 1), entao `parsed.season` sai null - mas o numero existe e vale como
+      // base dos episodios, igual a uma subpasta de temporada.
+      const loneSeason =
+        smartGrouping && parsed.season === null ? parseSeasonFolder(entry.name) : null;
+
       const episodes: ScannedEpisode[] = [];
       await collectEpisodes(
         {
@@ -397,7 +404,7 @@ export async function scanLibrary(
           // `Serie.S02.1080p...` carrega a temporada no proprio nome da pasta e
           // vale como base, igual a uma subpasta `Temporada 2`. Fora do
           // agrupamento isso fica null: o modo antigo nao pode mudar sozinho.
-          season: smartGrouping ? parsed.season : null,
+          season: smartGrouping ? (parsed.season ?? loneSeason) : null,
           extensions,
           ancestors: [rootReal, info.real],
         },
@@ -405,6 +412,18 @@ export async function scanLibrary(
       );
       // Serie sem nenhum episodio valido nao vira canal.
       if (episodes.length === 0) return null;
+
+      // A temporada solta nao tem titulo para oferecer, e sem titulo ela
+      // viraria um canal proprio ("temporada-37" nunca casa com "the-simpsons"
+      // no agrupamento). O titulo esta onde ele realmente mora: no nome dos
+      // arquivos ("The.Simpsons.S37E01..."). Derivado de la, a pasta entra no
+      // grupo da serie como qualquer pasta de release.
+      if (loneSeason !== null) {
+        const derived = titleFromEpisodes(episodes);
+        if (derived !== null) {
+          parsed = { title: derived.title, year: derived.year, season: loneSeason, isRelease: true };
+        }
+      }
 
       return { name: entry.name, absolutePath: showPath, parsed, episodes };
     },
@@ -414,6 +433,32 @@ export async function scanLibrary(
   const shows = smartGrouping ? groupFolders(folders) : folders.map(toRawShow);
   shows.sort((a, b) => compareNatural(a.name, b.name));
   return disambiguateSlugs(shows);
+}
+
+/**
+ * Titulo da serie derivado dos NOMES DE ARQUIVO ("The.Simpsons.S37E01...").
+ * Voto de maioria absoluta entre os episodios: um arquivo fora do padrao nao
+ * pode rebatizar a pasta inteira, e empate nao decide nada.
+ * @returns null quando os arquivos nao carregam serie nenhuma ("01.mp4").
+ */
+function titleFromEpisodes(episodes: readonly ScannedEpisode[]): ParsedFolderTitle | null {
+  const votes = new Map<string, { count: number; parsed: ParsedFolderTitle }>();
+  for (const episode of episodes) {
+    const parsed = parseFolderTitle(episode.title);
+    // So um nome que PERDEU pedaco no parse (temporada/release cortados) prova
+    // que carrega um titulo de serie; "01" cru nao prova nada.
+    if (!parsed.isRelease || parsed.title === episode.title) continue;
+    const key = groupingKey(parsed);
+    const vote = votes.get(key);
+    if (vote === undefined) votes.set(key, { count: 1, parsed });
+    else vote.count += 1;
+  }
+
+  let best: { count: number; parsed: ParsedFolderTitle } | null = null;
+  for (const vote of votes.values()) {
+    if (best === null || vote.count > best.count) best = vote;
+  }
+  return best !== null && best.count * 2 > episodes.length ? best.parsed : null;
 }
 
 /** Modo antigo: uma pasta e uma serie, e a ordem da grade e a da caminhada. */

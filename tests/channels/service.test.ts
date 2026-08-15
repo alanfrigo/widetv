@@ -136,8 +136,8 @@ describe('listChannels', () => {
   test('com metadata, as artes apontam para as rotas do proprio canal', () => {
     const src = source([THUNDER], { 1: [episode(1, 1, MIN)] }, { 1: metadataRow(1) });
     const canal = listChannels(src)[0]!;
-    expect(canal.posterUrl).toBe('/api/channels/7/poster');
-    expect(canal.backdropUrl).toBe('/api/channels/7/backdrop');
+    expect(canal.posterUrl).toBe(`/api/channels/7/poster?v=${String(EPOCH)}`);
+    expect(canal.backdropUrl).toBe(`/api/channels/7/backdrop?v=${String(EPOCH)}`);
     expect(canal.year).toBe(1985);
     expect(canal.overview).toBe('Sinopse.');
   });
@@ -151,7 +151,7 @@ describe('listChannels', () => {
     );
     const canal = listChannels(src)[0]!;
     expect(canal.backdropUrl).toBeNull();
-    expect(canal.posterUrl).toBe('/api/channels/7/poster');
+    expect(canal.posterUrl).toBe(`/api/channels/7/poster?v=${String(EPOCH)}`);
   });
 
   test('seasons vem crescente, sem repetir e sem os episodios sem temporada', () => {
@@ -258,8 +258,8 @@ describe('resolveNowPlaying', () => {
   test('o canal do "no ar" carrega as mesmas artes da listagem', () => {
     const src = source([THUNDER], { 1: [episode(1, 1, 20 * MIN)] }, { 1: metadataRow(1) });
     const r = resolveNowPlaying(src, 7, EPOCH, EPOCH)!;
-    expect(r.channel.posterUrl).toBe('/api/channels/7/poster');
-    expect(r.channel.backdropUrl).toBe('/api/channels/7/backdrop');
+    expect(r.channel.posterUrl).toBe(`/api/channels/7/poster?v=${String(EPOCH)}`);
+    expect(r.channel.backdropUrl).toBe(`/api/channels/7/backdrop?v=${String(EPOCH)}`);
     expect(r.channel.year).toBe(1985);
   });
 

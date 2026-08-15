@@ -150,8 +150,8 @@ describe('GET /api/channels', () => {
     const r = await app.inject({ method: 'GET', url: '/api/channels' });
     expect(disparos).toBe(0);
     const canal = r.json<ChannelSummary[]>()[0]!;
-    expect(canal.posterUrl).toBe('/api/channels/7/poster');
-    expect(canal.backdropUrl).toBe('/api/channels/7/backdrop');
+    expect(canal.posterUrl).toBe(`/api/channels/7/poster?v=${String(EPOCH)}`);
+    expect(canal.backdropUrl).toBe(`/api/channels/7/backdrop?v=${String(EPOCH)}`);
     METADATA.clear();
   });
 });
@@ -316,8 +316,8 @@ describe('GET /api/now', () => {
 
     METADATA.set(1, metadataRow(1));
     const depois = (await app.inject({ url: '/api/now' })).json<NowPlaying[]>();
-    expect(depois[0]!.channel.posterUrl).toBe('/api/channels/7/poster');
-    expect(depois[0]!.channel.backdropUrl).toBe('/api/channels/7/backdrop');
+    expect(depois[0]!.channel.posterUrl).toBe(`/api/channels/7/poster?v=${String(EPOCH)}`);
+    expect(depois[0]!.channel.backdropUrl).toBe(`/api/channels/7/backdrop?v=${String(EPOCH)}`);
     METADATA.clear();
   });
 

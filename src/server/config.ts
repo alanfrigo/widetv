@@ -61,6 +61,13 @@ export interface AppConfig {
    * provedores sem chave (TVMaze, iTunes) e o servidor sobe do mesmo jeito.
    */
   tmdbApiKey: string | null;
+  /**
+   * Caminho dos binarios de video. Default: 'ffmpeg'/'ffprobe' no PATH - que
+   * NAO existe num processo de launchd/systemd sem shell (o Homebrew mora em
+   * /opt/homebrew/bin). Sem isto, remux, quadros e probe morrem em ENOENT.
+   */
+  ffmpegPath: string;
+  ffprobePath: string;
 }
 
 export type Env = Record<string, string | undefined>;
@@ -212,5 +219,7 @@ export function loadConfig(env: Env): AppConfig {
     // Variavel em branco (a UI do TrueNAS manda assim) conta como ausente: uma
     // chave vazia so renderia 401 em toda busca de capa.
     tmdbApiKey: env.TMDB_API_KEY?.trim() || null,
+    ffmpegPath: env.FFMPEG_PATH?.trim() || 'ffmpeg',
+    ffprobePath: env.FFPROBE_PATH?.trim() || 'ffprobe',
   };
 }

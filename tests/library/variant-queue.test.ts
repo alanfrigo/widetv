@@ -150,6 +150,25 @@ describe('createVariantQueue', () => {
     await waitReady(queue, 'Serie/ep1.mkv', 1);
   });
 
+  test('variante gravada por versao antiga do plano regenera em vez de servir a velha', async () => {
+    await mkdir(join(dataDir, 'remux'), { recursive: true });
+    await writeFile(join(dataDir, 'remux', 'variante-antiga.mp4'), 'velha');
+    store.upsertAudioVariant({
+      episodeId: 'Serie/ep1.mkv',
+      audioIndex: 1,
+      file: 'variante-antiga.mp4',
+      mtimeMs: 111,
+      size: 1000,
+      createdAt: 1,
+    });
+    const queue = createVariantQueue({ store, libraryRoot, dataDir, convert: fakeConvert([]) });
+
+    expect((await queue.request('Serie/ep1.mkv', 1)).status).toBe('preparing');
+    const ready = await waitReady(queue, 'Serie/ep1.mkv', 1);
+    expect(ready.path).toBe(join(dataDir, 'remux', variantFileName('Serie/ep1.mkv', 1, 111, 1000)));
+    expect(await readdir(join(dataDir, 'remux'))).not.toContain('variante-antiga.mp4');
+  });
+
   test('linha valida com arquivo apagado gera de novo em vez de servir 404', async () => {
     const queue = createVariantQueue({ store, libraryRoot, dataDir, convert: fakeConvert([]) });
     await waitReady(queue, 'Serie/ep1.mkv', 1).catch(() => undefined);

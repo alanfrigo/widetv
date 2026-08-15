@@ -429,6 +429,33 @@ describe('scanLibrary', () => {
     });
   });
 
+  describe('temporada solta na raiz', () => {
+    it('pasta que e SO temporada junta-se a serie pelo nome dos arquivos', async () => {
+      const shows = await scanLibrary(fixture('loose'));
+
+      expect(shows.map((s) => s.name)).toEqual(['The Simpsons']);
+      const simpsons = shows[0]!;
+      expect(simpsons.slug).toBe('the-simpsons');
+      expect(simpsons.episodes).toHaveLength(4);
+      // A temporada da pasta solta vale para os episodios dela.
+      expect(simpsons.episodes.map((e) => e.season)).toEqual([36, 36, 37, 37]);
+    });
+
+    it('arquivos sem serie no nome mantem a pasta como canal proprio', async () => {
+      const shows = await scanLibrary(fixture('loose-orfa'));
+
+      expect(shows.map((s) => s.name)).toEqual(['S05']);
+      // Mesmo sem titulo derivavel, o numero da pasta vale como temporada.
+      expect(shows[0]!.episodes[0]!.season).toBe(5);
+    });
+
+    it('smartGrouping false nao deriva nada: pasta solta continua canal literal', async () => {
+      const shows = await scanLibrary(fixture('loose'), { smartGrouping: false });
+
+      expect(shows.map((s) => s.name)).toEqual(['Temporada 37', 'The Simpsons']);
+    });
+  });
+
   describe('raiz invalida', () => {
     it('lanca erro com o caminho na mensagem quando a raiz nao existe', async () => {
       const missing = fixture('nao-existe-em-lugar-nenhum');

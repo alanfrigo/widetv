@@ -32,6 +32,15 @@ const FILES = [
   "ignored/Serie/Serie Ep 01.mp4",
   "ignored/Serie/capa.jpg",
   "ignored/Serie/notas.txt",
+  // Temporada SOLTA na raiz, irma da pasta da serie: o titulo so existe no
+  // nome dos arquivos. Sem derivacao, viraria um segundo canal "Temporada 37".
+  "loose/Temporada 37/The.Simpsons.S37E01.1080p.DSNP.WEB-DL-DUAL.mkv",
+  "loose/Temporada 37/The.Simpsons.S37E02.1080p.DSNP.WEB-DL-DUAL.mkv",
+  "loose/The Simpsons/The.Simpsons.S36E01.mkv",
+  "loose/The Simpsons/The.Simpsons.S36E02.mkv",
+  // Temporada solta cujos arquivos nao carregam serie nenhuma: nao ha de onde
+  // derivar titulo, e a pasta continua canal proprio (comportamento antigo).
+  "loose-orfa/S05/01.mp4",
   "many/Serie 1/Serie 1 Ep 01.mp4",
   "many/Serie 10/Serie 10 Ep 01.mp4",
   "many/Serie 11/Serie 11 Ep 01.mp4",

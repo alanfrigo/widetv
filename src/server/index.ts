@@ -13,6 +13,9 @@ import { registerHistoryRoutes } from './history/routes';
 import { openStore } from './library/index-store';
 import { registerLibraryRoutes } from './library/routes';
 import { createLibraryController, scanCommand } from './library/scan-controller';
+import { remuxFileName } from './library/remux-job';
+import { createRemuxQueue } from './library/remux-queue';
+import { defaultAudioNeedsCompat } from './library/remux-plan';
 import { createVariantQueue } from './library/variant-queue';
 import { createEnricher } from './metadata/service';
 import { registerSettingsRoutes } from './settings/routes';
@@ -86,6 +89,8 @@ async function main(): Promise<void> {
     libraryRoot: config.libraryRoot,
     dataDir: config.dataDir,
     settings,
+    ffmpegPath: config.ffmpegPath,
+    ffprobePath: config.ffprobePath,
     log: (message) => {
       app.log.info(message);
     },
@@ -105,12 +110,19 @@ async function main(): Promise<void> {
     // Acervo ja indexado: uma rodada de remux no boot pega o que ficou pendente
     // (deploy da feature, rodada interrompida). Quando esta tudo pronto, ela so
     // percorre o indice e volta - barata o bastante para rodar sempre.
+    // Metadata tambem: e o que faz o TTL de not_found valer na pratica (sem
+    // este disparo, uma serie "nao encontrada" ha 8 dias so seria retentada
+    // depois de um scan ou clique no painel) e o que busca a arte 16:9 quando
+    // a TMDB_API_KEY aparece entre um boot e outro.
+    enricher.trigger();
     controller.triggerRemux();
     // Mesmo raciocinio para os quadros, e aqui ele e o que torna a fila
     // RETOMAVEL: um acervo grande leva horas, o servidor reinicia no meio, e a
     // rodada do boot continua exatamente de onde a anterior parou (o que ja foi
     // tentado esta carimbado no indice).
-    controller.triggerThumbs();
+    // `retryFailed`: uma vez por boot, os episodios que ficaram carimbados sem
+    // quadro (falha ambiental de rodada antiga) ganham nova tentativa.
+    controller.triggerThumbs({ retryFailed: true });
   }
 
   // Mudou preferencia no painel? O controlador reage sem reiniciar o servidor:
@@ -148,6 +160,7 @@ async function main(): Promise<void> {
     store,
     libraryRoot: config.libraryRoot,
     dataDir: config.dataDir,
+    ffmpegPath: config.ffmpegPath,
     log: (message) => {
       app.log.warn(message);
     },
@@ -169,6 +182,20 @@ async function main(): Promise<void> {
     return variants.request(episodeId, audioIndex);
   }
 
+  // Fila de prioridade do remux principal: o episodio que alguem tentou
+  // assistir e cairia no original mudo e convertido na frente da rodada de
+  // catalogo (que anda na ordem da grade e pode levar horas ate chegar nele).
+  const remuxQueue = createRemuxQueue({
+    store,
+    libraryRoot: config.libraryRoot,
+    dataDir: config.dataDir,
+    ffmpegPath: config.ffmpegPath,
+    ffprobePath: config.ffprobePath,
+    log: (message) => {
+      app.log.warn(message);
+    },
+  });
+
   // `EpisodeRow.id` JA e o caminho relativo a raiz: e assim que o mesmo indice
   // funciona no host e dentro do container.
   registerStreamRoutes(
@@ -180,15 +207,28 @@ async function main(): Promise<void> {
         // `basename` pelo mesmo motivo da capa: o nome vem do banco e vira
         // caminho - mesmo escrito por nos, ele nao pode sair de `remux/`.
         const remux = store.getRemux(row.id, row.mtimeMs, row.size);
+        // Linha de versao antiga do plano so vale enquanto o defeito dela nao
+        // for audivel: quando a faixa default e dolby/dts, o MP4 antigo pode
+        // ser exatamente o da gemea AAC quebrada - melhor 202 do que mudo.
+        const fresh = remux !== null && remux.file === remuxFileName(row.id, row.mtimeMs, row.size);
+        const wouldBeSilent =
+          row.videoCodec !== null && defaultAudioNeedsCompat(row.audioTracks);
+        const pending = wouldBeSilent && !fresh;
         return {
           relativePath: row.id,
           remuxPath:
-            remux === null ? null : join(config.dataDir, 'remux', basename(remux.file)),
+            remux === null || pending
+              ? null
+              : join(config.dataDir, 'remux', basename(remux.file)),
+          remuxPending: pending,
         };
       },
     },
     config.libraryRoot,
     resolveAudio,
+    (episodeId) => {
+      remuxQueue.ensure(episodeId);
+    },
   );
 
   registerHistoryRoutes(app, {

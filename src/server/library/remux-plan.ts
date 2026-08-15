@@ -36,6 +36,26 @@ const UNIVERSAL = new Set(['aac', 'mp3']);
  */
 const AAC_BITRATE = '320k';
 
+/**
+ * Toda saida AAC passa por este aformat. Sem ele, eac3/dts 5.1 decodificam
+ * para o layout "5.1(side)", que nao tem channelConfiguration padrao no
+ * MPEG-4: o encoder aac do ffmpeg grava channelConfiguration=0 + PCE, e o
+ * CoreAudio (Safari, AVFoundation, Firefox no macOS) rejeita a faixa inteira
+ * - video toca, audio mudo. A lista restringe a layouts com
+ * channelConfiguration padrao; 5.1(side) vira 5.1 por remapeamento, sem
+ * downmix.
+ */
+const AAC_CHANNEL_LAYOUTS = 'aformat=channel_layouts=7.1|5.1|stereo|mono';
+
+/**
+ * Versao do plano, embutida no nome dos MP4 gerados. Mudou a receita do
+ * ffmpeg? Incremente: o nome esperado muda, a rodada seguinte reconverte e o
+ * arquivo da versao antiga e apagado. Sem isso, um remux gravado com um plano
+ * defeituoso (ex.: v1 gerava AAC com channelConfiguration=0, mudo no Safari)
+ * ficaria valido para sempre, porque o cache so olha (mtime, size) do fonte.
+ */
+export const REMUX_PLAN_VERSION = 2;
+
 export type RemuxReason = 'container' | 'audio';
 
 interface AudioOutput {
@@ -64,6 +84,16 @@ export interface RemuxPlanInput {
 /** Faixa que o player liga sozinho: a marcada default, senao a primeira. */
 function defaultTrack(tracks: readonly AudioTrackRef[]): AudioTrackRef | null {
   return tracks.find((track) => track.isDefault) ?? tracks[0] ?? null;
+}
+
+/**
+ * O arquivo ORIGINAL tocaria mudo num navegador sem licenca Dolby? true quando
+ * a faixa que o player liga sozinho nao e universal (aac/mp3). E o criterio da
+ * rota de stream para responder "preparando" em vez de servir episodio sem som.
+ */
+export function defaultAudioNeedsCompat(tracks: readonly AudioTrackRef[]): boolean {
+  const chosen = defaultTrack(tracks);
+  return chosen !== null && (chosen.codec === null || !UNIVERSAL.has(chosen.codec));
 }
 
 function planAudioOutputs(tracks: readonly AudioTrackRef[]): AudioOutput[] {
@@ -120,9 +150,7 @@ export function planRemux(input: RemuxPlanInput): RemuxPlan | null {
 
   const containerNeeds = extension === '.mkv';
 
-  const chosen = defaultTrack(input.audioTracks);
-  const audioNeeds =
-    chosen !== null && (chosen.codec === null || !UNIVERSAL.has(chosen.codec));
+  const audioNeeds = defaultAudioNeedsCompat(input.audioTracks);
 
   if (!containerNeeds && !audioNeeds) return null;
 
@@ -140,7 +168,11 @@ export function planRemux(input: RemuxPlanInput): RemuxPlan | null {
     if (output.mode === 'copy') {
       args.push(`-c:a:${String(position)}`, 'copy');
     } else {
-      args.push(`-c:a:${String(position)}`, 'aac', `-b:a:${String(position)}`, AAC_BITRATE);
+      args.push(
+        `-c:a:${String(position)}`, 'aac',
+        `-b:a:${String(position)}`, AAC_BITRATE,
+        `-filter:a:${String(position)}`, AAC_CHANNEL_LAYOUTS,
+      );
     }
   });
 
@@ -200,7 +232,11 @@ export function planAudioVariant(input: VariantPlanInput): RemuxPlan | null {
     if (output.mode === 'copy') {
       args.push(`-c:a:${String(position)}`, 'copy');
     } else {
-      args.push(`-c:a:${String(position)}`, 'aac', `-b:a:${String(position)}`, AAC_BITRATE);
+      args.push(
+        `-c:a:${String(position)}`, 'aac',
+        `-b:a:${String(position)}`, AAC_BITRATE,
+        `-filter:a:${String(position)}`, AAC_CHANNEL_LAYOUTS,
+      );
     }
   });
   outputs.forEach((output, position) => {

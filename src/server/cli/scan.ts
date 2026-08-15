@@ -48,6 +48,8 @@ async function main(): Promise<void> {
     root,
     store,
     smartGrouping,
+    // Mesmo override do servidor: fora do PATH em launchd/container.
+    ffprobePath: process.env.FFPROBE_PATH?.trim() || 'ffprobe',
     onProgress: ({ done, total, show }) => {
       // Progresso vai para stderr para nao sujar um stdout redirecionado.
       const agora = Date.now();

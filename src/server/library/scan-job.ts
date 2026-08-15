@@ -42,6 +42,8 @@ export interface ScanJobOptions {
   store: Store;
   /** Injetavel para teste; por padrao chama o ffprobe de verdade. */
   probe?: (filePath: string) => Promise<ProbeResult>;
+  /** Caminho do binario do ffprobe quando ele nao esta no PATH (launchd, container). */
+  ffprobePath?: string;
   concurrency?: number;
   onProgress?: (progress: ScanProgress) => void;
   /** Repassado ao scanner: junta pastas de release da mesma serie. Default: true. */
@@ -113,7 +115,9 @@ function toRow(measured: Measured, showId: number): EpisodeInput {
 export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
   const startedAt = Date.now();
   const { root, store } = options;
-  const probe = options.probe ?? probeFile;
+  const probe =
+    options.probe ??
+    ((filePath: string) => probeFile(filePath, { ffprobePath: options.ffprobePath ?? 'ffprobe' }));
   const concurrency = options.concurrency ?? Math.max(2, cpus().length);
   const useCache = options.useCache ?? true;
 

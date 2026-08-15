@@ -193,8 +193,8 @@ describe('GET /api/history/resume', () => {
     expect(lista[0]).toMatchObject({
       channelNumber: 7,
       channelName: 'Serie',
-      posterUrl: '/api/channels/7/poster',
-      backdropUrl: '/api/channels/7/backdrop',
+      posterUrl: '/api/channels/7/poster?v=1',
+      backdropUrl: '/api/channels/7/backdrop?v=1',
       positionMs: 600_000,
       durationMs: 1_320_000,
       updatedAt: 9,

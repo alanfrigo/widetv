@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { ShowMetadataRow, ShowRow } from '../library/index-store';
 import {
   downloadImage,
+  ImageGoneError,
   lookupShowMetadata,
   type ChainOptions,
   type LookupResult,
@@ -119,10 +120,13 @@ export type EnrichScope = 'missing' | 'refresh';
  * reconsultar 460 series a cada boot seria abuso.
  *
  * No escopo `refresh`, entram tambem as que nunca tiveram a arte 16:9
- * procurada. O criterio e `backdropCheckedAt`, e nao `backdropFile === null`:
- * o segundo confunde "ainda nao procurei" com "procurei e o provedor nao tem",
- * e reofereceria para sempre toda serie que o TMDB conhece mas nao ilustra.
- * Depois de uma tentativa concluida a serie sai da fila, com arte ou sem.
+ * procurada e as que ficaram SEM CAPA (o provedor respondeu sem imagem, ou a
+ * imagem sumiu do CDN): "so o que falta" existe justamente para completar
+ * buraco, e sem isto uma serie encontrada sem poster ficaria selada para
+ * sempre. O criterio da arte e `backdropCheckedAt`, e nao `backdropFile ===
+ * null`: o segundo confunde "ainda nao procurei" com "procurei e o provedor
+ * nao tem", e reofereceria para sempre toda serie que o TMDB conhece mas nao
+ * ilustra.
  */
 export function listShowsMissingMetadata(
   store: MetadataReader,
@@ -134,7 +138,7 @@ export function listShowsMissingMetadata(
     const row = store.getShowMetadata(show.id);
     if (row === null) return true;
     if (row.notFound) return nowMs - row.fetchedAt >= ttlMs;
-    return scope === 'refresh' && row.backdropCheckedAt === null;
+    return scope === 'refresh' && (row.backdropCheckedAt === null || row.posterFile === null);
   });
 }
 
@@ -206,6 +210,13 @@ async function enrichOne(
   const download = options.download ?? ((url: string) => downloadImage(url, options));
   const log = options.log ?? ((): void => undefined);
 
+  // Sem TMDB na cadeia, arte 16:9 e estruturalmente impossivel (so ele tem).
+  // Este flag e o que impede o carimbo de "ja procurei arte" nesse estado -
+  // senao, adicionar a chave depois nao recuperaria backdrop nenhum sem um
+  // "refazer tudo" que apaga capa e sinopse boas junto.
+  const backdropCapable =
+    typeof options.tmdbApiKey === 'string' && options.tmdbApiKey.trim() !== '';
+
   // O que precisa sobreviver a esta rodada. `not_found` nao guarda nada, e
   // linha ausente muito menos: nos dois casos a fusao vira sobrescrita sozinha.
   const existing = store.getShowMetadata(show.id);
@@ -247,9 +258,12 @@ async function enrichOne(
     if (keep !== null) {
       // "Nao conheco esta serie" nao e motivo para apagar o que outro provedor
       // ja tinha respondido - e o provedor de hoje pode ate ser outro. Registra
-      // so a tentativa, e a serie sai da fila da rebusca em vez de voltar a
-      // cada clique.
-      store.upsertShowMetadata({ ...keep, backdropCheckedAt: now() });
+      // so a tentativa (quando a cadeia era capaz de arte), e a serie sai da
+      // fila da rebusca em vez de voltar a cada clique.
+      store.upsertShowMetadata({
+        ...keep,
+        backdropCheckedAt: backdropCapable ? now() : keep.backdropCheckedAt,
+      });
       return;
     }
 
@@ -259,7 +273,7 @@ async function enrichOne(
       // A arte de quadro sobrevive: ela nao veio do provedor, entao "nao
       // conheco esta serie" nao e motivo para apaga-la.
       backdropFile: frame?.backdropFile ?? null,
-      backdropCheckedAt: now(),
+      backdropCheckedAt: backdropCapable ? now() : null,
       backdropSource: frame?.backdropSource ?? null,
       year: null,
       overview: null,
@@ -271,6 +285,16 @@ async function enrichOne(
   }
 
   const { metadata } = result;
+
+  // A cadeia respondeu, mas com um provedor fora do ar no caminho: sem esta
+  // linha de log uma chave de TMDB invalida (401 em tudo) seria invisivel -
+  // as capas continuam vindo do TVMaze e ninguem descobre o provedor morto.
+  if (result.providerFailed) {
+    log(
+      `metadata de "${show.name}" veio incompleta: ` +
+        (result.failureReason ?? 'um provedor da cadeia falhou'),
+    );
+  }
 
   // So baixa o que a linha NAO tem. Nao e economia de rede: capa e arte sao
   // gravadas em `<showId>.jpg`, entao um provedor mais fraco escreveria por
@@ -284,12 +308,17 @@ async function enrichOne(
       posterFile = await writeArt(dir, posterFileName(show.id), await download(metadata.posterUrl));
       report.posters += 1;
     } catch (error) {
-      // A capa e a razao de ser disto tudo. Gravar a linha sem ela sela o show
-      // como "ja resolvido" e a imagem nunca mais seria tentada; sem gravar, a
-      // proxima rodada tenta de novo.
-      report.failed += 1;
       log(`capa de "${show.name}" falhou: ${detail(error)}`);
-      return;
+      // Imagem que SUMIU do provedor (404) e permanente: grava a linha sem a
+      // capa, senao a serie voltaria para a fila a cada abertura do catalogo,
+      // batendo na mesma URL morta para sempre. O escopo `refresh` ainda a
+      // reoferece (posterFile null) quando alguem pedir.
+      if (!(error instanceof ImageGoneError)) {
+        // A capa e a razao de ser disto tudo. Gravar a linha sem ela selaria o
+        // show como "ja resolvido"; sem gravar, a proxima rodada tenta de novo.
+        report.failed += 1;
+        return;
+      }
     }
   }
 
@@ -324,10 +353,12 @@ async function enrichOne(
     showId: show.id,
     posterFile,
     backdropFile,
-    // Carimba "ja procurei arte" so quando a cadeia inteira respondeu. Com um
-    // provedor fora do ar a busca foi incompleta, e selar a serie agora a
-    // deixaria sem arte para sempre por causa de dez minutos de rede ruim.
-    backdropCheckedAt: result.providerFailed ? (keep?.backdropCheckedAt ?? null) : now(),
+    // Carimba "ja procurei arte" so quando a cadeia inteira respondeu E era
+    // capaz de responder arte (TMDB presente). Com um provedor fora do ar a
+    // busca foi incompleta; sem TMDB ela nem procurou arte - carimbar em
+    // qualquer um dos casos selaria a serie sem 16:9 para sempre.
+    backdropCheckedAt:
+      result.providerFailed || !backdropCapable ? (keep?.backdropCheckedAt ?? null) : now(),
     backdropSource,
     // Campo a campo, o que ja existe manda. Um provedor que so preencheu buraco
     // nao rebaixa o resto da linha para si - nem toma o credito em `source`,

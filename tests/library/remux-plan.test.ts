@@ -144,6 +144,38 @@ describe('casos de borda', () => {
   });
 });
 
+describe('normalizacao de channel layout nas saidas AAC', () => {
+  const AFORMAT = 'aformat=channel_layouts=7.1|5.1|stereo|mono';
+
+  test('gemea AAC de eac3 5.1(side) ganha aformat, senao sai channelConfiguration=0 e o Safari fica mudo', () => {
+    const result = plan('Serie/ep1.mkv', 'h264', [track(0, 'eac3')]);
+    expect(result?.args).toEqual(expect.arrayContaining(['-filter:a:0', AFORMAT]));
+  });
+
+  test('conversao dts->AAC no lugar tambem normaliza', () => {
+    const result = plan('Serie/ep1.mkv', 'h264', [track(0, 'dts')]);
+    expect(result?.args).toEqual(expect.arrayContaining(['-filter:a:0', AFORMAT]));
+  });
+
+  test('saida copiada bit a bit nunca ganha filtro', () => {
+    const result = plan('Serie/ep1.mkv', 'h264', [track(0, 'eac3')]);
+    // Saida 1 e a dolby copiada; filtro em stream copiado derruba o ffmpeg.
+    expect(result?.args).not.toContain('-filter:a:1');
+  });
+
+  test('planAudioVariant normaliza a gemea da dublagem', () => {
+    const tracks = [track(0, 'eac3'), track(1, 'eac3', { lang: 'eng', isDefault: false })];
+    const result = planAudioVariant({ videoCodec: 'h264', audioTracks: tracks, audioIndex: 1 });
+    expect(result?.args).toEqual(expect.arrayContaining(['-filter:a:0', AFORMAT]));
+    expect(result?.args).not.toContain('-filter:a:1');
+  });
+
+  test('faixa aac copiada segue sem filtro', () => {
+    const result = plan('Serie/ep1.mkv', 'h264', [track(0, 'aac')]);
+    expect(result?.args ?? []).not.toContain('-filter:a:0');
+  });
+});
+
 describe('planAudioVariant: MP4 com uma dublagem escolhida', () => {
   const DUAL = [
     track(0, 'eac3', { title: 'Brazilian' }),

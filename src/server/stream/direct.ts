@@ -33,6 +33,15 @@ export interface StreamEpisode {
    * um valor vindo de URL: aqui ele e usado como veio.
    */
   remuxPath?: string | null;
+  /**
+   * true quando servir o ORIGINAL significaria episodio sem som no navegador:
+   * a faixa default e dolby/dts e ainda nao ha remux valido (fila pendente,
+   * conversao falhada, plano de versao antiga). Com a flag, a rota responde
+   * 202 "preparando" em vez de degradar em silencio - e avisa o chamador para
+   * furar a fila de conversao. Quem calcula e quem monta o servidor, que
+   * enxerga o indice; este modulo so obedece.
+   */
+  remuxPending?: boolean;
 }
 
 /** Fonte estreita: este modulo nao precisa (nem deve) enxergar o Store inteiro. */
@@ -99,6 +108,8 @@ export function registerStreamRoutes(
   source: StreamSource,
   libraryRoot: string,
   audioResolver?: AudioResolver,
+  /** Chamado quando um episodio com `remuxPending` foi pedido: hora de priorizar a conversao. */
+  onRemuxPending?: (episodeId: string) => void,
 ): void {
   app.route({
     method: ['GET', 'HEAD'],
@@ -158,6 +169,15 @@ export function registerStreamRoutes(
       }
       if (filePath === null) {
         return reply.code(404).send({ error: 'episodio indisponivel' });
+      }
+
+      // Sobrou so o original de um episodio que tocaria mudo: mesmo contrato
+      // do `?audio=N` em geracao - 202 sem cache, o cliente consulta de novo.
+      // Servir o MKV aqui pareceria funcionar (video anda), mas sem som.
+      if (episode.remuxPending === true && filePath === original) {
+        onRemuxPending?.(id);
+        reply.header('cache-control', 'no-store');
+        return reply.code(202).send({ preparing: true });
       }
 
       const range = parseRangeHeader(request.headers.range, size);

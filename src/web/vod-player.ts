@@ -123,6 +123,19 @@ export class VodPlayer {
     return this.policyMuted;
   }
 
+  /**
+   * Chamado num gesto real do usuario: devolve o som que a politica de
+   * autoplay negou (emenda de maratona sem engajamento conta como autoplay).
+   * Sem isto o mudo de politica seria eterno - `toggleMute` nao o alcanca de
+   * proposito, porque ele soma com o mudo escolhido pelo usuario.
+   * Diferente do ao vivo, nao da `play()`: pausa em VOD e decisao do usuario.
+   */
+  unlock(): void {
+    if (!this.policyMuted) return;
+    this.policyMuted = false;
+    this.applyAudio();
+  }
+
   private applyAudio(): void {
     this.video.volume = this.volume;
     // O mudo imposto pelo navegador soma com o do usuario: aplicar so o do

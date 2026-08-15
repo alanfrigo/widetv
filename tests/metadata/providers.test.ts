@@ -235,6 +235,7 @@ describe('cadeia de provedores', () => {
       },
       // Ninguem caiu no caminho: a busca foi completa.
       providerFailed: false,
+      failureReason: null,
     });
     // Uma chamada so: o iTunes nem foi consultado.
     expect(calls).toHaveLength(1);
