@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import type { AudioTrackRef } from '../../src/shared/api-types';
-import { openStore, type EpisodeRow, type Store } from '../../src/server/library/index-store';
+import { openStore, type EpisodeInput, type Store } from '../../src/server/library/index-store';
 import type { Convert } from '../../src/server/library/remux-job';
 import { createVariantQueue, variantFileName } from '../../src/server/library/variant-queue';
 
@@ -13,7 +13,7 @@ const DUAL: AudioTrackRef[] = [
   { index: 1, lang: 'eng', title: null, codec: 'eac3', isDefault: false },
 ];
 
-function episodeRow(id: string): Omit<EpisodeRow, 'showId'> {
+function episodeRow(id: string): EpisodeInput {
   return {
     id,
     absolutePath: `/lib/${id}`,

@@ -13,7 +13,8 @@ import {
   type LibraryController,
 } from '../../src/server/library/scan-controller';
 import type { ScanJobOptions, ScanReport } from '../../src/server/library/scan-job';
-import type { EnrichReport, Enricher } from '../../src/server/metadata/service';
+import type { ThumbJobOptions, ThumbReport } from '../../src/server/library/thumb-job';
+import type { EnrichReport, EnrichScope, Enricher } from '../../src/server/metadata/service';
 
 /**
  * O que estes testes protegem, em uma frase: os tres gatilhos de scan
@@ -47,6 +48,20 @@ function scanReport(overrides: Partial<ScanReport> = {}): ScanReport {
 
 function remuxReport(): RemuxReport {
   return { planned: 0, converted: 0, skipped: 0, removedFiles: 0, failed: [], durationMs: 1 };
+}
+
+function thumbReport(overrides: Partial<ThumbReport> = {}): ThumbReport {
+  return {
+    considered: 4,
+    generated: 3,
+    skipped: 1,
+    failed: 0,
+    retried: 1,
+    backdrops: 2,
+    removedFiles: 0,
+    durationMs: 7,
+    ...overrides,
+  };
 }
 
 function enrichReport(): EnrichReport {
@@ -93,6 +108,8 @@ function makeScan(): FakeScan {
 interface FakeEnricher {
   enricher: Enricher;
   disparos: number;
+  /** Escopos recebidos, em ordem: e o que distingue o botao do painel do resto. */
+  escopos: EnrichScope[];
   /** Termina a rodada em voo, como o enricher de verdade faria. */
   terminar(): void;
 }
@@ -104,9 +121,10 @@ function makeEnricher(ordem: string[]): FakeEnricher {
   const fake: FakeEnricher = {
     enricher: {
       run: () => Promise.resolve(enrichReport()),
-      trigger: (): void => {
+      trigger: (scope: EnrichScope = 'missing'): void => {
         ordem.push('enricher');
         fake.disparos += 1;
+        fake.escopos.push(scope);
         running = true;
       },
       get running(): boolean {
@@ -117,6 +135,7 @@ function makeEnricher(ordem: string[]): FakeEnricher {
       },
     },
     disparos: 0,
+    escopos: [],
     terminar: (): void => {
       running = false;
       last = enrichReport();
@@ -150,6 +169,7 @@ function makeSettings(overrides: Partial<AppSettings> = {}): FakeSettings {
     subtitlesAuto: false,
     rescanTime: '04:00',
     autoRemux: true,
+    autoThumbs: true,
     smartGrouping: true,
     tmdbConfigured: false,
     ...overrides,
@@ -202,6 +222,40 @@ function makeTimer(): FakeTimer {
   return fake;
 }
 
+/** Fila de quadros de mentira: uma promessa que o teste resolve quando quer. */
+interface FakeThumbs {
+  calls: ThumbJobOptions[];
+  run: (options: ThumbJobOptions) => Promise<ThumbReport>;
+  terminar(overrides?: Partial<ThumbReport>): Promise<void>;
+  falhar(motivo: string): Promise<void>;
+}
+
+function makeThumbs(ordem: string[]): FakeThumbs {
+  const calls: ThumbJobOptions[] = [];
+  let resolver: ((report: ThumbReport) => void) | null = null;
+  let rejeitar: ((error: unknown) => void) | null = null;
+
+  return {
+    calls,
+    run: (options) => {
+      ordem.push('thumbs');
+      calls.push(options);
+      return new Promise<ThumbReport>((resolve, reject) => {
+        resolver = resolve;
+        rejeitar = reject;
+      });
+    },
+    async terminar(overrides = {}) {
+      resolver?.(thumbReport(overrides));
+      await flush();
+    },
+    async falhar(motivo) {
+      rejeitar?.(new Error(motivo));
+      await flush();
+    },
+  };
+}
+
 interface Harness {
   controller: LibraryController;
   scan: FakeScan;
@@ -209,6 +263,7 @@ interface Harness {
   settings: FakeSettings;
   timer: FakeTimer;
   remuxes: RemuxJobOptions[];
+  thumbs: FakeThumbs;
   ordem: string[];
   store: Store;
 }
@@ -223,6 +278,7 @@ function montar(overrides: Partial<AppSettings> = {}): Harness {
   const settings = makeSettings(overrides);
   const timer = makeTimer();
   const remuxes: RemuxJobOptions[] = [];
+  const thumbs = makeThumbs(ordem);
   const store = openStore(':memory:');
 
   const controller = createLibraryController({
@@ -238,11 +294,12 @@ function montar(overrides: Partial<AppSettings> = {}): Harness {
       remuxes.push(options);
       return Promise.resolve(remuxReport());
     },
+    thumbs: thumbs.run,
     now: () => agora,
     startTimer: timer.start,
   });
 
-  return { controller, scan, enricher, settings, timer, remuxes, ordem, store };
+  return { controller, scan, enricher, settings, timer, remuxes, thumbs, ordem, store };
 }
 
 beforeEach(() => {
@@ -359,11 +416,13 @@ describe('status', () => {
 });
 
 describe('encadeamento do fim do scan', () => {
-  test('dispara capa e depois remux, nessa ordem', async () => {
+  test('dispara capa, remux e quadros, nessa ordem', async () => {
     harness.controller.startScan('incremental');
     await harness.scan.terminar();
 
-    expect(harness.ordem).toEqual(['enricher', 'remux']);
+    // Quadros por ultimo: e a rodada mais longa e a menos essencial - a tela
+    // desenha o listrado no lugar da miniatura que ainda nao existe.
+    expect(harness.ordem).toEqual(['enricher', 'remux', 'thumbs']);
   });
 
   test('scan sem nenhum canal nao encadeia nada', async () => {
@@ -459,7 +518,7 @@ describe('applySettings', () => {
     expect(harness.scan.calls[0]?.smartGrouping).toBe(false);
 
     await harness.scan.terminar();
-    expect(harness.ordem).toEqual(['enricher']);
+    expect(harness.ordem).toEqual(['enricher', 'thumbs']);
   });
 });
 
@@ -467,6 +526,18 @@ describe('refreshMetadata', () => {
   test('sem reset, so dispara a busca', () => {
     expect(harness.controller.refreshMetadata(false)).toEqual({ started: true });
     expect(harness.enricher.disparos).toBe(1);
+  });
+
+  test('o botao do painel pede escopo "refresh"; o fim de scan nao', async () => {
+    // E o que faz uma serie ja gravada, sem arte 16:9, voltar para a fila
+    // quando a PESSOA pede - sem que o boot faca isso sozinho.
+    harness.controller.refreshMetadata(false);
+    expect(harness.enricher.escopos).toEqual(['refresh']);
+
+    harness.enricher.terminar();
+    harness.controller.startScan('incremental');
+    await harness.scan.terminar();
+    expect(harness.enricher.escopos).toEqual(['refresh', 'missing']);
   });
 
   test('rodada em voo devolve started:false', () => {
@@ -486,6 +557,9 @@ describe('refreshMetadata', () => {
     harness.store.upsertShowMetadata({
       showId: show.id,
       posterFile: `${show.id}.jpg`,
+      backdropFile: `${show.id}.jpg`,
+      backdropCheckedAt: null,
+      backdropSource: null,
       year: 1985,
       overview: 'Sinopse errada.',
       source: 'tvmaze',
@@ -496,8 +570,129 @@ describe('refreshMetadata', () => {
     expect(harness.controller.refreshMetadata(true)).toEqual({ started: true });
 
     const row = harness.store.getShowMetadata(show.id);
-    expect(row).toMatchObject({ fetchedAt: 0, notFound: true, posterFile: null });
+    expect(row).toMatchObject({
+      fetchedAt: 0,
+      notFound: true,
+      posterFile: null,
+      backdropFile: null,
+      // Zerado junto: "buscar tudo de novo" inclui a arte 16:9. E `notFound`
+      // aqui e o que devolve a gravacao do enriquecimento ao caminho de
+      // SOBRESCRITA - sem nada para preservar, a fusao vira substituicao.
+      backdropCheckedAt: null,
+      backdropSource: null,
+    });
     expect(harness.enricher.disparos).toBe(1);
+  });
+});
+
+describe('quadros', () => {
+  test('progresso proprio, e o resumo fica em last quando termina', async () => {
+    expect(harness.controller.status().thumbs).toEqual({
+      state: 'idle',
+      progress: null,
+      last: null,
+    });
+
+    expect(harness.controller.startThumbs(false)).toEqual({ started: true });
+    harness.thumbs.calls[0]?.onProgress?.({ done: 7, total: 15_000, show: 'ThunderCats' });
+
+    const rodando = harness.controller.status().thumbs;
+    expect(rodando.state).toBe('running');
+    expect(rodando.progress).toEqual({ done: 7, total: 15_000, show: 'ThunderCats' });
+
+    agora = AGORA + 5_000;
+    await harness.thumbs.terminar();
+
+    const parado = harness.controller.status().thumbs;
+    expect(parado.state).toBe('idle');
+    expect(parado.progress).toBeNull();
+    // O resumo publico e sobre EPISODIOS: `retried` e `backdrops` ficam no log.
+    expect(parado.last).toEqual({
+      considered: 4,
+      generated: 3,
+      skipped: 1,
+      failed: 0,
+      durationMs: 7,
+      finishedAt: AGORA + 5_000,
+    });
+  });
+
+  test('a segunda chamada devolve 409 enquanto a primeira nao termina', async () => {
+    expect(harness.controller.startThumbs(false).started).toBe(true);
+
+    const segundo = harness.controller.startThumbs(false);
+    expect(segundo.started).toBe(false);
+    expect(segundo.reason).toMatch(/ja esta em andamento/);
+    expect(harness.thumbs.calls).toHaveLength(1);
+
+    await harness.thumbs.terminar();
+    expect(harness.controller.startThumbs(false).started).toBe(true);
+    await harness.thumbs.terminar();
+  });
+
+  test('reset chega na fila; sem reset, so o que falta', async () => {
+    harness.controller.startThumbs(true);
+    expect(harness.thumbs.calls[0]?.reset).toBe(true);
+    await harness.thumbs.terminar();
+
+    harness.controller.startThumbs(false);
+    expect(harness.thumbs.calls[1]?.reset).toBe(false);
+    await harness.thumbs.terminar();
+  });
+
+  test('a fila cede a vez ao remux, e so a ele', async () => {
+    harness.controller.startThumbs(false);
+    const ceder = harness.thumbs.calls[0]?.shouldYield;
+    expect(ceder?.()).toBe(false);
+
+    // Remux em voo: o quadro espera entre um episodio e o outro. O remux e o
+    // que faz o MKV TOCAR; a miniatura e ilustracao.
+    harness.controller.triggerRemux();
+    expect(ceder?.()).toBe(true);
+
+    await harness.thumbs.terminar();
+  });
+
+  test('autoThumbs desligado nao dispara nada ao fim do scan', async () => {
+    harness.controller.stop();
+    harness.store.close();
+    harness = montar({ autoThumbs: false });
+
+    harness.controller.startScan('incremental');
+    await harness.scan.terminar();
+
+    expect(harness.ordem).toEqual(['enricher', 'remux']);
+    expect(harness.thumbs.calls).toHaveLength(0);
+
+    // Mas o BOTAO continua valendo: desligar a automacao nao e proibir o pedido.
+    expect(harness.controller.startThumbs(false)).toEqual({ started: true });
+    expect(harness.thumbs.calls).toHaveLength(1);
+    await harness.thumbs.terminar();
+  });
+
+  test('desligar no painel vale para a proxima varredura', async () => {
+    harness.settings.set({ autoThumbs: false });
+    harness.controller.applySettings(harness.settings.service.get());
+
+    harness.controller.triggerThumbs();
+    expect(harness.thumbs.calls).toHaveLength(0);
+
+    harness.settings.set({ autoThumbs: true });
+    harness.controller.applySettings(harness.settings.service.get());
+
+    harness.controller.triggerThumbs();
+    expect(harness.thumbs.calls).toHaveLength(1);
+    await harness.thumbs.terminar();
+  });
+
+  test('rodada que morre inteira nao derruba nada e solta a trava', async () => {
+    harness.controller.startThumbs(false);
+    await harness.thumbs.falhar('DATA_DIR sem escrita');
+
+    expect(harness.controller.status().thumbs.state).toBe('idle');
+    expect(harness.controller.status().thumbs.last).toBeNull();
+    expect(harness.controller.startThumbs(false).started).toBe(true);
+    await harness.thumbs.terminar();
   });
 });
 

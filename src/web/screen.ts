@@ -29,7 +29,13 @@ export type ScreenEvent =
   | { type: 'unauthorized' }
   | { type: 'openSeries'; channel: number }
   | { type: 'openSettings' }
-  | { type: 'watch'; source: WatchSource }
+  /**
+   * `channel` ausente significa "o canal da tela em que estou", que e o caso da
+   * tela da serie. O catalogo manda o numero junto porque de la se assiste sem
+   * passar pela serie: o hero, o card do ao vivo e o de continuar assistindo
+   * tocam direto.
+   */
+  | { type: 'watch'; source: WatchSource; channel?: number }
   /** Zapear: mesma tela, outro canal. So faz sentido no ao vivo. */
   | { type: 'tuneTo'; channel: number }
   | { type: 'back' };
@@ -46,7 +52,10 @@ export function isAuthenticated(screen: Screen): boolean {
 export function reduceScreen(screen: Screen, event: ScreenEvent): Screen {
   switch (event.type) {
     case 'unauthorized':
-      return { name: 'login' };
+      // Idempotente: dois requests que falham juntos com 401 (a grade e o
+      // historico, disparados lado a lado) nao podem reabrir a tela de senha
+      // duas vezes e apagar o que o usuario ja comecou a digitar.
+      return screen.name === 'login' ? screen : { name: 'login' };
 
     case 'authenticated':
       // Idempotente de proposito: um `/session` que responde tarde nao pode
@@ -63,10 +72,12 @@ export function reduceScreen(screen: Screen, event: ScreenEvent): Screen {
       return isAuthenticated(screen) ? { name: 'settings' } : screen;
 
     case 'watch': {
-      // So a tela da serie tem os dois botoes; disparar `watch` de qualquer
-      // outro lugar significaria tocar sem saber o que.
-      if (screen.name !== 'series') return screen;
-      return { name: 'player', channel: screen.channel, source: event.source };
+      if (!isAuthenticated(screen)) return screen;
+      // Sem canal explicito so a tela da serie sabe o que tocar; disparar
+      // `watch` de qualquer outro lugar significaria tocar sem saber o que.
+      const channel = event.channel ?? (screen.name === 'series' ? screen.channel : null);
+      if (channel === null) return screen;
+      return { name: 'player', channel, source: event.source };
     }
 
     case 'tuneTo': {

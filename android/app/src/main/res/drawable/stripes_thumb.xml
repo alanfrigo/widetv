@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Listrado da miniatura da lista de episodios: N = 10 px no desenho, periodo de
+  20 px = 15 dp. A miniatura tem 129 dp de largura, entao a malha precisa ser
+  mais fina para continuar lendo como textura. Veja `stripes.xml` para o porque
+  do ladrilho.
+-->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:antialias="true"
+    android:filter="true"
+    android:src="@drawable/stripes_tile_thumb"
+    android:tileMode="repeat" />

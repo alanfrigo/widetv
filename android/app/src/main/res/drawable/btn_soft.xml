@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Contrato pede hover em "white_13", que não existe na paleta curada de
+  colors.xml (o spec pula de 12% para 14% nas camadas de branco usadas fora do
+  player). Usa white_14, o token mais próximo definido.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/white_14" />
+            <stroke android:width="1dp" android:color="@color/line_2" />
+            <corners android:radius="@dimen/radius_16" />
+        </shape>
+    </item>
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/white_14" />
+            <stroke android:width="1dp" android:color="@color/line_2" />
+            <corners android:radius="@dimen/radius_16" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/white_07" />
+            <stroke android:width="1dp" android:color="@color/line_2" />
+            <corners android:radius="@dimen/radius_16" />
+        </shape>
+    </item>
+</selector>

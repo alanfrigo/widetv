@@ -127,4 +127,54 @@ class CatalogTest {
       assertTrue("$source -> $sample", sample > 0 && (sample and (sample - 1)) == 0)
     }
   }
+
+  // Reducao de um alvo 16:9
+
+  @Test
+  fun `com alvo de duas dimensoes vence a mais exigente`() {
+    // Backdrop 1280x720 num hero de 960x465: pela largura daria 1, pela altura
+    // tambem — reduzir mais deixaria a tela de abertura borrada.
+    assertEquals(1, sampleSizeFor(1280, 720, 960, 465))
+    // Card largo de 230x129: a largura ja pede 4, e a altura confirma.
+    assertEquals(4, sampleSizeFor(1280, 720, 230, 129))
+  }
+
+  @Test
+  fun `alvo sem altura cai na regra de uma dimensao so`() {
+    assertEquals(sampleSizeFor(1280, 320), sampleSizeFor(1280, 720, 320, 0))
+  }
+
+  @Test
+  fun `fonte sem altura medida nao trava a reducao`() {
+    assertEquals(2, sampleSizeFor(800, 0, 400, 200))
+  }
+
+  // Tempo dos cards
+
+  @Test
+  fun `a fracao assistida nao passa das pontas`() {
+    assertEquals(50, percentOf(50, 100))
+    assertEquals(100, percentOf(300, 100))
+    assertEquals(0, percentOf(-1, 100))
+    assertEquals(0, percentOf(50, 0))
+  }
+
+  @Test
+  fun `quanto falta arredonda para cima, para quem quer saber se da tempo`() {
+    // 50 segundos nao e "faltam 0 min": ainda da para entrar.
+    assertEquals("falta 1 min", formatRemaining(50_000))
+    assertEquals("faltam 4 min", formatRemaining(4 * 60_000L))
+    assertEquals("faltam 5 min", formatRemaining(4 * 60_000L + 1))
+    assertEquals("acabando", formatRemaining(0))
+    assertEquals("acabando", formatRemaining(-1))
+  }
+
+  // Chave da busca
+
+  @Test
+  fun `a chave da busca perde acento e caixa`() {
+    assertEquals("sitio", searchKey("Sítio"))
+    assertEquals("cowboy bebop", searchKey("  Cowboy Bebop  "))
+    assertEquals("acao", searchKey("Ação"))
+  }
 }

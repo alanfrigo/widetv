@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Selo "AO VIVO" do player: pílula (999), diferente do badge_live do card (raio 8). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/live_92" />
+    <corners android:radius="999dp" />
+</shape>

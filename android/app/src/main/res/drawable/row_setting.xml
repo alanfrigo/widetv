@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Linha da tela de configuracoes (redesign-spec.md §6).
+
+  `state_selected` existe porque o cursor do controle remoto nessa tela e do
+  reducer, nao do foco do sistema (mesma razao historica de row_selectable.xml,
+  que este arquivo substitui).
+
+  A linha destacada tem DUAS bordas no desenho: `border: 1px accent 55%` e, por
+  fora dela, `outline: 2px accent 20%`. `outline` do CSS desenha fora da caixa;
+  no Android nao existe equivalente, entao o <layer-list> desenha o anel externo
+  nas bordas da view e insere o corpo 2dp para dentro. O efeito e o mesmo halo,
+  ao custo de 2dp de area util - imperceptivel numa linha de 60dp, e a
+  alternativa (so a borda de 55%) perdia o halo que separa a linha escolhida das
+  vizinhas a distancia do sofa.
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@android:color/transparent" />
+                    <stroke android:width="2dp" android:color="@color/accent_20" />
+                    <corners android:radius="@dimen/radius_18" />
+                </shape>
+            </item>
+            <item
+                android:bottom="2dp"
+                android:left="2dp"
+                android:right="2dp"
+                android:top="2dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/surface_row_hi" />
+                    <stroke android:width="1dp" android:color="@color/accent_55" />
+                    <corners android:radius="@dimen/radius_16" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item android:state_selected="true">
+        <layer-list>
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@android:color/transparent" />
+                    <stroke android:width="2dp" android:color="@color/accent_20" />
+                    <corners android:radius="@dimen/radius_18" />
+                </shape>
+            </item>
+            <item
+                android:bottom="2dp"
+                android:left="2dp"
+                android:right="2dp"
+                android:top="2dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/surface_row_hi" />
+                    <stroke android:width="1dp" android:color="@color/accent_55" />
+                    <corners android:radius="@dimen/radius_16" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <!--
+      Em repouso o corpo ocupa a mesma caixa recuada dos estados de cima: sem
+      esse recuo a linha cresceria 4dp ao ser escolhida e a lista inteira
+      pularia a cada seta.
+    -->
+    <item>
+        <layer-list>
+            <item
+                android:bottom="2dp"
+                android:left="2dp"
+                android:right="2dp"
+                android:top="2dp">
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/surface_row" />
+                    <corners android:radius="@dimen/radius_16" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</selector>

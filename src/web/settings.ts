@@ -1,4 +1,10 @@
-import type { AppSettings, LibraryStatus, ScanMode, SettingsPatch } from '@shared/api-types';
+import type {
+  AppSettings,
+  LibraryStatus,
+  ScanMode,
+  ScanProgressRef,
+  SettingsPatch,
+} from '@shared/api-types';
 
 import { moveCursor, stepIndex } from './nav';
 import { languageName, normalizeLang } from './tracks';
@@ -26,31 +32,73 @@ export type SettingsField =
   | 'subtitlesAuto'
   | 'rescanTime'
   | 'autoRemux'
+  | 'autoThumbs'
   | 'smartGrouping'
   | 'scanIncremental'
   | 'scanFull'
-  | 'refreshMetadata';
+  | 'refreshMetadata'
+  | 'generateThumbs';
+
+/**
+ * As duas listas da tela. E so uma divisao de DESENHO: o cursor do controle
+ * remoto percorre as duas na ordem, como se fossem uma lista so - parar de
+ * descer no fim de "Reprodução" obrigaria a decorar outra tecla para atravessar
+ * o titulo da secao seguinte.
+ */
+export type SettingsGroup = 'playback' | 'library';
 
 export interface SettingsRow {
   field: SettingsField;
   kind: 'choice' | 'toggle' | 'action' | 'time';
+  group: SettingsGroup;
+  /**
+   * As setas MUDAM alguma coisa nesta linha.
+   *
+   * Toda linha de valor muda; das acoes, so a rebusca de capas e a geracao de
+   * miniaturas, onde ← → escolhem entre completar o que falta e refazer tudo.
+   * As duas varreduras nao tem valor nenhum para percorrer, e sao as unicas
+   * assim. Quem desenha marca `set--stepper` a partir
+   * daqui, e o CSS so esconde a seta esquerda de quem nao a usa - uma seta
+   * escondida numa linha que responde a ela seria uma affordance mentindo.
+   */
+  stepper: boolean;
 }
 
 /** Ordem das linhas na tela. Acoes de manutencao no fim: sao as caras. */
 const ROWS: readonly SettingsRow[] = [
-  { field: 'audioLang', kind: 'choice' },
-  { field: 'subtitleLang', kind: 'choice' },
-  { field: 'subtitlesAuto', kind: 'toggle' },
-  { field: 'smartGrouping', kind: 'toggle' },
-  { field: 'autoRemux', kind: 'toggle' },
-  { field: 'rescanTime', kind: 'time' },
-  { field: 'scanIncremental', kind: 'action' },
-  { field: 'scanFull', kind: 'action' },
-  { field: 'refreshMetadata', kind: 'action' },
+  { field: 'audioLang', kind: 'choice', group: 'playback', stepper: true },
+  { field: 'subtitleLang', kind: 'choice', group: 'playback', stepper: true },
+  { field: 'subtitlesAuto', kind: 'toggle', group: 'playback', stepper: true },
+  { field: 'smartGrouping', kind: 'toggle', group: 'library', stepper: true },
+  { field: 'autoRemux', kind: 'toggle', group: 'library', stepper: true },
+  { field: 'autoThumbs', kind: 'toggle', group: 'library', stepper: true },
+  { field: 'rescanTime', kind: 'time', group: 'library', stepper: true },
+  { field: 'scanIncremental', kind: 'action', group: 'library', stepper: false },
+  { field: 'scanFull', kind: 'action', group: 'library', stepper: false },
+  { field: 'refreshMetadata', kind: 'action', group: 'library', stepper: true },
+  { field: 'generateThumbs', kind: 'action', group: 'library', stepper: true },
 ];
 
 export function settingsRows(): readonly SettingsRow[] {
   return ROWS;
+}
+
+/** Uma linha com a posicao que ela ocupa no cursor unico da tela. */
+export interface SettingsRowAt extends SettingsRow {
+  /** Indice em `settingsRows()` - e o que o cursor guarda. */
+  index: number;
+}
+
+/**
+ * As linhas de um grupo, cada uma carregando o proprio indice global.
+ *
+ * Quem desenha precisa das duas coisas ao mesmo tempo: em que `<ul>` a linha
+ * entra e qual numero o cursor usa para ela. Recalcular o indice na hora do
+ * desenho daria duas contagens da mesma ordem, e elas divergiriam na primeira
+ * linha que mudasse de grupo.
+ */
+export function settingsGroupRows(group: SettingsGroup): readonly SettingsRowAt[] {
+  return ROWS.map((row, index) => ({ ...row, index })).filter((row) => row.group === group);
 }
 
 export interface SettingsUiState {
@@ -69,10 +117,16 @@ export interface SettingsUiState {
    * tudo", que e o que conserta capa errada depois de a pasta ser renomeada.
    */
   metadataReset: boolean;
+  /**
+   * Mesmo par de modos na linha de gerar miniaturas, e por isto e um campo
+   * proprio: escolher "refazer tudo" ali nao pode mudar o que a linha das capas
+   * vai fazer quando alguem descer ate ela.
+   */
+  thumbsReset: boolean;
 }
 
 export function initialSettings(): SettingsUiState {
-  return { cursor: 0, busy: null, message: null, metadataReset: false };
+  return { cursor: 0, busy: null, message: null, metadataReset: false, thumbsReset: false };
 }
 
 export type SettingsEvent =
@@ -86,7 +140,8 @@ export type SettingsCommand =
   | null
   | { type: 'patch'; patch: SettingsPatch }
   | { type: 'scan'; mode: ScanMode }
-  | { type: 'refreshMetadata'; reset: boolean };
+  | { type: 'refreshMetadata'; reset: boolean }
+  | { type: 'generateThumbs'; reset: boolean };
 
 export interface SettingsResult {
   state: SettingsUiState;
@@ -161,19 +216,53 @@ export function reduceSettings(
     }
 
     case 'action': {
-      if (row.field === 'refreshMetadata' && event.type !== 'select') {
-        // Na linha da rebusca as setas so escolhem o modo; quem gasta rede e o Enter.
+      const chosen = resetModeOf(row.field, state);
+      if (chosen !== null && event.type !== 'select') {
+        // Nas duas acoes que tem modo, as setas so escolhem o lado; quem gasta
+        // rede e o Enter.
         const reset = event.type === 'right';
-        return still(state.metadataReset === reset ? state : { ...state, metadataReset: reset });
+        return still(reset === chosen ? state : withResetMode(state, row.field, reset));
       }
       if (event.type !== 'select') return still();
 
-      const command: SettingsCommand =
-        row.field === 'refreshMetadata'
-          ? { type: 'refreshMetadata', reset: state.metadataReset }
-          : { type: 'scan', mode: row.field === 'scanFull' ? 'full' : 'incremental' };
-      return { state: { ...state, busy: row.field, message: null }, command };
+      return {
+        state: { ...state, busy: row.field, message: null },
+        command: actionCommand(row.field, state),
+      };
     }
+  }
+}
+
+/**
+ * Modo escolhido na linha, ou null quando a acao nao tem modo nenhum.
+ *
+ * E o que distingue uma acao que responde as setas de uma que so dispara: as
+ * duas varreduras nao tem "so o que falta" para escolher.
+ */
+function resetModeOf(field: SettingsField, state: SettingsUiState): boolean | null {
+  if (field === 'refreshMetadata') return state.metadataReset;
+  if (field === 'generateThumbs') return state.thumbsReset;
+  return null;
+}
+
+function withResetMode(
+  state: SettingsUiState,
+  field: SettingsField,
+  reset: boolean,
+): SettingsUiState {
+  return field === 'generateThumbs'
+    ? { ...state, thumbsReset: reset }
+    : { ...state, metadataReset: reset };
+}
+
+function actionCommand(field: SettingsField, state: SettingsUiState): SettingsCommand {
+  switch (field) {
+    case 'refreshMetadata':
+      return { type: 'refreshMetadata', reset: state.metadataReset };
+    case 'generateThumbs':
+      return { type: 'generateThumbs', reset: state.thumbsReset };
+    default:
+      return { type: 'scan', mode: field === 'scanFull' ? 'full' : 'incremental' };
   }
 }
 
@@ -188,6 +277,10 @@ function toggleValue(field: SettingsField, settings: AppSettings): boolean {
       return settings.subtitlesAuto;
     case 'autoRemux':
       return settings.autoRemux;
+    case 'autoThumbs':
+      // Servidor mais velho do que esta tela nao manda o campo: sem a guarda, a
+      // linha desenharia "Ligado" a partir de `undefined`.
+      return settings.autoThumbs === true;
     case 'smartGrouping':
       return settings.smartGrouping;
     default:
@@ -201,6 +294,8 @@ function togglePatch(field: SettingsField, value: boolean): SettingsPatch {
       return { subtitlesAuto: value };
     case 'autoRemux':
       return { autoRemux: value };
+    case 'autoThumbs':
+      return { autoThumbs: value };
     case 'smartGrouping':
       return { smartGrouping: value };
     default:
@@ -299,10 +394,12 @@ const TITLES: Readonly<Record<SettingsField, string>> = {
   subtitlesAuto: 'Ligar legenda sozinha',
   smartGrouping: 'Agrupar temporadas da mesma série',
   autoRemux: 'Converter arquivos em segundo plano',
+  autoThumbs: 'Tirar miniatura de cada episódio',
   rescanTime: 'Varredura diária',
   scanIncremental: 'Procurar arquivos novos',
   scanFull: 'Reanalisar a biblioteca inteira',
   refreshMetadata: 'Rebuscar capas e sinopses',
+  generateThumbs: 'Gerar miniaturas',
 };
 
 const HINTS: Readonly<Record<SettingsField, string>> = {
@@ -312,10 +409,14 @@ const HINTS: Readonly<Record<SettingsField, string>> = {
   smartGrouping:
     'Junta as pastas de release da mesma série num canal só. Vale a partir da próxima varredura.',
   autoRemux: 'Prepara em MP4 o que o navegador não toca direto, sem segurar quem está assistindo.',
+  autoThumbs:
+    'Tira um quadro do próprio vídeo para a lista e as faixas. Desligar não apaga o que já existe.',
   rescanTime: 'Horário em que o servidor procura arquivos novos sem ninguém pedir.',
   scanIncremental: 'Reaproveita o que já foi medido. É a varredura rápida do dia a dia.',
   scanFull: 'Mede todo arquivo de novo, ignorando o cache. Demora, e é o que conserta índice torto.',
   refreshMetadata: '← → escolhem entre completar o que falta e refazer tudo.',
+  generateThumbs:
+    'Um ffmpeg por episódio, um de cada vez. ← → escolhem entre o que falta e refazer tudo.',
 };
 
 export function settingsRowTitle(field: SettingsField): string {
@@ -341,12 +442,15 @@ export function settingsValueText(
       return labelOf(settings.subtitleLang, subtitleLanguageOptions());
     case 'subtitlesAuto':
     case 'autoRemux':
+    case 'autoThumbs':
     case 'smartGrouping':
       return toggleValue(field, settings) ? 'Ligado' : 'Desligado';
     case 'rescanTime':
       return settings.rescanTime ?? 'Desligada';
     case 'refreshMetadata':
       return state.metadataReset ? 'Refazer tudo' : 'Só o que falta';
+    case 'generateThumbs':
+      return state.thumbsReset ? 'Refazer tudo' : 'Só o que falta';
     default:
       return 'Iniciar';
   }
@@ -362,6 +466,18 @@ function labelOf(lang: string | null, options: readonly LanguageOption[]): strin
 
 /* --- estado da biblioteca ------------------------------------------------- */
 
+/** "1240 de 14320 — The Simpsons", ou so a contagem quando a serie nao tem nome. */
+function progressText(progress: ScanProgressRef): string {
+  const head = `${progress.done} de ${progress.total}`;
+  return progress.show.trim() === '' ? head : `${head} — ${progress.show}`;
+}
+
+/** @returns null quando nao ha o que medir - a barra some em vez de fingir 0%. */
+function progressRatio(progress: ScanProgressRef | null): number | null {
+  if (progress === null || progress.total <= 0) return null;
+  return Math.min(1, Math.max(0, progress.done / progress.total));
+}
+
 /** Texto do progresso: "1240 de 14320 — The Simpsons". null quando parado. */
 export function scanProgressText(status: LibraryStatus): string | null {
   if (status.scan.state !== 'running') return null;
@@ -371,8 +487,7 @@ export function scanProgressText(status: LibraryStatus): string | null {
   // vazia sem legenda parece tela travada.
   if (progress === null) return 'Preparando a varredura…';
 
-  const head = `${progress.done} de ${progress.total}`;
-  return progress.show.trim() === '' ? head : `${head} — ${progress.show}`;
+  return progressText(progress);
 }
 
 /**
@@ -381,9 +496,49 @@ export function scanProgressText(status: LibraryStatus): string | null {
  * @returns null quando nao ha o que medir - a barra some em vez de fingir 0%.
  */
 export function scanProgressRatio(status: LibraryStatus): number | null {
-  const progress = status.scan.progress;
-  if (status.scan.state !== 'running' || progress === null || progress.total <= 0) return null;
-  return Math.min(1, Math.max(0, progress.done / progress.total));
+  if (status.scan.state !== 'running') return null;
+  return progressRatio(status.scan.progress);
+}
+
+/* --- fila de miniaturas --------------------------------------------------- */
+
+type ThumbTask = LibraryStatus['thumbs'];
+
+/**
+ * A fila de quadros como o servidor mandou, ou null.
+ *
+ * Servidor mais velho do que esta tela nao traz o campo, e `status.thumbs.state`
+ * derrubaria a tela de configuracoes inteira por causa de um bloco de status.
+ */
+function thumbTask(status: LibraryStatus): ThumbTask | null {
+  const task: ThumbTask | undefined = status.thumbs;
+  return task ?? null;
+}
+
+/**
+ * A fila de quadros esta rodando agora.
+ *
+ * E ela que mais precisa disto: num acervo grande e a tarefa mais demorada de
+ * todas, um ffmpeg por episodio, e sem esta pergunta o polling da tela desligaria
+ * enquanto ela ainda esta trabalhando.
+ */
+export function thumbsRunning(status: LibraryStatus): boolean {
+  return thumbTask(status)?.state === 'running';
+}
+
+/** Mesma leitura de `scanProgressText` para a fila de quadros. */
+export function thumbProgressText(status: LibraryStatus): string | null {
+  const task = thumbTask(status);
+  if (task === null || task.state !== 'running') return null;
+  if (task.progress === null) return 'Preparando as miniaturas…';
+  return progressText(task.progress);
+}
+
+/** Mesma barra da varredura, medida pela fila de quadros. */
+export function thumbProgressRatio(status: LibraryStatus): number | null {
+  const task = thumbTask(status);
+  if (task === null || task.state !== 'running') return null;
+  return progressRatio(task.progress);
 }
 
 function count(value: number, one: string, many: string): string {
@@ -442,4 +597,23 @@ export function metadataSummaryText(status: LibraryStatus): string | null {
   if (last.failed > 0) parts.push(count(last.failed, 'falha', 'falhas'));
 
   return `Última busca de capas: ${parts.join(' · ')}`;
+}
+
+/**
+ * Mesma ideia para a fila de quadros.
+ *
+ * `skipped` conta junto quem ja tinha miniatura e quem sumiu do volume: e por
+ * isso que ele aparece como "pulados", e nao como "ja tinham" - o resumo nao
+ * sabe distinguir os dois e nao vai fingir que sabe.
+ */
+export function thumbSummaryText(status: LibraryStatus): string | null {
+  const last = thumbTask(status)?.last ?? null;
+  if (last === null) return null;
+
+  const parts = [`${last.generated} de ${last.considered} geradas`];
+  if (last.skipped > 0) parts.push(count(last.skipped, 'pulado', 'pulados'));
+  if (last.failed > 0) parts.push(count(last.failed, 'falha', 'falhas'));
+  parts.push(`em ${formatSpan(last.durationMs)}`);
+
+  return `Últimas miniaturas: ${parts.join(' · ')}`;
 }

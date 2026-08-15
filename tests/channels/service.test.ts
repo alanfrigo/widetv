@@ -4,8 +4,10 @@ import {
   type ChannelSource,
   listChannelEpisodes,
   listChannels,
+  listNowPlaying,
   resolveNowPlaying,
 } from '../../src/server/channels/service';
+import { createTimelineCache } from '../../src/server/channels/timeline-cache';
 
 const EPOCH = Date.parse('2024-01-01T00:00:00Z');
 const MIN = 60_000;
@@ -38,7 +40,18 @@ function episode(showId: number, index: number, durationMs: number): EpisodeRow 
     ],
     mtimeMs: 0,
     size: 1,
+    thumbFile: null,
+    thumbCheckedAt: null,
   };
+}
+
+/** Temporadas distintas dos episodios, como o SELECT DISTINCT do Store faria. */
+function seasonsOf(rows: EpisodeRow[]): number[] {
+  const seen = new Set<number>();
+  for (const row of rows) {
+    if (row.season !== null) seen.add(row.season);
+  }
+  return [...seen].sort((a, b) => a - b);
 }
 
 /** Fonte em memoria com o mesmo contrato do Store. */
@@ -51,7 +64,23 @@ function source(
     listShows: () => shows,
     getShowByChannel: (n) => shows.find((s) => s.channelNumber === n) ?? null,
     listEpisodes: (showId) => episodes[showId] ?? [],
+    // Como o GROUP BY do Store: serie sem episodio nao aparece no mapa.
+    countEpisodesByShow: () =>
+      new Map(
+        shows
+          .map((s) => [s.id, (episodes[s.id] ?? []).length] as const)
+          .filter(([, total]) => total > 0),
+      ),
+    listSeasons: (showId) => seasonsOf(episodes[showId] ?? []),
+    listSeasonsByShow: () =>
+      new Map(
+        shows
+          .map((s) => [s.id, seasonsOf(episodes[s.id] ?? [])] as const)
+          .filter(([, temporadas]) => temporadas.length > 0),
+      ),
     getShowMetadata: (showId) => metadata[showId] ?? null,
+    hasShowsWithoutMetadata: () => shows.some((s) => metadata[s.id] === undefined),
+    indexVersion: () => 1,
   };
 }
 
@@ -59,6 +88,9 @@ function metadataRow(showId: number, over: Partial<ShowMetadataRow> = {}): ShowM
   return {
     showId,
     posterFile: `${showId}.jpg`,
+    backdropFile: `${showId}.jpg`,
+    backdropCheckedAt: null,
+    backdropSource: null,
     year: 1985,
     overview: 'Sinopse.',
     source: 'tvmaze',
@@ -92,20 +124,52 @@ describe('listChannels', () => {
   });
 
   test('sem metadata, os campos de capa vem null em vez de sumirem', () => {
-    // O contrato promete as tres chaves sempre presentes: um cliente que faz
+    // O contrato promete as chaves sempre presentes: um cliente que faz
     // destructuring nao pode receber `undefined` de um acervo recem indexado.
     const canal = listChannels(SRC).find((c) => c.number === 7)!;
     expect(canal.posterUrl).toBeNull();
+    expect(canal.backdropUrl).toBeNull();
     expect(canal.year).toBeNull();
     expect(canal.overview).toBeNull();
   });
 
-  test('com metadata, posterUrl aponta para a rota da capa do proprio canal', () => {
+  test('com metadata, as artes apontam para as rotas do proprio canal', () => {
     const src = source([THUNDER], { 1: [episode(1, 1, MIN)] }, { 1: metadataRow(1) });
     const canal = listChannels(src)[0]!;
     expect(canal.posterUrl).toBe('/api/channels/7/poster');
+    expect(canal.backdropUrl).toBe('/api/channels/7/backdrop');
     expect(canal.year).toBe(1985);
     expect(canal.overview).toBe('Sinopse.');
+  });
+
+  test('metadata sem arte 16:9 mantem backdropUrl null e nao mexe na capa', () => {
+    // TVMaze e iTunes nunca tem arte 16:9: e o caso comum, nao uma falha.
+    const src = source(
+      [THUNDER],
+      { 1: [episode(1, 1, MIN)] },
+      { 1: metadataRow(1, { backdropFile: null }) },
+    );
+    const canal = listChannels(src)[0]!;
+    expect(canal.backdropUrl).toBeNull();
+    expect(canal.posterUrl).toBe('/api/channels/7/poster');
+  });
+
+  test('seasons vem crescente, sem repetir e sem os episodios sem temporada', () => {
+    const mista = [
+      { ...episode(1, 1, MIN), season: 2 },
+      { ...episode(1, 2, MIN), season: 1 },
+      { ...episode(1, 3, MIN), season: 2 },
+      { ...episode(1, 4, MIN), season: null },
+    ];
+    const src = source([THUNDER], { 1: mista });
+    expect(listChannels(src)[0]!.seasons).toEqual([1, 2]);
+  });
+
+  test('serie sem pastas de temporada devolve [] e nao null', () => {
+    const src = source([THUNDER], {
+      1: [{ ...episode(1, 1, MIN), season: null }, { ...episode(1, 2, MIN), season: null }],
+    });
+    expect(listChannels(src)[0]!.seasons).toEqual([]);
   });
 
   test('metadata sem arquivo de capa mantem posterUrl null, mas conserva ano e sinopse', () => {
@@ -184,16 +248,26 @@ describe('resolveNowPlaying', () => {
       name: 'ThunderCats',
       episodeCount: 3,
       posterUrl: null,
+      backdropUrl: null,
       year: null,
       overview: null,
+      seasons: [1],
     });
   });
 
-  test('o canal do "no ar" carrega a mesma capa da listagem', () => {
+  test('o canal do "no ar" carrega as mesmas artes da listagem', () => {
     const src = source([THUNDER], { 1: [episode(1, 1, 20 * MIN)] }, { 1: metadataRow(1) });
     const r = resolveNowPlaying(src, 7, EPOCH, EPOCH)!;
     expect(r.channel.posterUrl).toBe('/api/channels/7/poster');
+    expect(r.channel.backdropUrl).toBe('/api/channels/7/backdrop');
     expect(r.channel.year).toBe(1985);
+  });
+
+  test('o canal do "no ar" tem as mesmas temporadas da listagem', () => {
+    // As duas respostas alimentam a mesma tela: uma divergencia aqui faria a
+    // barra de temporadas pular ao trocar de canal.
+    const r = resolveNowPlaying(SRC, 7, EPOCH, EPOCH)!;
+    expect(r.channel.seasons).toEqual(listChannels(SRC).find((c) => c.number === 7)!.seasons);
   });
 
   test('canais diferentes nao comecam todos no episodio 1 ao mesmo tempo', () => {
@@ -226,6 +300,7 @@ describe('resolveNowPlaying', () => {
         'id',
         'season',
         'subtitleTracks',
+        'thumbUrl',
         'title',
         'width',
       ].sort(),
@@ -236,6 +311,19 @@ describe('resolveNowPlaying', () => {
     const r = resolveNowPlaying(SRC, 7, EPOCH, EPOCH)!;
     expect(r.episode.width).toBe(640);
     expect(r.episode.height).toBe(480);
+  });
+
+  test('thumbUrl sai da coluna, sem tocar no disco', () => {
+    const semQuadro = episode(1, 1, 10 * MIN);
+    const comQuadro = { ...episode(1, 2, 10 * MIN), thumbFile: '42.jpg' };
+    const src = source([show(1, 7, 'ThunderCats')], { 1: [semQuadro, comQuadro] });
+
+    const refs = listChannelEpisodes(src, 7)!;
+    // null nao e erro: e "a fila ainda nao chegou neste episodio", e a tela cai
+    // no padrao listrado.
+    expect(refs[0]?.thumbUrl).toBeNull();
+    // O id vira UM segmento, com as barras percent-encodadas - igual a legenda.
+    expect(refs[1]?.thumbUrl).toBe('/api/stream/1%2Fep2/thumb');
   });
 
   test('expoe as trilhas de audio e legenda do episodio', () => {
@@ -249,6 +337,49 @@ describe('resolveNowPlaying', () => {
       isDefault: true,
       forced: true,
     });
+  });
+});
+
+describe('listNowPlaying', () => {
+  test('devolve os canais na MESMA ordem de listChannels', () => {
+    // As duas respostas alimentam a mesma tela: uma divergencia emparelharia o
+    // canal errado com o episodio errado.
+    expect(listNowPlaying(SRC, EPOCH, EPOCH).map((n) => n.channel.number)).toEqual(
+      listChannels(SRC).map((c) => c.number),
+    );
+  });
+
+  test('ordena mesmo quando a fonte devolve as series fora de ordem', () => {
+    const foraDeOrdem = source([THUNDER, HEMAN], {
+      1: [episode(1, 1, 20 * MIN)],
+      2: [episode(2, 1, 10 * MIN)],
+    });
+    expect(listNowPlaying(foraDeOrdem, EPOCH, EPOCH).map((n) => n.channel.number)).toEqual([3, 7]);
+  });
+
+  test('canal sem episodio some do array em vez de virar null', () => {
+    const comVazio = source([THUNDER, show(9, 20, 'Vazia')], { 1: [episode(1, 1, 20 * MIN)] });
+    const agora = listNowPlaying(comVazio, EPOCH, EPOCH);
+    expect(agora.map((n) => n.channel.number)).toEqual([7]);
+  });
+
+  test('cada item e identico ao que resolveNowPlaying daria para o mesmo instante', () => {
+    // Divergir aqui faria a faixa "No ar agora" mostrar um episodio e o player
+    // abrir outro.
+    const now = EPOCH + 137 * MIN;
+    for (const item of listNowPlaying(SRC, EPOCH, now)) {
+      expect(item).toEqual(resolveNowPlaying(SRC, item.channel.number, EPOCH, now));
+    }
+  });
+
+  test('acervo vazio devolve [] em vez de lancar', () => {
+    expect(listNowPlaying(source([], {}), EPOCH, EPOCH)).toEqual([]);
+  });
+
+  test('com cache o resultado e o mesmo de sem cache', () => {
+    const now = EPOCH + 91 * MIN;
+    const cache = createTimelineCache(SRC);
+    expect(listNowPlaying(SRC, EPOCH, now, cache)).toEqual(listNowPlaying(SRC, EPOCH, now));
   });
 });
 
@@ -279,6 +410,7 @@ describe('listChannelEpisodes', () => {
           'id',
           'season',
           'subtitleTracks',
+          'thumbUrl',
           'title',
           'width',
         ].sort(),

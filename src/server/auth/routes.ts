@@ -1,7 +1,14 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import { verifyPassword } from './password';
-import { SESSION_COOKIE_NAME, issueSessionCookie, verifySessionCookie, type SessionConfig } from './session';
+import {
+  SESSION_COOKIE_NAME,
+  clearSessionCookie,
+  issueSessionCookie,
+  requestIsSecure,
+  verifySessionCookie,
+  type SessionConfig,
+} from './session';
 
 /**
  * Portao de entrada. O app fica exposto na internet, entao tudo aqui e escrito
@@ -24,6 +31,11 @@ export interface AuthDeps {
 export interface GuardDeps {
   session: SessionConfig;
   now: () => number;
+}
+
+/** TLS terminando no proprio processo. Atras de proxy o socket e texto puro. */
+function isEncrypted(request: FastifyRequest): boolean {
+  return (request.raw.socket as { encrypted?: boolean }).encrypted === true;
 }
 
 function sessionIsValid(request: FastifyRequest, deps: GuardDeps): boolean {
@@ -99,14 +111,17 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthDeps): void {
     }
 
     tracker.clear(ip);
-    reply.header('set-cookie', issueSessionCookie(deps.session, now));
+    reply.header(
+      'set-cookie',
+      issueSessionCookie(deps.session, now, requestIsSecure(request.headers, isEncrypted(request))),
+    );
     return { ok: true };
   });
 
-  app.post('/api/auth/logout', async (_request, reply) => {
+  app.post('/api/auth/logout', async (request, reply) => {
     reply.header(
       'set-cookie',
-      `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
+      clearSessionCookie(deps.session, requestIsSecure(request.headers, isEncrypted(request))),
     );
     return { ok: true };
   });

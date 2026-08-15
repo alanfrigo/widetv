@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Trilho de progresso genérico (card, episódio, scrub, varredura). Serve tanto
+  max=1000 (scrub_bar/card_bar/episode_bar) quanto max=100 (settings_progress)
+  — o ProgressBar sempre desenha a fração progress/max, o drawable não sabe
+  nem precisa saber a escala.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/white_20" />
+            <corners android:radius="999dp" />
+        </shape>
+    </item>
+    <item android:id="@android:id/progress">
+        <clip>
+            <shape android:shape="rectangle">
+                <solid android:color="@color/accent" />
+                <corners android:radius="999dp" />
+            </shape>
+        </clip>
+    </item>
+</layer-list>

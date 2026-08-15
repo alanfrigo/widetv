@@ -3,36 +3,108 @@
     <style name="Theme.WideTv" parent="Theme.AppCompat.NoActionBar">
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:colorBackground">@color/bg</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:fontFamily">@font/manrope</item>
+        <item name="fontFamily">@font/manrope</item>
         <item name="colorAccent">@color/accent</item>
         <!-- A TV nunca deve piscar branco entre Activities. -->
         <item name="android:windowDisablePreview">true</item>
     </style>
 
+    <!-- Wordmark "wide/tv" do topo do catálogo, da série e de configurações. -->
+    <style name="WideTv.Wordmark" parent="">
+        <item name="android:fontFamily">@font/manrope_extrabold</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">@dimen/text_wordmark</item>
+        <item name="android:letterSpacing">0.18</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/text</item>
+    </style>
+
+    <!-- Pílula genérica (nav, selo de canal, botão do topo). -->
+    <style name="WideTv.Pill" parent="">
+        <item name="android:layout_height">30dp</item>
+        <item name="android:minHeight">30dp</item>
+        <item name="android:background">@drawable/pill</item>
+        <item name="android:textSize">@dimen/text_button</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:paddingStart">14dp</item>
+        <item name="android:paddingEnd">14dp</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <style name="WideTv.Button.Primary" parent="">
+        <item name="android:background">@drawable/btn_primary</item>
+        <item name="android:textColor">@color/accent_ink</item>
+        <item name="android:fontFamily">@font/manrope_extrabold</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">@dimen/text_button</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">28dp</item>
+        <item name="android:paddingEnd">28dp</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <style name="WideTv.Button.Soft" parent="">
+        <item name="android:background">@drawable/btn_soft</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:fontFamily">@font/manrope_bold</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">@dimen/text_button</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">24dp</item>
+        <item name="android:paddingEnd">24dp</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <style name="WideTv.Button.Ghost" parent="">
+        <item name="android:background">@drawable/btn_ghost</item>
+        <item name="android:textColor">@color/muted_2</item>
+        <item name="android:fontFamily">@font/manrope_bold</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">@dimen/text_button</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">24dp</item>
+        <item name="android:paddingEnd">24dp</item>
+        <item name="android:focusable">true</item>
+    </style>
+
     <!--
-      Campo de acesso: sublinhado proprio, sem a caixa do AppCompat.
-      `parent=""` porque o ponto no nome herdaria de um `WideTv` que nao existe.
+      Campo de acesso do portão: mantém o papel de sempre (só um fio embaixo,
+      sem caixa), recolorido para a paleta nova. Nenhum layout usa mais este
+      estilo hoje (o gate foi reescrito com os estilos novos), mas o contrato
+      pede que ele continue existindo.
     -->
     <style name="WideTv.Field" parent="">
         <item name="android:background">@drawable/field_underline</item>
         <item name="android:textColor">@color/text</item>
-        <item name="android:textColorHint">@color/text_faint</item>
-        <item name="android:textSize">@dimen/text_field</item>
-        <item name="android:paddingTop">@dimen/space_sm</item>
-        <item name="android:paddingBottom">@dimen/space_sm</item>
+        <item name="android:textColorHint">@color/muted</item>
+        <item name="android:textSize">@dimen/text_row</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
         <item name="android:singleLine">true</item>
     </style>
 
-    <style name="WideTv.Button" parent="">
-        <item name="android:background">@drawable/button_accent</item>
-        <item name="android:textColor">@color/text</item>
-        <item name="android:textSize">@dimen/text_button</item>
+    <!-- Rótulo mono de seção / rótulo micro uppercase (ex.: "REPRODUÇÃO"). -->
+    <style name="WideTv.Legend" parent="">
+        <item name="android:fontFamily">@font/manrope_extrabold</item>
         <item name="android:textStyle">bold</item>
+        <item name="android:textSize">@dimen/text_tag</item>
+        <item name="android:letterSpacing">0.16</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textColor">@color/dim</item>
+    </style>
+
+    <!-- Selo de resolução / tag pequena com contorno. -->
+    <style name="WideTv.Tag" parent="">
+        <item name="android:background">@drawable/tag_outline</item>
+        <item name="android:fontFamily">@font/manrope_bold</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textSize">@dimen/text_tag</item>
         <item name="android:letterSpacing">0.06</item>
-        <item name="android:paddingStart">@dimen/space_lg</item>
-        <item name="android:paddingEnd">@dimen/space_lg</item>
-        <item name="android:paddingTop">@dimen/space_sm</item>
-        <item name="android:paddingBottom">@dimen/space_sm</item>
-        <item name="android:focusable">true</item>
         <item name="android:gravity">center</item>
+        <item name="android:textColor">@color/text_2</item>
     </style>
 </resources>

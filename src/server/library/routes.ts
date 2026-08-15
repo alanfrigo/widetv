@@ -55,4 +55,16 @@ export function registerLibraryRoutes(app: FastifyInstance, deps: LibraryRoutesD
     const result = deps.controller.refreshMetadata(raw ?? false);
     return reply.code(result.started ? 202 : 409).send(result);
   });
+
+  app.post(API.libraryThumbs, async (request, reply) => {
+    const raw = (request.body as { reset?: unknown } | null | undefined)?.reset;
+    if (raw !== undefined && typeof raw !== 'boolean') {
+      return reply.code(400).send({ error: 'reset precisa ser booleano' });
+    }
+
+    // Sem corpo e a rodada barata (so o que falta); `reset` refaz todos, e e o
+    // que resolve miniatura torta depois de trocar arquivos no NAS.
+    const result = deps.controller.startThumbs(raw ?? false);
+    return reply.code(result.started ? 202 : 409).send(result);
+  });
 }

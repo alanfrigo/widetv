@@ -9,7 +9,7 @@ import { SESSION_COOKIE_NAME, type SessionConfig } from '../../src/server/auth/s
 const SENHA = 'desenho-secreto';
 const SESSION: SessionConfig = {
   secret: 'k'.repeat(64),
-  secureCookies: true,
+  secureCookies: 'always',
   ttlMs: 7 * 24 * 60 * 60 * 1000,
 };
 
@@ -186,5 +186,103 @@ describe('forca bruta', () => {
       remoteAddress: '10.0.0.6',
     });
     expect(r.statusCode).toBe(200);
+  });
+});
+
+/*
+ * O default `auto` nasceu de um defeito real: com `Secure` fixo, o app de TV
+ * falando por http://10.0.2.2:8080 recebia 200 no login, guardava o cookie e
+ * nunca mais o mandava de volta - o OkHttp recusa enviar cookie Secure por
+ * HTTP. A tela piscava e voltava para a senha, indefinidamente. Estes testes
+ * batem na ROTA, e nao so na funcao, porque o defeito estava justamente na
+ * ligacao entre as duas.
+ */
+describe('SECURE_COOKIES=auto na rota', () => {
+  async function buildAuto(): Promise<FastifyInstance> {
+    const config: SessionConfig = { ...SESSION, secureCookies: 'auto' };
+    const instance = Fastify();
+    await instance.register(cookie);
+    registerAuthGuard(instance, { session: config, now: () => agora });
+    registerAuthRoutes(instance, { passwordHash: hash, session: config, now: () => agora });
+    await instance.ready();
+    return instance;
+  }
+
+  function setCookieOf(headers: Record<string, unknown>): string {
+    const raw = headers['set-cookie'];
+    return Array.isArray(raw) ? String(raw[0]) : String(raw);
+  }
+
+  test('chamada por HTTP nao recebe Secure, e o cookie volta na proxima', async () => {
+    const auto = await buildAuto();
+    const login = await auto.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { password: SENHA },
+    });
+    expect(login.statusCode).toBe(200);
+    const header = setCookieOf(login.headers as Record<string, unknown>);
+    expect(header).not.toContain('Secure');
+
+    // A prova que interessa: a sessao emitida por HTTP e aceita de volta.
+    const sessao = await auto.inject({
+      method: 'GET',
+      url: '/api/auth/session',
+      headers: { cookie: header.split(';')[0]! },
+    });
+    expect(sessao.statusCode).toBe(200);
+    await auto.close();
+  });
+
+  test('atras de proxy TLS o Secure volta', async () => {
+    const auto = await buildAuto();
+    const r = await auto.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { 'x-forwarded-proto': 'https' },
+      payload: { password: SENHA },
+    });
+    expect(setCookieOf(r.headers as Record<string, unknown>)).toContain('Secure');
+    await auto.close();
+  });
+
+  test('o logout repete a mesma politica do login', async () => {
+    const auto = await buildAuto();
+    // `/api/auth/logout` NAO e rota publica: sem sessao ela responde 401 e
+    // nunca chega a emitir cookie nenhum. Entra logado, entao.
+    const entrada = await auto.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { password: SENHA },
+    });
+    const sessao = setCookieOf(entrada.headers as Record<string, unknown>).split(';')[0]!;
+
+    const puro = await auto.inject({
+      method: 'POST',
+      url: '/api/auth/logout',
+      headers: { cookie: sessao },
+    });
+    expect(puro.statusCode).toBe(200);
+    expect(setCookieOf(puro.headers as Record<string, unknown>)).not.toContain('Secure');
+
+    const tls = await auto.inject({
+      method: 'POST',
+      url: '/api/auth/logout',
+      headers: { cookie: sessao, 'x-forwarded-proto': 'https' },
+    });
+    const header = setCookieOf(tls.headers as Record<string, unknown>);
+    expect(header).toContain('Secure');
+    expect(header).toContain('Max-Age=0');
+    await auto.close();
+  });
+
+  test('SECURE_COOKIES=true continua marcando mesmo em HTTP', async () => {
+    // `SESSION` e 'always': e a garantia para quem so serve por HTTPS.
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      payload: { password: SENHA },
+    });
+    expect(setCookieOf(r.headers as Record<string, unknown>)).toContain('Secure');
   });
 });

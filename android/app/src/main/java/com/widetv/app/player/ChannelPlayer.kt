@@ -168,6 +168,41 @@ class ChannelPlayer(
   /** Trilhas do item que esta tocando. Vazio antes do primeiro `prepare`. */
   val tracks: Tracks get() = exo.currentTracks
 
+  /**
+   * Episodio no ar agora, ao vivo ou sob demanda.
+   *
+   * O overlay do player precisa dos dois modos escritos do mesmo jeito, e so
+   * quem guarda a fila sabe traduzir o `mediaId` de volta em episodio.
+   */
+  val currentEpisode: EpisodeRef?
+    get() = if (mode == PlaybackMode.LIVE) {
+      playing?.episode
+    } else {
+      vodQueue.firstOrNull { it.id == exo.currentMediaItem?.mediaId }
+    }
+
+  /** O proximo. Ao vivo vem da grade; sob demanda, da fila — null no ultimo. */
+  val nextEpisode: EpisodeRef?
+    get() {
+      if (mode == PlaybackMode.LIVE) return playing?.next
+      val id = exo.currentMediaItem?.mediaId ?: return null
+      val at = vodQueue.indexOfFirst { it.id == id }
+      return if (at < 0) null else vodQueue.getOrNull(at + 1)
+    }
+
+  /** Nome da serie no ar, para o rotulo de cima do overlay. */
+  val currentChannelName: String?
+    get() = if (mode == PlaybackMode.LIVE) playing?.channel?.name else vodChannel?.name
+
+  val isPlaying: Boolean get() = exo.playWhenReady
+
+  /** 0..1. Mudo e volume zero, nao um estado separado. */
+  var volume: Float
+    get() = exo.volume
+    set(value) {
+      exo.volume = value.coerceIn(0f, 1f)
+    }
+
   /** false quando o canal nao existe. */
   suspend fun tune(channelNumber: Int): Boolean {
     stopLoop()
@@ -185,10 +220,19 @@ class ChannelPlayer(
   }
 
   /**
-   * Reproducao sob demanda: sem grade, sem sync. Toca do inicio do episodio
-   * escolhido e emenda os seguintes da serie, como uma maratona.
+   * Reproducao sob demanda: sem grade, sem sync. Toca do episodio escolhido e
+   * emenda os seguintes da serie, como uma maratona.
+   *
+   * @param startPositionMs onde comecar dentro do episodio escolhido. E o que
+   *   faz "Continuar S01E08" continuar de onde parou em vez de recomecar; zero
+   *   para "Do inicio".
    */
-  fun playOnDemand(channel: ChannelSummary, episodes: List<EpisodeRef>, startIndex: Int) {
+  fun playOnDemand(
+    channel: ChannelSummary,
+    episodes: List<EpisodeRef>,
+    startIndex: Int,
+    startPositionMs: Long = 0L,
+  ) {
     stopLoop()
     mode = PlaybackMode.ON_DEMAND
     vodChannel = channel
@@ -199,7 +243,7 @@ class ChannelPlayer(
     sample = null
     playing = null
 
-    exo.setMediaItems(episodes.map(::mediaItem), startIndex, 0L)
+    exo.setMediaItems(episodes.map(::mediaItem), startIndex, startPositionMs.coerceAtLeast(0L))
     exo.playWhenReady = true
     exo.prepare()
     events.onVodEpisode(channel, episodes[startIndex])

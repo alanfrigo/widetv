@@ -21,6 +21,11 @@ export type ProviderName = 'tmdb' | 'tvmaze' | 'itunes';
 export interface ShowMetadata {
   /** URL da imagem no provedor; quem baixa e o servico. null quando sem capa. */
   posterUrl: string | null;
+  /**
+   * URL da arte 16:9 no provedor. So o TMDB tem uma; TVMaze e iTunes devolvem
+   * sempre `null` e a tela cai no padrao listrado, que e um desenho, nao falha.
+   */
+  backdropUrl: string | null;
   year: number | null;
   /** Sempre texto puro: o `summary` do TVMaze vem com HTML e e limpo aqui. */
   overview: string | null;
@@ -28,7 +33,20 @@ export interface ShowMetadata {
 }
 
 export type LookupResult =
-  | { status: 'found'; metadata: ShowMetadata }
+  | {
+      status: 'found';
+      metadata: ShowMetadata;
+      /**
+       * Algum provedor da cadeia caiu por REDE antes de outro responder.
+       *
+       * O que veio e util e vale gravar, mas a busca esta INCOMPLETA: o que
+       * falta pode estar justamente no provedor que nao respondeu. Quem grava
+       * usa isto para nao carimbar "ja procurei" em cima de uma busca que nem
+       * chegou a acontecer - um TMDB fora do ar por dez minutos nao pode selar
+       * a serie sem arte 16:9 para sempre.
+       */
+      providerFailed: boolean;
+    }
   | { status: 'not-found' }
   /** Rede/servidor falhou: NAO grave nada, tente de novo na proxima rodada. */
   | { status: 'error'; reason: string };
@@ -160,6 +178,7 @@ export async function fetchFromTvmaze(
 
   return {
     posterUrl: nonEmptyString(show.image?.original) ?? nonEmptyString(show.image?.medium),
+    backdropUrl: null,
     year: toYear(show.premiered),
     overview: toOverview(show.summary),
     source: 'tvmaze',
@@ -195,6 +214,7 @@ export async function fetchFromItunes(
 
     return {
       posterUrl: artwork === null ? null : artwork.replace('100x100', '600x600'),
+      backdropUrl: null,
       year: toYear(item.releaseDate),
       overview: toOverview(item.longDescription) ?? toOverview(item.description),
       source: 'itunes',
@@ -206,7 +226,8 @@ export async function fetchFromItunes(
 
 /**
  * TMDB, so com chave. Quando existe vem PRIMEIRO na cadeia: e o unico com
- * sinopse em pt-BR e com poster em resolucao de cartaz.
+ * sinopse em pt-BR, com poster em resolucao de cartaz e com arte 16:9 - as
+ * tres coisas saem da MESMA resposta, sem request extra.
  */
 export async function fetchFromTmdb(
   name: string,
@@ -222,11 +243,20 @@ export async function fetchFromTmdb(
   const first = (body as { results?: unknown[] }).results?.[0];
   if (first === undefined || typeof first !== 'object' || first === null) return null;
 
-  const item = first as { poster_path?: unknown; overview?: unknown; first_air_date?: unknown };
+  const item = first as {
+    poster_path?: unknown;
+    backdrop_path?: unknown;
+    overview?: unknown;
+    first_air_date?: unknown;
+  };
   const posterPath = nonEmptyString(item.poster_path);
+  const backdropPath = nonEmptyString(item.backdrop_path);
 
   return {
     posterUrl: posterPath === null ? null : `https://image.tmdb.org/t/p/w500${posterPath}`,
+    // w1280 e nao original: a arte e fundo de hero, entao a diferenca nao
+    // aparece na tela e o download de 460 series pesa bem menos.
+    backdropUrl: backdropPath === null ? null : `https://image.tmdb.org/t/p/w1280${backdropPath}`,
     year: toYear(item.first_air_date),
     overview: toOverview(item.overview),
     source: 'tmdb',
@@ -278,21 +308,26 @@ export async function lookupShowMetadata(
     try {
       const found = await provider(term);
       if (found === null) continue;
-      if (found.posterUrl !== null) return { status: 'found', metadata: found };
+      if (found.posterUrl !== null) {
+        return { status: 'found', metadata: found, providerFailed: firstError !== null };
+      }
       fallback ??= found;
     } catch (error) {
       firstError ??= detail(error);
     }
   }
 
-  if (fallback !== null) return { status: 'found', metadata: fallback };
+  if (fallback !== null) {
+    return { status: 'found', metadata: fallback, providerFailed: firstError !== null };
+  }
   if (firstError !== null) return { status: 'error', reason: firstError };
   return { status: 'not-found' };
 }
 
 /**
- * Baixa a imagem da capa. Lanca em qualquer problema: quem chama trata isso
- * como falha de rede, ou seja, "tente de novo depois", nunca como not_found.
+ * Baixa uma arte (capa ou 16:9). Lanca em qualquer problema: quem chama trata
+ * isso como falha de rede, ou seja, "tente de novo depois", nunca como
+ * not_found.
  */
 export async function downloadImage(
   url: string,
@@ -302,11 +337,11 @@ export async function downloadImage(
   const doFetch: FetchLike = options?.fetch ?? ((u, init) => fetch(u, init));
   const response = await doFetch(url, { signal: AbortSignal.timeout(timeoutMs) });
   if (!response.ok) {
-    throw new Error(`capa respondeu ${String(response.status)}`);
+    throw new Error(`imagem respondeu ${String(response.status)}`);
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.byteLength === 0) {
-    throw new Error('capa veio vazia');
+    throw new Error('imagem veio vazia');
   }
   return bytes;
 }

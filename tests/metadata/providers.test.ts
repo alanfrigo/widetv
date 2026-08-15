@@ -88,10 +88,16 @@ describe('TVMaze', () => {
 
     expect(result).toEqual({
       posterUrl: 'https://img/original.jpg',
+      backdropUrl: null,
       year: 1985,
       overview: 'Os felinos fogem de Thundera.',
       source: 'tvmaze',
     });
+  });
+
+  test('nunca devolve arte 16:9: o provedor nao tem uma', async () => {
+    stubFetch({ 'api.tvmaze.com': () => json(TVMAZE_HIT) });
+    expect((await fetchFromTvmaze('ThunderCats'))?.backdropUrl).toBeNull();
   });
 
   test('cai para a imagem media quando nao ha original', async () => {
@@ -136,6 +142,7 @@ describe('iTunes', () => {
 
     expect(await fetchFromItunes('ThunderCats')).toEqual({
       posterUrl: 'https://is1.mzstatic.com/image/thumb/abc/600x600bb.jpg',
+      backdropUrl: null,
       year: 1985,
       overview: 'Descricao longa.',
       source: 'itunes',
@@ -165,12 +172,17 @@ describe('iTunes', () => {
 });
 
 describe('TMDB', () => {
-  test('monta a URL do poster e pede pt-BR', async () => {
+  test('monta as URLs de poster e arte 16:9 e pede pt-BR', async () => {
     const calls = stubFetch({
       'api.themoviedb.org': () =>
         json({
           results: [
-            { poster_path: '/abc.jpg', overview: 'Sinopse em portugues.', first_air_date: '1985-01-23' },
+            {
+              poster_path: '/abc.jpg',
+              backdrop_path: '/wide.jpg',
+              overview: 'Sinopse em portugues.',
+              first_air_date: '1985-01-23',
+            },
           ],
         }),
     });
@@ -179,12 +191,25 @@ describe('TMDB', () => {
 
     expect(result).toEqual({
       posterUrl: 'https://image.tmdb.org/t/p/w500/abc.jpg',
+      backdropUrl: 'https://image.tmdb.org/t/p/w1280/wide.jpg',
       year: 1985,
       overview: 'Sinopse em portugues.',
       source: 'tmdb',
     });
     expect(calls[0]).toContain('language=pt-BR');
     expect(calls[0]).toContain('api_key=chave-secreta');
+    // As duas artes saem da MESMA resposta: nada de request extra por causa do fundo.
+    expect(calls).toHaveLength(1);
+  });
+
+  test('serie sem backdrop_path devolve backdropUrl null, sem afetar a capa', async () => {
+    stubFetch({
+      'api.themoviedb.org': () => json({ results: [{ poster_path: '/abc.jpg' }] }),
+    });
+
+    const result = await fetchFromTmdb('ThunderCats', 'k');
+    expect(result?.backdropUrl).toBeNull();
+    expect(result?.posterUrl).toBe('https://image.tmdb.org/t/p/w500/abc.jpg');
   });
 
   test('lista vazia e null', async () => {
@@ -203,10 +228,13 @@ describe('cadeia de provedores', () => {
       status: 'found',
       metadata: {
         posterUrl: 'https://img/original.jpg',
+        backdropUrl: null,
         year: 1985,
         overview: 'Os felinos fogem de Thundera.',
         source: 'tvmaze',
       },
+      // Ninguem caiu no caminho: a busca foi completa.
+      providerFailed: false,
     });
     // Uma chamada so: o iTunes nem foi consultado.
     expect(calls).toHaveLength(1);
@@ -298,6 +326,38 @@ describe('cadeia de provedores', () => {
     const result = await lookupShowMetadata('ThunderCats', { tmdbApiKey: 'errada' });
 
     expect(result.status === 'found' && result.metadata.source).toBe('tvmaze');
+    // E o resultado sai marcado como INCOMPLETO: o unico provedor com arte 16:9
+    // nao respondeu, entao quem grava nao pode selar a serie como "sem arte".
+    expect(result.status === 'found' && result.providerFailed).toBe(true);
+  });
+
+  test('providerFailed e false quando o TMDB simplesmente nao conhece a serie', async () => {
+    // Diferente de "caiu": o TMDB respondeu, e a resposta foi "nao tenho". Isso
+    // e definitivo, e a serie pode sair da fila da arte 16:9 para sempre.
+    stubFetch({
+      'api.themoviedb.org': () => json({ results: [] }),
+      'api.tvmaze.com': () => json(TVMAZE_HIT),
+    });
+
+    const result = await lookupShowMetadata('ThunderCats', { tmdbApiKey: 'k' });
+
+    expect(result.status === 'found' && result.metadata.source).toBe('tvmaze');
+    expect(result.status === 'found' && result.providerFailed).toBe(false);
+  });
+
+  test('provedor que cai antes de um fallback SEM capa tambem marca providerFailed', async () => {
+    // O outro caminho de `found`: ninguem trouxe capa, e o que sobrou veio do
+    // acumulador. A falha anterior nao pode se perder nesse ramo.
+    stubFetch({
+      'api.themoviedb.org': () => json({}, 503),
+      'api.tvmaze.com': () => json({ ...TVMAZE_HIT, image: null }),
+      'itunes.apple.com': () => json({ resultCount: 0, results: [] }),
+    });
+
+    const result = await lookupShowMetadata('ThunderCats', { tmdbApiKey: 'k' });
+
+    expect(result.status).toBe('found');
+    expect(result.status === 'found' && result.providerFailed).toBe(true);
   });
 
   test('nome que sobra vazio depois da limpeza nao vira request', async () => {

@@ -17,6 +17,7 @@ beforeEach(async () => {
   settings = createSettingsService(store, {
     rescanTime: { hour: 4, minute: 0 },
     autoRemux: true,
+    autoThumbs: true,
     smartGrouping: true,
     tmdbConfigured: true,
   });
@@ -43,6 +44,7 @@ describe('GET /api/settings', () => {
       subtitlesAuto: false,
       rescanTime: '04:00',
       autoRemux: true,
+      autoThumbs: true,
       smartGrouping: true,
       tmdbConfigured: true,
     });
@@ -85,6 +87,7 @@ describe('PATCH /api/settings', () => {
       { subtitleLang: [] },
       { subtitlesAuto: 'sim' },
       { autoRemux: 1 },
+      { autoThumbs: 'sim' },
       { smartGrouping: null },
       { rescanTime: 4 },
     ]) {

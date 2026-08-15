@@ -34,3 +34,26 @@ export function progressRatio(entry: ProgressEntry | null | undefined): number {
   if (entry == null || entry.durationMs <= 0) return 0;
   return Math.min(1, Math.max(0, entry.positionMs / entry.durationMs));
 }
+
+/** Quanto falta do episodio, em ms; 0 quando nao ha entrada nenhuma. */
+export function remainingMs(entry: ProgressEntry | null | undefined): number {
+  if (entry == null || entry.durationMs <= 0) return 0;
+  return Math.max(0, entry.durationMs - entry.positionMs);
+}
+
+/**
+ * Estado da linha de episodio.
+ *
+ * O servidor APAGA a entrada quando o episodio termina, entao "sem entrada" e
+ * ambiguo: pode ser nunca aberto ou ja assistido. A tela diz o que sabe -
+ * `assistido` so quando a entrada existe e chegou ao fim, e nada quando nao ha
+ * entrada. Chutar "assistido" no silencio riscaria metade da maratona de quem
+ * acabou de instalar o servidor.
+ */
+export type WatchState = 'unseen' | 'watching' | 'watched';
+
+export function watchState(entry: ProgressEntry | null | undefined): WatchState {
+  if (entry == null || entry.durationMs <= 0) return 'unseen';
+  if (entry.positionMs <= 0) return 'unseen';
+  return progressRatio(entry) >= FINISHED_RATIO ? 'watched' : 'watching';
+}

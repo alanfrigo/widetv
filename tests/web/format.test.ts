@@ -1,13 +1,30 @@
 import { describe, expect, test } from 'vitest';
-import type { EpisodeRef } from '../../src/shared/api-types';
+import type { AudioTrackRef, EpisodeRef } from '../../src/shared/api-types';
 import {
+  audiosBadge,
+  channelLabel,
+  channelNumberLabel,
+  episodeCode,
+  episodeHeadline,
+  episodesLabel,
   formatChannelMeta,
   formatClock,
   formatDurationMin,
   formatEpisodeLabel,
+  formatLeftBadge,
+  formatRemaining,
+  formatRuntime,
+  formatUpNext,
   initialsOf,
+  joinMeta,
+  languagesBadge,
   resolutionBadge,
+  resultsLabel,
 } from '../../src/web/format';
+
+function aud(over: Partial<AudioTrackRef> = {}): AudioTrackRef {
+  return { index: 0, lang: 'por', title: null, codec: 'eac3', isDefault: false, ...over };
+}
 
 function ep(over: Partial<EpisodeRef> = {}): EpisodeRef {
   return {
@@ -20,6 +37,7 @@ function ep(over: Partial<EpisodeRef> = {}): EpisodeRef {
     height: null,
     audioTracks: [],
     subtitleTracks: [],
+    thumbUrl: null,
     ...over,
   };
 }
@@ -109,22 +127,22 @@ describe('resolutionBadge', () => {
 
 describe('formatDurationMin', () => {
   test('meia hora de desenho vira o numero redondo', () => {
-    expect(formatDurationMin(22 * 60_000)).toBe('22 MIN');
+    expect(formatDurationMin(22 * 60_000)).toBe('22 min');
   });
 
   test('arredonda para o minuto mais proximo', () => {
-    expect(formatDurationMin(22 * 60_000 + 29_000)).toBe('22 MIN');
-    expect(formatDurationMin(22 * 60_000 + 31_000)).toBe('23 MIN');
+    expect(formatDurationMin(22 * 60_000 + 29_000)).toBe('22 min');
+    expect(formatDurationMin(22 * 60_000 + 31_000)).toBe('23 min');
   });
 
   test('episodio curto nunca vira zero minuto', () => {
-    expect(formatDurationMin(20_000)).toBe('1 MIN');
+    expect(formatDurationMin(20_000)).toBe('1 min');
   });
 
   test('duracao desconhecida nao mente sobre o tempo', () => {
-    expect(formatDurationMin(0)).toBe('0 MIN');
-    expect(formatDurationMin(-5)).toBe('0 MIN');
-    expect(formatDurationMin(Number.NaN)).toBe('0 MIN');
+    expect(formatDurationMin(0)).toBe('0 min');
+    expect(formatDurationMin(-5)).toBe('0 min');
+    expect(formatDurationMin(Number.NaN)).toBe('0 min');
   });
 });
 
@@ -184,5 +202,116 @@ describe('initialsOf', () => {
   test('nome vazio nao devolve string vazia', () => {
     expect(initialsOf('')).toBe('?');
     expect(initialsOf('---')).toBe('?');
+  });
+});
+
+describe('rotulo do episodio no redesenho', () => {
+  test('o codigo e a numeracao do arquivo', () => {
+    expect(episodeCode(ep())).toBe('S02E14');
+    expect(episodeCode(ep({ season: null }))).toBe('EP 14');
+  });
+
+  test('sem numeracao nao ha codigo para inventar', () => {
+    expect(episodeCode(ep({ season: null, episode: null }))).toBeNull();
+  });
+
+  test('o cabecalho junta codigo e titulo', () => {
+    expect(episodeHeadline(ep({ title: 'O roubo do século' }))).toBe(
+      'S02E14 · O roubo do século',
+    );
+  });
+
+  test('sem codigo o titulo nao aparece duas vezes', () => {
+    expect(episodeHeadline(ep({ season: null, episode: null, title: 'Especial' }))).toBe(
+      'Especial',
+    );
+  });
+});
+
+describe('canal', () => {
+  test('o selo do card tem sempre dois digitos', () => {
+    expect(channelNumberLabel(7)).toBe('07');
+    expect(channelNumberLabel(84)).toBe('84');
+    expect(channelNumberLabel(120)).toBe('120');
+  });
+
+  test('a pilula repete o mesmo numero', () => {
+    expect(channelLabel(7)).toBe('Canal 07');
+  });
+});
+
+describe('tempo do redesenho', () => {
+  test('o que falta do episodio', () => {
+    expect(formatRemaining(4 * 60_000)).toBe('faltam 4 min');
+    expect(formatRemaining(60_000)).toBe('faltam 1 min');
+  });
+
+  test('o ultimo minuto nao vira "faltam 0 min"', () => {
+    expect(formatRemaining(10_000)).toBe('falta menos de 1 min');
+    expect(formatRemaining(0)).toBe('falta menos de 1 min');
+    expect(formatRemaining(Number.NaN)).toBe('falta menos de 1 min');
+  });
+
+  test('o "a seguir" conta em minutos', () => {
+    expect(formatUpNext(7 * 60_000)).toBe('em 7 min');
+    expect(formatUpNext(5_000)).toBe('em instantes');
+  });
+
+  test('o selo de retomada nunca some para zero', () => {
+    expect(formatLeftBadge(12 * 60_000)).toBe('12 min');
+    expect(formatLeftBadge(3_000)).toBe('1 min');
+  });
+
+  test('a soma da temporada vira horas e minutos', () => {
+    expect(formatRuntime(9 * 3_600_000 + 12 * 60_000)).toBe('9h 12min');
+    expect(formatRuntime(48 * 60_000)).toBe('48min');
+    expect(formatRuntime(2 * 3_600_000)).toBe('2h');
+  });
+
+  test('sem duracao medida o aside nao anuncia "0min"', () => {
+    expect(formatRuntime(0)).toBeNull();
+    expect(formatRuntime(-1)).toBeNull();
+  });
+});
+
+describe('contagens e selos', () => {
+  test('singular nao vira "1 episódios"', () => {
+    expect(episodesLabel(1)).toBe('1 episódio');
+    expect(episodesLabel(142)).toBe('142 episódios');
+  });
+
+  test('a busca conta o que achou', () => {
+    expect(resultsLabel(3)).toBe('3 resultados');
+    expect(resultsLabel(1)).toBe('1 resultado');
+    expect(resultsLabel(0)).toBe('nenhum resultado');
+  });
+
+  test('o selo de audios so aparece quando ha escolha', () => {
+    expect(audiosBadge(3)).toBe('3 áudios');
+    expect(audiosBadge(1)).toBeNull();
+    expect(audiosBadge(0)).toBeNull();
+  });
+
+  test('o selo de idiomas conta linguas, nao faixas', () => {
+    // Estereo e 5.1 em portugues sao uma lingua so.
+    expect(languagesBadge([aud({ index: 0 }), aud({ index: 1 })])).toBeNull();
+    expect(languagesBadge([aud({ lang: 'por' }), aud({ lang: 'eng' })])).toBe('2 idiomas');
+    // 'pt' e 'por' sao o mesmo idioma marcado de dois jeitos.
+    expect(languagesBadge([aud({ lang: 'pt-BR' }), aud({ lang: 'por' })])).toBeNull();
+  });
+
+  test('faixa sem tag de idioma nao inventa lingua', () => {
+    expect(languagesBadge([aud({ lang: null }), aud({ lang: 'und' })])).toBeNull();
+  });
+});
+
+describe('joinMeta', () => {
+  test('junta com ponto o que existe', () => {
+    expect(joinMeta(['1989', '142 episódios', '1080p'])).toBe('1989 · 142 episódios · 1080p');
+  });
+
+  test('o que falta nao deixa separador orfao', () => {
+    expect(joinMeta([null, '142 episódios', undefined, ''])).toBe('142 episódios');
+    expect(joinMeta([null, undefined])).toBe('');
   });
 });

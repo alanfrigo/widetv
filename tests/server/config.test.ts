@@ -25,7 +25,7 @@ describe('loadConfig', () => {
     expect(c.libraryRoot).toBe('/media/desenhos');
     expect(c.port).toBe(8080);
     expect(c.channelEpochMs).toBe(Date.parse('2024-01-01T00:00:00Z'));
-    expect(c.secureCookies).toBe(true);
+    expect(c.secureCookies).toBe('always');
   });
 
   test('resolve dataDir para caminho absoluto', () => {
@@ -49,6 +49,13 @@ describe('loadConfig', () => {
     expect(loadConfig(env({ AUTO_REMUX: 'false' })).autoRemux).toBe(false);
     expect(loadConfig(env({ AUTO_REMUX: 'FALSE' })).autoRemux).toBe(false);
     expect(loadConfig(env({ AUTO_REMUX: '0' })).autoRemux).toBe(true);
+  });
+
+  test('autoThumbs segue a mesma regra: ligado por padrao, so "false" desliga', () => {
+    expect(loadConfig(env()).autoThumbs).toBe(true);
+    expect(loadConfig(env({ AUTO_THUMBS: 'false' })).autoThumbs).toBe(false);
+    expect(loadConfig(env({ AUTO_THUMBS: 'FALSE' })).autoThumbs).toBe(false);
+    expect(loadConfig(env({ AUTO_THUMBS: '0' })).autoThumbs).toBe(true);
   });
 
   test('rescanTime: default 04:00, HH:MM local, off/false desliga', () => {
@@ -116,11 +123,13 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env({ PORT: port }))).toThrow(/PORT/);
   });
 
-  test('SECURE_COOKIES so e falso quando dito explicitamente', () => {
-    // Default seguro: quem esquecer a variavel nao perde a flag Secure.
-    expect(loadConfig(env({ SECURE_COOKIES: undefined })).secureCookies).toBe(true);
-    expect(loadConfig(env({ SECURE_COOKIES: 'false' })).secureCookies).toBe(false);
-    expect(loadConfig(env({ SECURE_COOKIES: 'qualquer coisa' })).secureCookies).toBe(true);
+  test('SECURE_COOKIES e tri-estado: so "true" e "false" mandam', () => {
+    // Ausente ou ilegivel cai em `auto`, que marca Secure quando ha TLS - e o
+    // que faz a casa em HTTP na LAN funcionar sem abrir mao de HTTPS quando ele
+    // existe. Veja `parseSecureCookies`.
+    expect(loadConfig(env({ SECURE_COOKIES: undefined })).secureCookies).toBe('auto');
+    expect(loadConfig(env({ SECURE_COOKIES: 'false' })).secureCookies).toBe('never');
+    expect(loadConfig(env({ SECURE_COOKIES: 'qualquer coisa' })).secureCookies).toBe('auto');
   });
 
   test('AUTH_PASSWORD_HASH em texto claro e recusado no boot', () => {

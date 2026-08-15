@@ -31,6 +31,21 @@ data class ChannelSummary(
   val year: Int? = null,
   /** Sinopse em texto puro, ja sem HTML; null quando desconhecida. */
   val overview: String? = null,
+  /**
+   * Arte 16:9 (`api/channels/<number>/backdrop`), ou null quando o provedor nao
+   * tem. Default null porque a rota e nova: um servidor mais antigo nao manda o
+   * campo, e o hero cai no padrao listrado em vez de a lista inteira falhar.
+   */
+  val backdropUrl: String? = null,
+  /**
+   * Temporadas presentes no canal, crescente; vazio quando a serie nao usa
+   * pastas de temporada. Episodios com `season = null` NAO entram aqui — a aba
+   * "Sem temporada" e deduzida quando a lista de episodios chega.
+   *
+   * Default vazio pelo mesmo motivo do `backdropUrl`; sem o campo, as abas saem
+   * dos proprios episodios.
+   */
+  val seasons: List<Int> = emptyList(),
 )
 
 /**
@@ -81,6 +96,17 @@ data class EpisodeRef(
    */
   val audioTracks: List<AudioTrackRef> = emptyList(),
   val subtitleTracks: List<SubtitleTrackRef> = emptyList(),
+  /**
+   * Rota do quadro 16:9 tirado do proprio arquivo (`api/stream/<id>/thumb`), ou
+   * null enquanto ele nao existe.
+   *
+   * Nenhum provedor de metadata tem imagem por episodio de acervo caseiro: o
+   * quadro sai do video mesmo, por ffmpeg, em segundo plano. null NAO e erro — e
+   * "ainda nao gerei", e a tela cai no padrao listrado. Default null porque o
+   * campo e novo e porque, num servidor que ja o tem, a fila leva um bom tempo
+   * ate chegar naquele episodio.
+   */
+  val thumbUrl: String? = null,
 )
 
 /**
@@ -99,6 +125,28 @@ data class NowPlaying(
   val endsAtMs: Long,
   /** Proximo episodio da grade; volta ao inicio quando a serie termina. */
   val next: EpisodeRef,
+)
+
+/**
+ * Uma linha de "Continuar assistindo", como `GET /api/history/resume` devolve.
+ *
+ * Traz o canal INTEIRO desenhado — nome, capa e arte — de proposito: a faixa
+ * precisa desenhar 20 cards sem buscar os episodios de 20 canais, que era o que
+ * o cliente antigo fazia. Entrada cujo episodio ou canal sumiu num rescan nao
+ * chega aqui: o servidor a omite em vez de mandar campos nulos.
+ */
+@Serializable
+data class ResumeEntry(
+  val channelNumber: Int,
+  val channelName: String,
+  val posterUrl: String? = null,
+  val backdropUrl: String? = null,
+  val episode: EpisodeRef,
+  /** Onde a reproducao parou, em ms. */
+  val positionMs: Long = 0,
+  val durationMs: Long = 0,
+  /** Epoch ms da ultima vez que este episodio andou. Ordena a faixa. */
+  val updatedAt: Long = 0,
 )
 
 /* --- configuracoes -------------------------------------------------------- */
@@ -126,6 +174,16 @@ data class AppSettings(
    * "Ligado" seria descrever um comportamento que aquele servidor nao tem.
    */
   val smartGrouping: Boolean = false,
+  /**
+   * Tira um quadro de cada episodio, em segundo plano, para a lista de
+   * episodios e as faixas do catalogo. Desligar nao apaga o que ja existe.
+   *
+   * Default true, ao contrario dos outros dois interruptores, porque este e o
+   * estado de fabrica do servidor: o default so vale enquanto o GET nao
+   * respondeu, e desenhar "Desligado" nesse intervalo faria a linha piscar de
+   * desligada para ligada assim que a resposta chegasse.
+   */
+  val autoThumbs: Boolean = true,
   /** So leitura: o servidor tem `TMDB_API_KEY`. Muda a qualidade das capas. */
   val tmdbConfigured: Boolean = false,
 )
@@ -154,6 +212,8 @@ object SettingsPatch {
   fun autoRemux(value: Boolean): JsonObject = flag("autoRemux", value)
 
   fun smartGrouping(value: Boolean): JsonObject = flag("smartGrouping", value)
+
+  fun autoThumbs(value: Boolean): JsonObject = flag("autoThumbs", value)
 
   private fun text(key: String, value: String?): JsonObject = buildJsonObject {
     put(key, if (value == null) JsonNull else JsonPrimitive(value))
@@ -204,6 +264,19 @@ data class ScanSummary(
   val error: String? = null,
 )
 
+/** Resultado da ultima rodada de extracao de quadros. */
+@Serializable
+data class ThumbSummary(
+  /** Episodios que a rodada olhou. */
+  val considered: Int = 0,
+  val generated: Int = 0,
+  /** Ja tinham quadro, ou o arquivo sumiu do volume. */
+  val skipped: Int = 0,
+  val failed: Int = 0,
+  val durationMs: Long = 0,
+  val finishedAt: Long = 0,
+)
+
 @Serializable
 data class MetadataSummary(
   val considered: Int = 0,
@@ -235,6 +308,20 @@ data class MetadataTask(
   val last: MetadataSummary? = null,
 )
 
+/**
+ * Extracao de quadros. Tem progresso proprio porque, num acervo grande, e a
+ * tarefa mais demorada de todas: um ffmpeg por episodio, com concorrencia 1.
+ *
+ * Reusa `ScanProgressRef` porque a forma do progresso e a mesma — feito, total e
+ * o nome do que esta sendo medido agora.
+ */
+@Serializable
+data class ThumbsTask(
+  val state: String = TASK_IDLE,
+  val progress: ScanProgressRef? = null,
+  val last: ThumbSummary? = null,
+)
+
 @Serializable
 data class RemuxTask(val state: String = TASK_IDLE)
 
@@ -243,6 +330,12 @@ data class RemuxTask(val state: String = TASK_IDLE)
 data class LibraryStatus(
   val scan: ScanTask = ScanTask(),
   val metadata: MetadataTask = MetadataTask(),
+  /**
+   * Default de objeto inteiro, e nao campo obrigatorio: um servidor anterior ao
+   * subsistema de quadros nao manda a chave, e exigi-la derrubaria a leitura do
+   * status inteiro — inclusive o progresso da varredura, que ele sabe dar.
+   */
+  val thumbs: ThumbsTask = ThumbsTask(),
   val remux: RemuxTask = RemuxTask(),
 )
 
@@ -251,6 +344,10 @@ data class ScanRequest(val mode: String = SCAN_MODE_INCREMENTAL)
 
 @Serializable
 data class MetadataRefreshRequest(val reset: Boolean = false)
+
+/** @param reset refaz o quadro de quem ja tem, em vez de so completar o que falta. */
+@Serializable
+data class ThumbsRequest(val reset: Boolean = false)
 
 /** Resposta de quem dispara tarefa de fundo: 202 quando aceitou, 409 se ja rodava. */
 @Serializable
@@ -269,10 +366,22 @@ object Routes {
 
   fun now(channelNumber: Int): String = "api/channels/$channelNumber/now"
 
+  /**
+   * Estado de TODOS os canais de uma vez, na ordem de `CHANNELS`. E o que
+   * alimenta a faixa "No ar agora" sem 84 requests.
+   */
+  const val NOW_ALL = "api/now"
+
+  /** Onde cada canal parou, para a faixa "Continuar assistindo". */
+  const val HISTORY_RESUME = "api/history/resume"
+
   fun episodes(channelNumber: Int): String = "api/channels/$channelNumber/episodes"
 
   /** Capa do canal em JPEG; e para onde `ChannelSummary.posterUrl` aponta. */
   fun poster(channelNumber: Int): String = "api/channels/$channelNumber/poster"
+
+  /** Arte 16:9 em JPEG; e para onde `ChannelSummary.backdropUrl` aponta. */
+  fun backdrop(channelNumber: Int): String = "api/channels/$channelNumber/backdrop"
 
   /**
    * Prefixo do stream. O id do episodio e um caminho relativo com barras
@@ -290,8 +399,19 @@ object Routes {
    */
   fun subtitle(track: Int): String = "subtitle/$track"
 
+  /**
+   * Sufixo do quadro do episodio, colado depois do segmento do id:
+   * `api/stream/<id percent-encoded>/thumb`. Mesma razao do `subtitle` para
+   * ficar separado do `STREAM`.
+   *
+   * Quem desenha usa o `EpisodeRef.thumbUrl` que o servidor mandou; isto existe
+   * para quem so tem o id do episodio na mao.
+   */
+  const val THUMB = "thumb"
+
   const val SETTINGS = "api/settings"
   const val LIBRARY_STATUS = "api/library/status"
   const val LIBRARY_SCAN = "api/library/scan"
   const val LIBRARY_METADATA = "api/library/metadata"
+  const val LIBRARY_THUMBS = "api/library/thumbs"
 }

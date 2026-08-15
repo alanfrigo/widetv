@@ -47,7 +47,7 @@ function toPatch(body: Record<string, unknown>): SettingsPatch | string {
     patch[field] = value;
   }
 
-  for (const field of ['subtitlesAuto', 'autoRemux', 'smartGrouping'] as const) {
+  for (const field of ['subtitlesAuto', 'autoRemux', 'autoThumbs', 'smartGrouping'] as const) {
     const value = body[field];
     if (value === undefined) continue;
     if (typeof value !== 'boolean') return `${field} precisa ser boolean`;

@@ -13,6 +13,7 @@ import {
 const DEFAULTS: SettingsDefaults = {
   rescanTime: { hour: 4, minute: 0 },
   autoRemux: true,
+  autoThumbs: true,
   smartGrouping: true,
   tmdbConfigured: false,
 };
@@ -47,6 +48,7 @@ describe('valores efetivos', () => {
       subtitlesAuto: false,
       rescanTime: '04:00',
       autoRemux: true,
+      autoThumbs: true,
       smartGrouping: true,
       tmdbConfigured: false,
     });
@@ -70,6 +72,23 @@ describe('valores efetivos', () => {
 
     store.deleteSetting('auto_remux');
     expect(settings.get().autoRemux).toBe(true);
+  });
+
+  test('autoThumbs: default do .env, linha do banco sobrepoe, apagar volta', () => {
+    // Mesmo desenho de `autoRemux`, e de proposito: as duas sao "trabalho
+    // pesado de fundo que da para desligar", e uma regra diferente para cada
+    // uma so renderia surpresa na tela de configuracoes.
+    expect(service().settings.get().autoThumbs).toBe(true);
+    expect(service({ auto_thumbs: 'false' }).settings.get().autoThumbs).toBe(false);
+    expect(service({}, { ...DEFAULTS, autoThumbs: false }).settings.get().autoThumbs).toBe(false);
+
+    const { store, settings } = service();
+    settings.patch({ autoThumbs: false });
+    expect(store.getSetting('auto_thumbs')).toBe('false');
+    expect(settings.get().autoThumbs).toBe(false);
+
+    store.deleteSetting('auto_thumbs');
+    expect(settings.get().autoThumbs).toBe(true);
   });
 
   test('tmdbConfigured e so leitura: vem do ambiente e nada no corpo o muda', () => {

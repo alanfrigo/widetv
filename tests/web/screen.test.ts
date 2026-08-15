@@ -46,9 +46,40 @@ describe('caminho de ida', () => {
     expect(reduceScreen(SERIES, { type: 'watch', source: 'vod' })).toEqual(VOD);
   });
 
-  test('assistir sem estar na serie nao toca nada', () => {
+  test('assistir sem estar na serie e sem dizer o canal nao toca nada', () => {
     expect(reduceScreen(HOME, { type: 'watch', source: 'vod' })).toBe(HOME);
     expect(reduceScreen(LIVE, { type: 'watch', source: 'vod' })).toBe(LIVE);
+  });
+
+  test('o catalogo toca direto quando manda o canal junto', () => {
+    // E o hero, o card do ao vivo e o de continuar assistindo: dali se assiste
+    // sem passar pela tela da serie.
+    expect(reduceScreen(HOME, { type: 'watch', source: 'live', channel: 12 })).toEqual({
+      name: 'player',
+      channel: 12,
+      source: 'live',
+    });
+    expect(reduceScreen(HOME, { type: 'watch', source: 'vod', channel: 12 })).toEqual({
+      name: 'player',
+      channel: 12,
+      source: 'vod',
+    });
+  });
+
+  test('o canal explicito ganha do canal da tela', () => {
+    expect(reduceScreen(SERIES, { type: 'watch', source: 'vod', channel: 9 })).toEqual({
+      name: 'player',
+      channel: 9,
+      source: 'vod',
+    });
+  });
+
+  test('nem com canal explicito da para tocar sem sessao', () => {
+    const login: Screen = { name: 'login' };
+    expect(reduceScreen(login, { type: 'watch', source: 'live', channel: 3 })).toBe(login);
+    expect(reduceScreen(initialScreen(), { type: 'watch', source: 'live', channel: 3 })).toEqual({
+      name: 'booting',
+    });
   });
 
   test('nao da para abrir serie sem sessao', () => {
@@ -140,6 +171,14 @@ describe('sessao que expira', () => {
     for (const screen of [HOME, SERIES, SETTINGS, LIVE, VOD, initialScreen()]) {
       expect(reduceScreen(screen, { type: 'unauthorized' })).toEqual({ name: 'login' });
     }
+  });
+
+  test('dois 401 seguidos nao reabrem a senha duas vezes', () => {
+    // A grade e o historico sao disparados lado a lado no catalogo: os dois
+    // falham juntos quando o cookie expira. Um segundo `unauthorized` que
+    // trocasse de tela de novo apagaria a senha ja digitada.
+    const login = reduceScreen(HOME, { type: 'unauthorized' });
+    expect(reduceScreen(login, { type: 'unauthorized' })).toBe(login);
   });
 
   test('sessao confirmada de novo nao arranca o usuario do que ele assiste', () => {

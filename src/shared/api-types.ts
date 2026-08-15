@@ -14,10 +14,22 @@ export interface ChannelSummary {
    * imagem e baixada uma vez e servida daqui, atras do mesmo guard de sessao.
    */
   posterUrl: string | null;
+  /**
+   * Rota da arte 16:9 (`/api/channels/:number/backdrop`), ou null quando o
+   * provedor nao tem uma. E o fundo do hero do catalogo e do hero da serie;
+   * sem ela a tela cai no padrao listrado, que e um desenho, nao uma falha.
+   */
+  backdropUrl: string | null;
   /** Ano de estreia segundo o provedor de metadata; null quando desconhecido. */
   year: number | null;
   /** Sinopse em texto puro, ja sem HTML; null quando desconhecida. */
   overview: string | null;
+  /**
+   * Temporadas presentes no canal, em ordem crescente. `[]` quando a serie nao
+   * usa pastas de temporada. Existe para a tela da serie desenhar as abas antes
+   * de a lista de episodios chegar - sem isto a barra de temporadas pularia.
+   */
+  seasons: number[];
 }
 
 /** Faixa de audio embutida. `index` e relativo entre audios (0-based). */
@@ -59,6 +71,16 @@ export interface EpisodeRef {
   audioTracks: AudioTrackRef[];
   /** Sempre presente; `[]` quando o indice nao conhece as trilhas. */
   subtitleTracks: SubtitleTrackRef[];
+  /**
+   * Rota do quadro 16:9 tirado do proprio arquivo
+   * (`/api/stream/:id/thumb`), ou null enquanto ele nao existe.
+   *
+   * Nenhum provedor de metadata tem imagem por episodio de acervo caseiro, e a
+   * lista de episodios do desenho e feita de miniaturas: elas saem do video
+   * mesmo, por ffmpeg, em segundo plano. null nao e erro - e "ainda nao gerei",
+   * e a tela cai no padrao listrado.
+   */
+  thumbUrl: string | null;
 }
 
 /**
@@ -94,6 +116,25 @@ export interface SaveProgressRequest {
   durationMs: number;
 }
 
+/**
+ * Uma linha de "Continuar assistindo", ja resolvida pelo servidor.
+ *
+ * `WatchProgress` sozinho so tem o id do episodio: montar a faixa a partir dele
+ * obrigaria o cliente a buscar os episodios de cada canal do historico so para
+ * descobrir um titulo. Aqui o servidor entrega a linha pronta.
+ */
+export interface ResumeEntry {
+  channelNumber: number;
+  channelName: string;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  episode: EpisodeRef;
+  positionMs: number;
+  durationMs: number;
+  /** Epoch ms da ultima gravacao; a lista vem ordenada por ele, desc. */
+  updatedAt: number;
+}
+
 export interface LoginRequest {
   password: string;
 }
@@ -126,6 +167,11 @@ export interface AppSettings {
   rescanTime: string | null;
   /** Converte para MP4, em segundo plano, o que o navegador nao toca direto. */
   autoRemux: boolean;
+  /**
+   * Tira um quadro de cada episodio, em segundo plano, para a lista de
+   * episodios e as faixas do catalogo. Desligar nao apaga o que ja existe.
+   */
+  autoThumbs: boolean;
   /**
    * Junta pastas de release da mesma serie num canal so:
    * `Rick.and.Morty.S01.1080p...` + `Rick.and.Morty.S02.1080p...` viram
@@ -166,6 +212,18 @@ export interface ScanSummary {
   error: string | null;
 }
 
+/** Resultado da ultima rodada de extracao de quadros. */
+export interface ThumbSummary {
+  /** Episodios que a rodada olhou. */
+  considered: number;
+  generated: number;
+  /** Ja tinham quadro, ou o arquivo sumiu do volume. */
+  skipped: number;
+  failed: number;
+  durationMs: number;
+  finishedAt: number;
+}
+
 export interface MetadataSummary {
   considered: number;
   found: number;
@@ -194,6 +252,15 @@ export interface LibraryStatus {
     state: LibraryTaskState;
     last: MetadataSummary | null;
   };
+  /**
+   * Extracao de quadros. Tem progresso proprio porque, num acervo grande, e a
+   * tarefa mais demorada de todas: um ffmpeg por episodio.
+   */
+  thumbs: {
+    state: LibraryTaskState;
+    progress: ScanProgressRef | null;
+    last: ThumbSummary | null;
+  };
   remux: { state: LibraryTaskState };
 }
 
@@ -213,6 +280,14 @@ export interface MetadataRefreshRequest {
   reset?: boolean;
 }
 
+export interface ThumbRequest {
+  /**
+   * Refaz o quadro de todo episodio, inclusive os que ja tem. Default: false,
+   * que so preenche o que falta - e a rodada barata do dia a dia.
+   */
+  reset?: boolean;
+}
+
 /** Resposta de quem dispara tarefa de fundo: 202 quando aceitou, 409 se ja rodava. */
 export interface TaskAccepted {
   started: boolean;
@@ -226,11 +301,19 @@ export const API = {
   session: '/api/auth/session',
   channels: '/api/channels',
   now: (channelNumber: number) => `/api/channels/${channelNumber}/now`,
+  /**
+   * `NowPlaying[]` de TODOS os canais, na ordem do catalogo. E o que alimenta a
+   * faixa "No ar agora" - com 84 canais, perguntar um a um seriam 84 requests
+   * a cada abertura do catalogo. Nunca cacheado.
+   */
+  nowAll: '/api/now',
   /** Recebe o id JA percent-encoded (o cliente web faz isso em `streamUrl`). */
   stream: (episodeId: string) => `/api/stream/${episodeId}`,
   episodes: (channelNumber: number) => `/api/channels/${channelNumber}/episodes`,
   /** Capa do canal em JPEG. Mesmo valor que `ChannelSummary.posterUrl` carrega. */
   poster: (channelNumber: number) => `/api/channels/${channelNumber}/poster`,
+  /** Arte 16:9 do canal em JPEG. Mesmo valor que `ChannelSummary.backdropUrl`. */
+  backdrop: (channelNumber: number) => `/api/channels/${channelNumber}/backdrop`,
   /**
    * Legenda embutida ja convertida para WebVTT. `track` e o `index` de
    * `EpisodeRef.subtitleTracks`. Diferente de `stream`, encoda o id aqui
@@ -238,8 +321,17 @@ export const API = {
    */
   subtitle: (episodeId: string, track: number) =>
     `/api/stream/${encodeURIComponent(episodeId)}/subtitle/${track}`,
+  /**
+   * Quadro 16:9 do episodio em JPEG. Mesmo valor que `EpisodeRef.thumbUrl`
+   * carrega; encoda o id aqui dentro, como a legenda. 404 enquanto o quadro
+   * ainda nao foi gerado - a tela cai no padrao listrado, nao em imagem
+   * quebrada.
+   */
+  thumb: (episodeId: string) => `/api/stream/${encodeURIComponent(episodeId)}/thumb`,
   /** Historico completo (GET) e gravacao por episodio (PUT/POST em `historyOf`). */
   history: '/api/history',
+  /** `ResumeEntry[]` ja resolvido: e a faixa "Continuar assistindo". */
+  resume: '/api/history/resume',
   historyOf: (episodeId: string) => `/api/history/${encodeURIComponent(episodeId)}`,
   /** Preferencias do servidor: GET devolve `AppSettings`, PATCH recebe `SettingsPatch`. */
   settings: '/api/settings',
@@ -253,4 +345,10 @@ export const API = {
    * e o que resolve capa errada depois de renomear pasta.
    */
   libraryMetadata: '/api/library/metadata',
+  /**
+   * POST dispara a extracao de quadros dos episodios que ainda nao tem
+   * (`ThumbRequest`); `{ "reset": true }` refaz todos. 202 aceito, 409 se ja
+   * roda.
+   */
+  libraryThumbs: '/api/library/thumbs',
 } as const;

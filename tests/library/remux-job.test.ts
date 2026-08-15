@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import type { AudioTrackRef } from '../../src/shared/api-types';
-import { openStore, type EpisodeRow, type Store } from '../../src/server/library/index-store';
+import { openStore, type EpisodeInput, type Store } from '../../src/server/library/index-store';
 import type { ProbeResult } from '../../src/server/library/probe-types';
 import { runRemux, remuxFileName, type Convert } from '../../src/server/library/remux-job';
 
@@ -17,7 +17,7 @@ const REMUXED_TRACKS: AudioTrackRef[] = [
   { index: 1, lang: 'por', title: null, codec: 'eac3', isDefault: false },
 ];
 
-function episodeRow(id: string, over: Partial<EpisodeRow> = {}): Omit<EpisodeRow, 'showId'> {
+function episodeRow(id: string, over: Partial<EpisodeInput> = {}): EpisodeInput {
   return {
     id,
     absolutePath: `/lib/${id}`,

@@ -106,7 +106,7 @@ Essas preferencias sao gravadas no servidor, nao no `localStorage` do
 navegador: a casa toda usa a mesma senha e as mesmas telas, entao escolher
 "audio em portugues" na TV da sala tem que valer no tablet tambem.
 Preferencias que tambem existem no `.env` (`SMART_GROUPING`, `AUTO_REMUX`,
-`RESCAN_TIME`) usam o valor do ambiente como default - gravar no painel
+`AUTO_THUMBS`, `RESCAN_TIME`) usam o valor do ambiente como default - gravar no painel
 sobrepoe, e apagar a escolha no painel volta a usar o que estiver no `.env`.
 
 | Rota | Devolve |
@@ -239,6 +239,7 @@ npm run build && npm start
 | `AUTO_SCAN` | Indexa sozinho quando o indice esta vazio. So a string exata `false` desliga |
 | `RESCAN_TIME` | Rescan diario da biblioteca no horario LOCAL (`HH:MM`, padrao `04:00`): adiciona series/episodios novos e remove os apagados. `off` desliga |
 | `AUTO_REMUX` | Converte episodios MKV/Dolby para MP4 em segundo plano (copia de bytes, sem transcode). As copias vivem em `DATA_DIR/remux` e ocupam mais ou menos o tamanho dos proprios MKV. So a string exata `false` desliga |
+| `AUTO_THUMBS` | Tira um quadro de cada episodio em segundo plano, para a lista de episodios e as faixas do catalogo (nenhum provedor de metadata tem imagem por episodio de acervo caseiro). Um ffmpeg por arquivo, um por vez, cedendo a vez ao remux. Os JPEG vivem em `DATA_DIR/thumbs` e ocupam uns 30 KB cada. So a string exata `false` desliga |
 | `SMART_GROUPING` | Junta pastas de release da mesma serie (ex.: `Serie.S01...` + `Serie.S02...`) num canal so - veja [Agrupamento inteligente](#agrupamento-inteligente). Ligado por padrao; so a string exata `false` desliga. O painel de configuracoes pode sobrepor isso em tempo de execucao; apagar essa sobreposicao volta a usar este valor |
 | `TMDB_API_KEY` | Opcional. Poe o TMDB na frente da busca de capa, com sinopse em pt-BR. Sem ela, usa TVMaze e iTunes |
 | `PORT` | Porta HTTP, padrao 8080 |

@@ -36,6 +36,50 @@ export interface EpisodeRow {
   subtitleTracks: SubtitleTrackRef[];
   mtimeMs: number;
   size: number;
+  /**
+   * Nome do arquivo em `<DATA_DIR>/thumbs`, ex. "42.jpg". null enquanto nao ha
+   * quadro. So o NOME, pelo mesmo motivo de `poster_file`: DATA_DIR muda entre
+   * o host e o container.
+   */
+  thumbFile: string | null;
+  /**
+   * Epoch ms da ultima TENTATIVA de tirar o quadro, tenha dado certo ou nao.
+   * null = nunca tentei.
+   *
+   * Existe porque `thumb_file IS NULL` confunde "ainda nao tentei" com "tentei
+   * e o arquivo nao deu quadro" - e a fila reoferecia o mesmo episodio para
+   * sempre, um ffmpeg por rodada, em cada um deles. Mesma licao de
+   * `backdrop_checked_at`.
+   */
+  thumbCheckedAt: number | null;
+}
+
+/**
+ * O que o SCAN escreve de um episodio.
+ *
+ * Fora daqui ficam as colunas que nao sao do scan: o quadro e escrito pela fila
+ * de miniaturas, e o `rowid` e do proprio SQLite. Um tipo so para as duas
+ * pontas obrigaria o scan a inventar valor para dado que ele nao tem - e a
+ * inventa-lo a cada rescan, apagando o quadro de todo episodio do acervo.
+ */
+export type EpisodeInput = Omit<EpisodeRow, 'showId' | 'thumbFile' | 'thumbCheckedAt'>;
+
+/**
+ * Episodio na fila de quadros, com o minimo para o ffmpeg rodar: quem chama nao
+ * materializa as trilhas de 15 mil linhas para tirar uma miniatura.
+ */
+export interface ThumbCandidate {
+  /**
+   * `rowid` da linha, que e o nome do arquivo (`<rowId>.jpg`). O `id` do
+   * episodio e caminho relativo, com barras e acentos, e nao serve de nome de
+   * arquivo; o rowid e a mesma escolha que a capa ja faz com `showId`.
+   */
+  rowId: number;
+  /** `EpisodeRow.id`: caminho relativo a raiz da biblioteca. */
+  episodeId: string;
+  durationMs: number;
+  /** Nome da serie, so para a barra de progresso da tela. */
+  showName: string;
 }
 
 /**
@@ -50,6 +94,32 @@ export interface ShowMetadataRow {
   showId: number;
   /** Nome do arquivo em `<DATA_DIR>/posters`, ex. "12.jpg". null quando sem capa. */
   posterFile: string | null;
+  /**
+   * Nome do arquivo em `<DATA_DIR>/backdrops`, ex. "12.jpg". null quando o
+   * provedor nao tem arte 16:9 - so o TMDB tem - ou quando a linha foi gravada
+   * antes desta coluna existir.
+   */
+  backdropFile: string | null;
+  /**
+   * Epoch ms da ultima vez em que a arte 16:9 foi PROCURADA, tenha sido achada
+   * ou nao. null = nunca procurada, que e o estado de toda linha gravada antes
+   * da coluna existir.
+   *
+   * Existe para separar "ainda nao procurei" de "procurei e nao ha": sem isso,
+   * uma serie que o provedor conhece mas nao ilustra (comum em animacao antiga)
+   * ficaria com `backdropFile` nulo para sempre e voltaria para a fila a cada
+   * rebusca, sem nunca progredir.
+   */
+  backdropCheckedAt: number | null;
+  /**
+   * De onde veio a arte 16:9: `'tmdb'` (provedor) ou `'frame'` (quadro tirado
+   * do proprio video). null quando nao ha arte, ou quando a linha foi gravada
+   * antes desta coluna existir.
+   *
+   * Sem isto uma arte tirada de quadro seria indistinguivel da do provedor, e a
+   * busca de metadata nunca a substituiria quando a chave do TMDB aparecesse.
+   */
+  backdropSource: string | null;
   year: number | null;
   overview: string | null;
   /** Provedor que respondeu, ex. "tvmaze". null quando nao houve resposta util. */
@@ -120,8 +190,75 @@ export interface Store {
   listEpisodes(showId: number): EpisodeRow[];
   getEpisode(id: string): EpisodeRow | null;
 
+  /**
+   * Quantos episodios cada serie tem, numa consulta so.
+   *
+   * Existe porque `GET /api/channels` precisa do numero, e nao das linhas:
+   * contar com `listEpisodes(id).length` por serie materializava os ~14 mil
+   * episodios do acervo (com JSON.parse de trilhas em cada um) para jogar tudo
+   * fora menos o `length`. Serie sem episodio simplesmente nao aparece no mapa.
+   */
+  countEpisodesByShow(): Map<number, number>;
+
+  /**
+   * Temporadas presentes na serie, crescente e sem repeticao. `[]` quando a
+   * serie nao usa pastas de temporada (todo episodio com `season` nulo).
+   */
+  listSeasons(showId: number): number[];
+
+  /**
+   * As temporadas de TODAS as series de uma vez. Existe porque
+   * `GET /api/channels` monta o resumo de 460 canais: uma consulta por serie
+   * ali seriam 460 idas ao banco por request.
+   */
+  listSeasonsByShow(): Map<number, number[]>;
+
+  /**
+   * Contador que anda a cada mudanca na GRADE (series ou episodios), nunca por
+   * metadata ou remux. E o que permite cachear timeline por canal em memoria
+   * sem servir grade velha depois de um rescan.
+   */
+  indexVersion(): number;
+
+  /**
+   * Anda com `indexVersion` sem ter mexido na grade.
+   *
+   * Existe para a fila de quadros: ela escreve numa coluna de `episodes` que o
+   * cache de timeline carrega junto (`thumbFile`), e sem um empurrao aqui a
+   * faixa "No ar agora" so mostraria as miniaturas novas depois do proximo
+   * scan. Chamado UMA vez, no fim da rodada - a cada episodio, jogaria o mapa
+   * de 460 canais fora 15 mil vezes seguidas, que e exatamente o custo que o
+   * cache existe para evitar.
+   */
+  bumpIndexVersion(): void;
+
   /** Metadata externa da serie; null quando nunca foi buscada. */
   getShowMetadata(showId: number): ShowMetadataRow | null;
+
+  /**
+   * Series sem NENHUMA arte 16:9 - as candidatas a ganhar uma tirada de quadro.
+   * Inclui as que ainda nao tem linha de metadata: sem chave do TMDB, nenhuma
+   * serie ganha arte do provedor, e esperar por uma linha que nunca vem
+   * deixaria o hero do catalogo listrado para sempre.
+   */
+  listShowsWithoutBackdrop(): ShowRow[];
+
+  /**
+   * Grava a arte 16:9 e a origem dela, SEM tocar em capa, ano ou sinopse.
+   *
+   * Metodo proprio em vez de `upsertShowMetadata` porque quem tira a arte de um
+   * quadro nao fez busca nenhuma: montar a linha inteira aqui obrigaria a
+   * inventar um `fetchedAt` de uma consulta que nao houve, e a serie sairia da
+   * fila do enriquecimento sem nunca ter sido procurada.
+   */
+  setShowBackdrop(input: { showId: number; file: string; source: string }): void;
+
+  /**
+   * Ha alguma serie sem NENHUMA linha de metadata? E o gatilho barato de
+   * `GET /api/channels`, que roda a cada abertura do catalogo: uma consulta que
+   * para no primeiro achado, em vez de um `getShowMetadata` por serie.
+   */
+  hasShowsWithoutMetadata(): boolean;
 
   /** Grava (ou regrava) o resultado da busca de metadata. */
   upsertShowMetadata(row: ShowMetadataRow): void;
@@ -129,7 +266,7 @@ export interface Store {
   /** Cria a serie se nova e atribui o proximo numero de canal livre. Idempotente por slug. */
   upsertShow(input: { slug: string; name: string; absolutePath: string }): ShowRow;
 
-  upsertEpisodes(showId: number, rows: readonly Omit<EpisodeRow, 'showId'>[]): void;
+  upsertEpisodes(showId: number, rows: readonly EpisodeInput[]): void;
 
   /** Remove episodios da serie que nao estao em `keepIds`. */
   pruneEpisodes(showId: number, keepIds: readonly string[]): number;
@@ -148,6 +285,29 @@ export interface Store {
 
   /** Nomes de arquivo referenciados; tudo fora desta lista em `remux/` e lixo. */
   listRemuxFiles(): string[];
+
+  /**
+   * Episodios que a fila de quadros deve olhar, na ordem do catalogo.
+   *
+   * `all: false` e a rodada barata do dia a dia: so quem nunca foi TENTADO
+   * (`thumb_checked_at IS NULL`). O predicado e o carimbo, e nao
+   * `thumb_file IS NULL`, senao todo arquivo que nao rende quadro voltaria para
+   * a fila em cada rodada, para sempre. `all: true` e o `reset` do painel.
+   *
+   * Devolve a lista inteira de uma vez de proposito: a fila roda um ffmpeg por
+   * episodio e nao pode segurar uma consulta (nem uma transacao) aberta no
+   * banco enquanto isso.
+   */
+  listThumbCandidates(options: { all: boolean }): ThumbCandidate[];
+
+  /**
+   * Resultado de UMA tentativa de quadro. `file` null carimba a tentativa sem
+   * arquivo - e o que impede a fila de reoferecer o mesmo episodio amanha.
+   */
+  setEpisodeThumb(input: { episodeId: string; file: string | null; checkedAt: number }): void;
+
+  /** Nomes de arquivo referenciados; tudo fora desta lista em `thumbs/` e lixo. */
+  listThumbFiles(): string[];
 
   /** Variante valida para o estado atual do fonte; null se nao existe ou envelheceu. */
   getAudioVariant(episodeId: string, audioIndex: number, mtimeMs: number, size: number): AudioVariantRow | null;
@@ -212,12 +372,22 @@ interface EpisodeRecord {
   subtitle_tracks: string | null;
   mtime_ms: number;
   size: number;
+  /** NULL em linha gravada antes da versao 10, e tambem em "sem quadro". */
+  thumb_file: string | null;
+  /** NULL em linha gravada antes da versao 10, e tambem em "nunca tentei". */
+  thumb_checked_at: number | null;
 }
 
 /** Formato das linhas de `show_metadata` como o SQLite devolve. */
 interface ShowMetadataRecord {
   show_id: number;
   poster_file: string | null;
+  /** NULL em linha gravada antes da versao 8. */
+  backdrop_file: string | null;
+  /** NULL em linha gravada antes da versao 9, e tambem em "nunca procurei". */
+  backdrop_checked_at: number | null;
+  /** 'tmdb' ou 'frame'; NULL sem arte, ou em linha anterior a versao 10. */
+  backdrop_source: string | null;
   year: number | null;
   overview: string | null;
   source: string | null;
@@ -225,7 +395,7 @@ interface ShowMetadataRecord {
   not_found: number;
 }
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 10;
 
 const MIGRATIONS: readonly string[] = [
   // versao 1
@@ -358,6 +528,56 @@ const MIGRATIONS: readonly string[] = [
     updated_at INTEGER NOT NULL
   );
   `,
+  // versao 8: arte 16:9 da serie, o fundo do hero do catalogo.
+  //
+  // Coluna em `show_metadata` e nao tabela nova: e o mesmo ciclo de vida da
+  // capa - a mesma resposta do mesmo provedor grava as duas, e a mesma remocao
+  // de serie leva as duas embora.
+  //
+  // Nulavel por dois motivos distintos, e o codigo nao os distingue: so o TMDB
+  // tem arte 16:9 (TVMaze e iTunes nunca vao preencher), e toda linha gravada
+  // antes desta versao fica com a coluna vazia. Por isso a busca automatica
+  // ignora `backdrop_file` nulo: reconsultar por causa dele transformaria cada
+  // boot num flood no provedor.
+  `
+  ALTER TABLE show_metadata ADD COLUMN backdrop_file TEXT;
+  `,
+  // versao 9: quando a arte 16:9 foi PROCURADA.
+  //
+  // `backdrop_file` nulo tem dois significados que precisam ser distinguidos:
+  // "ainda nao procurei" (toda linha anterior a versao 8) e "procurei e o
+  // provedor nao tem". Sem a diferenca, a rebusca do painel reofereceria para
+  // sempre as series que o TMDB conhece mas nao ilustra - e, pior, cada rodada
+  // regravaria a linha delas.
+  //
+  // Coluna propria em vez de um sentinela em `backdrop_file` (string vazia, por
+  // exemplo) porque o valor tambem vira caminho de arquivo: um nome vazio
+  // atravessaria `basename` e viraria leitura de diretorio na rota da arte.
+  `
+  ALTER TABLE show_metadata ADD COLUMN backdrop_checked_at INTEGER;
+  `,
+  // versao 10: quadro do episodio e a origem da arte 16:9.
+  //
+  // Nenhum provedor de metadata tem imagem por episodio de acervo caseiro, e a
+  // lista de episodios do desenho e feita de miniaturas: elas saem do proprio
+  // video, por ffmpeg, em segundo plano. As duas colunas de `episodes` vivem no
+  // MESMO lugar que o resto do episodio (e nao numa tabela a parte, como o
+  // remux) porque nao ha ciclo de vida separado: o quadro nasce e morre com a
+  // linha, e o CASCADE que ja existe nao teria nada a acrescentar.
+  //
+  // `thumb_checked_at` e a metade que evita a fila reoferecer o mesmo arquivo
+  // para sempre; `thumb_file` sozinho confundiria "nao tentei" com "tentei e
+  // nao deu". Mesma licao de `backdrop_checked_at`.
+  //
+  // `backdrop_source` separa a arte do provedor da arte tirada de um quadro: a
+  // primeira SUBSTITUI a segunda quando a chave do TMDB aparece, e o contrario
+  // nunca acontece. Sem a coluna, as duas seriam indistinguiveis e a arte
+  // improvisada ficaria no lugar da boa para sempre.
+  `
+  ALTER TABLE episodes ADD COLUMN thumb_file TEXT;
+  ALTER TABLE episodes ADD COLUMN thumb_checked_at INTEGER;
+  ALTER TABLE show_metadata ADD COLUMN backdrop_source TEXT;
+  `,
 ];
 
 /** Chave do contador monotonico de canais. Nunca decrementa. */
@@ -407,6 +627,8 @@ function toEpisodeRow(record: EpisodeRecord): EpisodeRow {
     subtitleTracks: parseTracks<SubtitleTrackRef>(record.subtitle_tracks),
     mtimeMs: record.mtime_ms,
     size: record.size,
+    thumbFile: record.thumb_file,
+    thumbCheckedAt: record.thumb_checked_at,
   };
 }
 
@@ -460,6 +682,30 @@ export function openStore(dbPath: string): Store {
   db.exec('CREATE TEMP TABLE IF NOT EXISTS keep_ids (id TEXT PRIMARY KEY)');
   const clearKeepIds = db.prepare('DELETE FROM keep_ids');
   const insertKeepId = db.prepare('INSERT OR IGNORE INTO keep_ids (id) VALUES (?)');
+
+  /**
+   * Versao da grade.
+   *
+   * O contador local cobre as escritas deste processo. `PRAGMA data_version`
+   * cobre a outra metade: ele muda quando OUTRA conexao comita, e o `scan.js`
+   * avulso (o unico jeito de reindexar dentro do container) e exatamente isso -
+   * sem ele, o servidor continuaria servindo a grade antiga ate reiniciar.
+   */
+  // Preparado uma vez: `indexVersion()` e consultado uma vez por canal em
+  // `GET /api/now`, e recompilar o PRAGMA a cada chamada custaria cinco vezes
+  // mais que executa-lo.
+  const selectDataVersion = db.prepare('PRAGMA data_version');
+
+  function readDataVersion(): number {
+    return (selectDataVersion.get() as { data_version: number }).data_version;
+  }
+
+  let indexVersionCounter = 0;
+  let lastDataVersion = readDataVersion();
+
+  function bumpIndexVersion(): void {
+    indexVersionCounter += 1;
+  }
 
   const selectShows = db.prepare(
     'SELECT id, slug, name, channel_number, absolute_path FROM shows ORDER BY channel_number',
@@ -524,6 +770,20 @@ export function openStore(dbPath: string): Store {
   const selectEpisodesByShow = db.prepare(
     'SELECT * FROM episodes WHERE show_id = ? ORDER BY order_index, id',
   );
+  const selectEpisodeCounts = db.prepare(
+    'SELECT show_id, COUNT(*) AS total FROM episodes GROUP BY show_id',
+  );
+  const selectSeasonsByShowId = db.prepare(
+    `SELECT DISTINCT season FROM episodes
+     WHERE show_id = ? AND season IS NOT NULL
+     ORDER BY season`,
+  );
+  const selectSeasonsGrouped = db.prepare(
+    `SELECT show_id, season FROM episodes
+     WHERE season IS NOT NULL
+     GROUP BY show_id, season
+     ORDER BY show_id, season`,
+  );
   const selectEpisodeById = db.prepare('SELECT * FROM episodes WHERE id = ?');
   const selectCachedProbe = db.prepare(
     // As duas ultimas condicoes sao a invalidacao das linhas antigas: elas tem
@@ -559,12 +819,26 @@ export function openStore(dbPath: string): Store {
        faststart = excluded.faststart,
        audio_tracks = excluded.audio_tracks,
        subtitle_tracks = excluded.subtitle_tracks,
+       -- O quadro sobrevive a um rescan que reencontrou o MESMO arquivo, e so
+       -- a ele. Arquivo trocado no NAS (outro mtime ou outro tamanho) pode ser
+       -- outro episodio inteiro, e servir a miniatura antiga seria mostrar uma
+       -- cena que nao esta mais ali. Zerar o carimbo junto e o que devolve o
+       -- episodio para a fila.
+       --
+       -- A alternativa - apagar sempre - custaria 15 mil invocacoes de ffmpeg
+       -- em toda madrugada, para reproduzir exatamente as mesmas imagens.
+       thumb_file = CASE
+         WHEN episodes.mtime_ms = excluded.mtime_ms AND episodes.size = excluded.size
+         THEN episodes.thumb_file ELSE NULL END,
+       thumb_checked_at = CASE
+         WHEN episodes.mtime_ms = excluded.mtime_ms AND episodes.size = excluded.size
+         THEN episodes.thumb_checked_at ELSE NULL END,
        mtime_ms = excluded.mtime_ms,
        size = excluded.size`,
   );
 
   const upsertEpisodesTx = db.transaction(
-    (showId: number, rows: readonly Omit<EpisodeRow, 'showId'>[]): void => {
+    (showId: number, rows: readonly EpisodeInput[]): void => {
       for (const row of rows) {
         insertEpisode.run({
           id: row.id,
@@ -604,6 +878,28 @@ export function openStore(dbPath: string): Store {
     clearKeepIds.run();
     return result.changes;
   });
+
+  // As duas consultas da fila de quadros. A ordem e a do catalogo (canal, e
+  // depois a grade dentro dele): o acervo e visitado na mesma ordem em que a
+  // tela o mostra, entao a primeira serie que a pessoa abre e a primeira a
+  // ganhar miniatura.
+  const selectThumbPending = db.prepare(
+    `SELECT e.rowid AS row_id, e.id, e.duration_ms, s.name AS show_name
+     FROM episodes e JOIN shows s ON s.id = e.show_id
+     WHERE e.thumb_checked_at IS NULL
+     ORDER BY s.channel_number, e.order_index, e.id`,
+  );
+  const selectThumbAll = db.prepare(
+    `SELECT e.rowid AS row_id, e.id, e.duration_ms, s.name AS show_name
+     FROM episodes e JOIN shows s ON s.id = e.show_id
+     ORDER BY s.channel_number, e.order_index, e.id`,
+  );
+  const updateEpisodeThumb = db.prepare(
+    'UPDATE episodes SET thumb_file = @file, thumb_checked_at = @checkedAt WHERE id = @episodeId',
+  );
+  const selectThumbFiles = db.prepare(
+    'SELECT thumb_file FROM episodes WHERE thumb_file IS NOT NULL',
+  );
 
   const selectRemux = db.prepare(
     'SELECT * FROM remux WHERE episode_id = @episodeId AND mtime_ms = @mtimeMs AND size = @size',
@@ -667,16 +963,63 @@ export function openStore(dbPath: string): Store {
   const selectSettings = db.prepare('SELECT key, value FROM settings');
 
   const selectShowMetadata = db.prepare('SELECT * FROM show_metadata WHERE show_id = ?');
+  // `LIMIT 1` dentro do EXISTS: a resposta e "ha ou nao ha", entao a consulta
+  // para na primeira serie sem linha em vez de varrer o acervo inteiro.
+  //
+  // `fetched_at = 0` conta como sem linha: e o sentinela de "nenhuma busca de
+  // verdade aconteceu aqui", usado tanto pelo reset do painel quanto pela linha
+  // que a arte de quadro cria para ter onde gravar o nome do arquivo. Sem esta
+  // metade, uma serie que ganhou arte antes da capa nunca mais dispararia a
+  // busca ao abrir o catalogo.
+  const selectMissingMetadata = db.prepare(
+    `SELECT EXISTS(
+       SELECT 1 FROM shows
+       LEFT JOIN show_metadata ON show_metadata.show_id = shows.id
+       WHERE show_metadata.show_id IS NULL OR show_metadata.fetched_at = 0
+       LIMIT 1
+     ) AS falta`,
+  );
+  const selectShowsWithoutBackdrop = db.prepare(
+    `SELECT shows.id, shows.slug, shows.name, shows.channel_number, shows.absolute_path
+     FROM shows
+     LEFT JOIN show_metadata ON show_metadata.show_id = shows.id
+     WHERE show_metadata.backdrop_file IS NULL
+     ORDER BY shows.channel_number`,
+  );
   const insertShowMetadata = db.prepare(
-    `INSERT INTO show_metadata (show_id, poster_file, year, overview, source, fetched_at, not_found)
-     VALUES (@showId, @posterFile, @year, @overview, @source, @fetchedAt, @notFound)
+    `INSERT INTO show_metadata (
+       show_id, poster_file, backdrop_file, backdrop_checked_at, backdrop_source,
+       year, overview, source, fetched_at, not_found
+     )
+     VALUES (
+       @showId, @posterFile, @backdropFile, @backdropCheckedAt, @backdropSource,
+       @year, @overview, @source, @fetchedAt, @notFound
+     )
      ON CONFLICT(show_id) DO UPDATE SET
        poster_file = excluded.poster_file,
+       backdrop_file = excluded.backdrop_file,
+       backdrop_checked_at = excluded.backdrop_checked_at,
+       backdrop_source = excluded.backdrop_source,
        year = excluded.year,
        overview = excluded.overview,
        source = excluded.source,
        fetched_at = excluded.fetched_at,
        not_found = excluded.not_found`,
+  );
+  // Linha nova nasce com `fetched_at = 0` e `not_found = 1`: e "ninguem
+  // procurou metadata para esta serie ainda", que e a verdade - quem escreveu
+  // aqui foi o ffmpeg, nao o provedor. Os dois sentinelas juntos mantem a serie
+  // na fila do enriquecimento (o TTL de not_found vence na hora) em vez de
+  // sela-la como resolvida por causa de um fundo de tela.
+  const insertBackdropOnly = db.prepare(
+    `INSERT INTO show_metadata (
+       show_id, poster_file, backdrop_file, backdrop_checked_at, backdrop_source,
+       year, overview, source, fetched_at, not_found
+     )
+     VALUES (@showId, NULL, @file, NULL, @source, NULL, NULL, NULL, 0, 1)
+     ON CONFLICT(show_id) DO UPDATE SET
+       backdrop_file = excluded.backdrop_file,
+       backdrop_source = excluded.backdrop_source`,
   );
 
   const deleteShowsNotKept = db.prepare('DELETE FROM shows WHERE slug NOT IN (SELECT id FROM keep_ids)');
@@ -710,12 +1053,52 @@ export function openStore(dbPath: string): Store {
       return record === undefined ? null : toEpisodeRow(record);
     },
 
+    countEpisodesByShow(): Map<number, number> {
+      const records = selectEpisodeCounts.all() as { show_id: number; total: number }[];
+      return new Map(records.map((record) => [record.show_id, record.total]));
+    },
+
+    listSeasons(showId): number[] {
+      return (selectSeasonsByShowId.all(showId) as { season: number }[]).map(
+        (record) => record.season,
+      );
+    },
+
+    listSeasonsByShow(): Map<number, number[]> {
+      const records = selectSeasonsGrouped.all() as { show_id: number; season: number }[];
+      const out = new Map<number, number[]>();
+      // A consulta ja vem ordenada por (show_id, season): basta empilhar.
+      for (const record of records) {
+        const seasons = out.get(record.show_id);
+        if (seasons === undefined) {
+          out.set(record.show_id, [record.season]);
+        } else {
+          seasons.push(record.season);
+        }
+      }
+      return out;
+    },
+
+    indexVersion(): number {
+      const current = readDataVersion();
+      if (current !== lastDataVersion) {
+        lastDataVersion = current;
+        bumpIndexVersion();
+      }
+      return indexVersionCounter;
+    },
+
+    bumpIndexVersion,
+
     getShowMetadata(showId): ShowMetadataRow | null {
       const record = selectShowMetadata.get(showId) as ShowMetadataRecord | undefined;
       if (record === undefined) return null;
       return {
         showId: record.show_id,
         posterFile: record.poster_file,
+        backdropFile: record.backdrop_file,
+        backdropCheckedAt: record.backdrop_checked_at,
+        backdropSource: record.backdrop_source,
         year: record.year,
         overview: record.overview,
         source: record.source,
@@ -724,10 +1107,25 @@ export function openStore(dbPath: string): Store {
       };
     },
 
+    hasShowsWithoutMetadata(): boolean {
+      return (selectMissingMetadata.get() as { falta: number }).falta !== 0;
+    },
+
+    listShowsWithoutBackdrop(): ShowRow[] {
+      return (selectShowsWithoutBackdrop.all() as ShowRecord[]).map(toShowRow);
+    },
+
+    setShowBackdrop({ showId, file, source }): void {
+      insertBackdropOnly.run({ showId, file, source });
+    },
+
     upsertShowMetadata(row): void {
       insertShowMetadata.run({
         showId: row.showId,
         posterFile: row.posterFile,
+        backdropFile: row.backdropFile,
+        backdropCheckedAt: row.backdropCheckedAt,
+        backdropSource: row.backdropSource,
         year: row.year,
         overview: row.overview,
         source: row.source,
@@ -737,19 +1135,26 @@ export function openStore(dbPath: string): Store {
     },
 
     upsertShow(input): ShowRow {
-      return upsertShowTx(input);
+      const row = upsertShowTx(input);
+      bumpIndexVersion();
+      return row;
     },
 
     upsertEpisodes(showId, rows): void {
       upsertEpisodesTx(showId, rows);
+      bumpIndexVersion();
     },
 
     pruneEpisodes(showId, keepIds): number {
-      return pruneEpisodesTx(showId, keepIds);
+      const removed = pruneEpisodesTx(showId, keepIds);
+      bumpIndexVersion();
+      return removed;
     },
 
     pruneShows(keepSlugs): number {
-      return pruneShowsTx(keepSlugs);
+      const removed = pruneShowsTx(keepSlugs);
+      bumpIndexVersion();
+      return removed;
     },
 
     getCachedProbe(id, mtimeMs, size): ProbeResult | null {
@@ -781,6 +1186,31 @@ export function openStore(dbPath: string): Store {
         audioTracks: parseTracks<AudioTrackRef>(record.audio_tracks),
         subtitleTracks: parseTracks<SubtitleTrackRef>(record.subtitle_tracks),
       };
+    },
+
+    listThumbCandidates({ all }): ThumbCandidate[] {
+      const records = (all ? selectThumbAll : selectThumbPending).all() as {
+        row_id: number;
+        id: string;
+        duration_ms: number;
+        show_name: string;
+      }[];
+      return records.map((record) => ({
+        rowId: record.row_id,
+        episodeId: record.id,
+        durationMs: record.duration_ms,
+        showName: record.show_name,
+      }));
+    },
+
+    setEpisodeThumb({ episodeId, file, checkedAt }): void {
+      updateEpisodeThumb.run({ episodeId, file, checkedAt });
+    },
+
+    listThumbFiles(): string[] {
+      return (selectThumbFiles.all() as { thumb_file: string }[]).map(
+        (record) => record.thumb_file,
+      );
     },
 
     getRemux(episodeId, mtimeMs, size): RemuxRow | null {

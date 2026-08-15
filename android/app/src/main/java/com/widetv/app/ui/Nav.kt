@@ -82,9 +82,16 @@ fun reduceNav(state: NavState, event: NavEvent): NavResult = when (event) {
     if (state.screen == ScreenId.GATE) NavResult(state)
     else NavResult(NavState(ScreenId.SERIES, event.channelNumber))
 
+  // O acervo tambem abre o player direto: o hero tem "Entrar no canal" e a faixa
+  // "No ar agora" existe justamente para entrar sem passar pela serie. VOLTAR
+  // continua caindo na serie do que estiver tocando, que e onde a pessoa
+  // consegue escolher outro episodio.
   is NavEvent.OpenPlayer ->
-    if (state.screen == ScreenId.SERIES) NavResult(NavState(ScreenId.PLAYER, event.channelNumber))
-    else NavResult(state)
+    if (state.screen == ScreenId.SERIES || state.screen == ScreenId.HOME) {
+      NavResult(NavState(ScreenId.PLAYER, event.channelNumber))
+    } else {
+      NavResult(state)
+    }
 
   // Sem sessao nao ha configuracoes: elas moram no servidor, e a tela abriria
   // vazia so para dizer que nao conseguiu ler nada.

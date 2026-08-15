@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hero do catálogo/série: dois gradientes sobrepostos (redesign-spec.md §2) —
+  um vertical (escuro embaixo, onde fica o texto) e um horizontal (escuro à
+  esquerda, mesma razão). GradientDrawable só tem 3 paradas (start/center/end),
+  então aproxima os 3 stops de cada gradiente CSS do design.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="linear"
+                android:angle="90"
+                android:startColor="@color/surface"
+                android:centerColor="@color/scrim_top"
+                android:endColor="@android:color/transparent" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="linear"
+                android:angle="0"
+                android:startColor="@color/scrim_top"
+                android:endColor="@android:color/transparent" />
+        </shape>
+    </item>
+</layer-list>

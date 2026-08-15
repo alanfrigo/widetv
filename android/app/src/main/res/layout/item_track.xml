@@ -1,31 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Uma trilha no painel lateral. O tique a esquerda marca a que esta tocando. -->
+<!--
+  Uma trilha no painel lateral: radio, rotulo com o detalhe tecnico e a tag da
+  direita ("padrao", "Tocando").
+
+  Como na tela de configuracoes, a linha NAO e focavel — o cursor e do reducer.
+  O estado vem de `isSelected` no `track_row`; o radio copia esse estado com
+  `duplicateParentState` para nao precisar de duas chamadas no adapter.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/track_row"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="@drawable/row_selectable"
-    android:focusable="true"
+    android:layout_marginBottom="6dp"
+    android:background="@drawable/row_track"
+    android:focusable="false"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:paddingStart="@dimen/space_sm"
-    android:paddingTop="10dp"
-    android:paddingEnd="@dimen/space_sm"
-    android:paddingBottom="10dp">
+    android:paddingStart="12dp"
+    android:paddingTop="11dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="11dp">
 
-    <TextView
-        android:id="@+id/track_check"
-        android:layout_width="28dp"
-        android:layout_height="wrap_content"
-        android:textColor="@color/accent"
-        android:textSize="@dimen/text_body" />
+    <View
+        android:id="@+id/track_radio"
+        android:layout_width="17dp"
+        android:layout_height="17dp"
+        android:background="@drawable/radio_track"
+        android:duplicateParentState="true"
+        android:importantForAccessibility="no" />
 
-    <TextView
-        android:id="@+id/track_label"
+    <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_marginStart="11dp"
         android:layout_weight="1"
-        android:ellipsize="end"
-        android:maxLines="1"
-        android:textColor="@color/text"
-        android:textSize="@dimen/text_body" />
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/track_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/text"
+            android:textSize="@dimen/text_body"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/track_detail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/muted"
+            android:textSize="@dimen/text_micro"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/track_tag"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:letterSpacing="0.1"
+        android:textAllCaps="true"
+        android:textColor="@color/dim"
+        android:textSize="@dimen/text_tag"
+        android:textStyle="bold" />
 </LinearLayout>

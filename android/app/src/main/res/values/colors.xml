@@ -1,29 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paleta do redesign (docs/redesign-contract.md §3.1 / docs/redesign-spec.md §1).
+  Nomes e valores AARRGGBB copiados literalmente do contrato — não invente
+  nomes aqui, os outros pacotes (AND-LAYOUT, AND-KT) referenciam exatamente
+  estes.
+-->
 <resources>
-    <!--
-      Paleta unica do app. Escura o suficiente para nao competir com o video, e
-      com um acento so — o indigo — que marca foco e acao.
-    -->
-    <color name="bg">#0A0A0F</color>
-    <color name="surface">#14141C</color>
-    <color name="surface_high">#1E1E2A</color>
+    <color name="bg">#FF080807</color>
+    <color name="surface">#FF0B0A0A</color>
+    <color name="surface_row">#FF131111</color>
+    <color name="surface_row_hi">#FF151313</color>
+    <color name="line">#FF262425</color>
+    <color name="line_strong">#FF33302F</color>
+    <color name="line_2">#FF3A3634</color>
+    <color name="text">#FFF6F5F3</color>
+    <color name="text_2">#FFC8C4BD</color>
+    <color name="muted">#FF9D9A95</color>
+    <color name="muted_2">#FFA9A5A0</color>
+    <color name="dim">#FF807C76</color>
+    <color name="dim_2">#FF6F6A63</color>
+    <color name="ghost">#FF4A443F</color>
+    <color name="ghost_2">#FF3D3833</color>
+    <color name="accent">#FFF2A93B</color>
+    <color name="accent_hover">#FFFFBE5C</color>
+    <color name="accent_ink">#FF171208</color>
+    <color name="accent_soft">#FFC9A878</color>
+    <color name="live">#FFEF4444</color>
+    <color name="live_ink">#FFFFFFFF</color>
 
-    <color name="accent">#6366F1</color>
-    <color name="accent_dim">#3F3F7A</color>
+    <!-- Placeholders listrados -->
+    <color name="stripe_a">#FF191614</color>
+    <color name="stripe_b">#FF141110</color>
 
-    <color name="text">#F5F5F7</color>
-    <color name="text_dim">#9A9AA8</color>
-    <color name="text_faint">#5E5E70</color>
+    <!-- Camadas com alpha -->
+    <color name="scrim_top">#EB0B0A0A</color>
+    <color name="scrim_panel">#F50F0D0C</color>
+    <color name="overlay_veil">#9E080807</color>
+    <color name="badge_bg">#C7080807</color>
+    <color name="ctl_bg">#8C080807</color>
 
-    <color name="danger">#F87171</color>
+    <color name="white_04">#0AF6F5F3</color>
+    <color name="white_06">#0FF6F5F3</color>
+    <color name="white_07">#12F6F5F3</color>
+    <color name="white_08">#14F6F5F3</color>
+    <color name="white_09">#17F6F5F3</color>
+    <color name="white_12">#1FF6F5F3</color>
+    <color name="white_14">#24F6F5F3</color>
+    <color name="white_18">#2EF6F5F3</color>
+    <color name="white_20">#33F6F5F3</color>
+    <color name="white_22">#38F6F5F3</color>
+    <color name="white_30">#4DF6F5F3</color>
 
-    <!-- Fundo do OSD e dos paineis por cima do video: o desenho continua legivel. -->
-    <color name="scrim">#CC0A0A0F</color>
-    <color name="scrim_strong">#F20A0A0F</color>
+    <color name="accent_12">#1FF2A93B</color>
+    <color name="accent_14">#24F2A93B</color>
+    <color name="accent_20">#33F2A93B</color>
+    <color name="accent_35">#59F2A93B</color>
+    <color name="accent_45">#73F2A93B</color>
+    <color name="accent_55">#8CF2A93B</color>
 
-    <color name="divider">#22222E</color>
-
-    <!-- Pontas do gradiente do placeholder de capa. -->
-    <color name="placeholder_top">#232336</color>
-    <color name="placeholder_bottom">#12121C</color>
+    <color name="live_88">#E0EF4444</color>
+    <color name="live_92">#EBEF4444</color>
 </resources>

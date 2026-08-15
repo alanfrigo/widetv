@@ -1,41 +1,62 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Uma TV de 1080p entrega ~960dp de largura util. Todos os tamanhos daqui foram
-  escolhidos para caber nesse retangulo: 5 colunas de capa, cabecalho e a tela de
-  serie com poster e sinopse lado a lado.
+  Medidas do redesign (docs/redesign-contract.md §3.2). A TV é 1080p e o design
+  é de 1440px de largura -> 1px do design = 0.75dp numa TV 1080p (960dp de
+  largura util). Os valores abaixo já são o resultado dessa conversão,
+  arredondados como o contrato pede.
 -->
 <resources>
-    <!-- Ritmo de espacamento. Tudo no app sai de um destes cinco. -->
-    <dimen name="space_xs">4dp</dimen>
-    <dimen name="space_sm">10dp</dimen>
-    <dimen name="space_md">18dp</dimen>
-    <dimen name="space_lg">28dp</dimen>
-    <dimen name="space_xl">48dp</dimen>
+    <dimen name="page_x">36dp</dimen>
+    <dimen name="row_gap">33dp</dimen>
+    <dimen name="rail_gap">12dp</dimen>
+    <dimen name="rail_gap_tall">14dp</dimen>
+    <dimen name="card_wide_width">230dp</dimen>
+    <dimen name="card_tall_width">138dp</dimen>
+    <dimen name="topbar_h">57dp</dimen>
+    <dimen name="hero_h">465dp</dimen>
+    <dimen name="shero_h">322dp</dimen>
+    <dimen name="series_cover_w">174dp</dimen>
+    <dimen name="panel_w">390dp</dimen>
+    <dimen name="ep_thumb_w">129dp</dimen>
 
-    <!-- Meia folga de cada lado do card: junta com a do vizinho e vira o vao. -->
-    <dimen name="card_gap">5dp</dimen>
-    <dimen name="card_radius">8dp</dimen>
+    <dimen name="radius_6">5dp</dimen>
+    <dimen name="radius_8">6dp</dimen>
+    <dimen name="radius_10">8dp</dimen>
+    <dimen name="radius_12">9dp</dimen>
+    <dimen name="radius_14">11dp</dimen>
+    <dimen name="radius_16">12dp</dimen>
+    <dimen name="radius_18">14dp</dimen>
+    <dimen name="radius_20">15dp</dimen>
+
+    <dimen name="stroke_focus">2dp</dimen>
+    <dimen name="stroke_focus_card">3dp</dimen>
+
+    <dimen name="text_hero">48sp</dimen>
+    <dimen name="text_shero">39sp</dimen>
+    <dimen name="text_settings">30sp</dimen>
+    <dimen name="text_player">26sp</dimen>
+    <dimen name="text_panel">18sp</dimen>
+    <dimen name="text_wordmark">14sp</dimen>
+    <dimen name="text_row">14sp</dimen>
+    <dimen name="text_button">13sp</dimen>
+    <dimen name="text_body">12sp</dimen>
+    <dimen name="text_card">11sp</dimen>
+    <dimen name="text_meta">10sp</dimen>
+    <dimen name="text_micro">9sp</dimen>
+    <dimen name="text_tag">8sp</dimen>
 
     <!--
-      Alvo de decodificacao da capa. Nao precisa bater com a largura real do
-      card: o `inSampleSize` so trabalha em potencias de dois.
+      Pontes para nomes antigos que ainda fazem sentido, apontando para os
+      valores novos, para não quebrar layout/Kotlin enquanto o pacote
+      AND-LAYOUT migra para os nomes do contrato. Ritmo de espaçamento antigo
+      (space_xs..xl) reescalado pelo mesmo fator 0.75 do resto do design;
+      space_xl bate exatamente com page_x (48px -> 36dp).
     -->
-    <dimen name="poster_decode_width">200dp</dimen>
 
-    <dimen name="series_poster_width">240dp</dimen>
-
-    <dimen name="track_panel_width">380dp</dimen>
-
-    <dimen name="stroke_focus">3dp</dimen>
-
-    <dimen name="text_wordmark">56sp</dimen>
-    <dimen name="text_title">32sp</dimen>
-    <dimen name="text_section">14sp</dimen>
-    <dimen name="text_body">15sp</dimen>
-    <dimen name="text_field">20sp</dimen>
-    <dimen name="text_button">14sp</dimen>
-    <dimen name="text_card">14sp</dimen>
-    <dimen name="text_meta">12sp</dimen>
-    <dimen name="text_osd">18sp</dimen>
-    <dimen name="text_initials">40sp</dimen>
+    <!--
+      Alvo de decodificação da capa 2:3. Não precisa bater com a largura real
+      do card (o inSampleSize só trabalha em potências de dois) — só precisa
+      ficar perto de card_tall_width (138dp) com alguma folga para telas mais
+      densas.
+    -->
 </resources>

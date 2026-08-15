@@ -18,6 +18,7 @@ import { registerSettingsRoutes } from './settings/routes';
 import { createSettingsService } from './settings/store';
 import { registerStreamRoutes, type AudioResolution } from './stream/direct';
 import { registerSubtitleRoutes } from './stream/subtitle';
+import { registerThumbRoutes } from './stream/thumb';
 
 /**
  * Montagem do servidor.
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
   const settings = createSettingsService(store, {
     rescanTime: config.rescanTime,
     autoRemux: config.autoRemux,
+    autoThumbs: config.autoThumbs,
     smartGrouping: config.smartGrouping,
     tmdbConfigured: config.tmdbApiKey !== null,
   });
@@ -95,6 +97,11 @@ async function main(): Promise<void> {
     // (deploy da feature, rodada interrompida). Quando esta tudo pronto, ela so
     // percorre o indice e volta - barata o bastante para rodar sempre.
     controller.triggerRemux();
+    // Mesmo raciocinio para os quadros, e aqui ele e o que torna a fila
+    // RETOMAVEL: um acervo grande leva horas, o servidor reinicia no meio, e a
+    // rodada do boot continua exatamente de onde a anterior parou (o que ja foi
+    // tentado esta carimbado no indice).
+    controller.triggerThumbs();
   }
 
   // Mudou preferencia no painel? O controlador reage sem reiniciar o servidor:
@@ -177,7 +184,11 @@ async function main(): Promise<void> {
 
   registerHistoryRoutes(app, {
     source: {
-      hasEpisode: (id) => store.getEpisode(id) !== null,
+      getEpisode: (id) => store.getEpisode(id),
+      // A faixa "Continuar assistindo" precisa do canal e da capa para nao
+      // obrigar o cliente a buscar os episodios de cada canal do historico.
+      getShowByChannel: (channelNumber) => store.getShowByChannel(channelNumber),
+      getShowMetadata: (showId) => store.getShowMetadata(showId),
       getWatchHistory: (id) => store.getWatchHistory(id),
       upsertWatchHistory: (row) => {
         store.upsertWatchHistory(row);
@@ -199,6 +210,17 @@ async function main(): Promise<void> {
       },
     },
     libraryRoot: config.libraryRoot,
+    dataDir: config.dataDir,
+  });
+  // Quadro do episodio, tirado do proprio video pela fila de miniaturas. So le
+  // o que ja esta em DATA_DIR: nada aqui gera imagem dentro de um request.
+  registerThumbRoutes(app, {
+    source: {
+      getEpisode: (id) => {
+        const row = store.getEpisode(id);
+        return row === null ? null : { thumbFile: row.thumbFile };
+      },
+    },
     dataDir: config.dataDir,
   });
 

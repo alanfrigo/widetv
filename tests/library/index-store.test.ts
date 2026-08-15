@@ -5,8 +5,43 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 
-import type { EpisodeRow, Store } from '../../src/server/library/index-store';
+import type { EpisodeInput, EpisodeRow, Store } from '../../src/server/library/index-store';
 import { openStore } from '../../src/server/library/index-store';
+
+/**
+ * Versao de schema que o codigo atual escreve. Fica aqui para os testes de
+ * migracao afirmarem "chegou na versao mais nova", e nao um numero solto que
+ * envelhece a cada coluna adicionada.
+ */
+const SCHEMA_VERSION_ATUAL = 10;
+
+/**
+ * Desfaz, num banco ja aberto na versao atual, tudo o que veio depois da versao
+ * `alvo` - e o jeito de reencenar um indice daquela epoca sem manter um dump
+ * SQL congelado por versao.
+ */
+const DESFAZER_10 =
+  'ALTER TABLE episodes DROP COLUMN thumb_file;' +
+  'ALTER TABLE episodes DROP COLUMN thumb_checked_at;' +
+  'ALTER TABLE show_metadata DROP COLUMN backdrop_source;';
+
+const DESFAZER_ATE: Record<number, string> = {
+  6: 'DROP TABLE settings;' +
+    'ALTER TABLE show_metadata DROP COLUMN backdrop_file;' +
+    'ALTER TABLE show_metadata DROP COLUMN backdrop_checked_at;' +
+    DESFAZER_10,
+  7: 'ALTER TABLE show_metadata DROP COLUMN backdrop_file;' +
+    'ALTER TABLE show_metadata DROP COLUMN backdrop_checked_at;' +
+    DESFAZER_10,
+  8: 'ALTER TABLE show_metadata DROP COLUMN backdrop_checked_at;' + DESFAZER_10,
+  9: DESFAZER_10,
+};
+
+function rebobinar(dbPath: string, alvo: number): void {
+  const raw = new Database(dbPath);
+  raw.exec(`${DESFAZER_ATE[alvo]!} UPDATE schema_version SET version = ${String(alvo)}`);
+  raw.close();
+}
 
 const AUDIOS = [
   { index: 0, lang: 'por', title: 'Brazilian', codec: 'eac3', isDefault: true },
@@ -19,7 +54,7 @@ const LEGENDAS = [
 ];
 
 /** Episodio completo com valores plausiveis; o teste sobrescreve o que importa. */
-function makeEpisode(overrides: Partial<Omit<EpisodeRow, 'showId'>> = {}): Omit<EpisodeRow, 'showId'> {
+function makeEpisode(overrides: Partial<EpisodeInput> = {}): EpisodeInput {
   return {
     id: 'serie/ep01.mp4',
     absolutePath: '/lib/serie/ep01.mp4',
@@ -191,7 +226,7 @@ describe('upsertEpisodes', () => {
 
     const episodes = store.listEpisodes(showId);
     expect(episodes.map((row) => row.id)).toEqual(['serie/ep01.mp4', 'serie/ep02.mp4']);
-    expect(episodes[0]).toEqual({ ...makeEpisode(), showId });
+    expect(episodes[0]).toEqual({ ...makeEpisode(), showId, thumbFile: null, thumbCheckedAt: null });
 
     store.close();
   });
@@ -203,7 +238,14 @@ describe('getEpisode', () => {
     const showId = makeShow(store);
     store.upsertEpisodes(showId, [makeEpisode()]);
 
-    expect(store.getEpisode('serie/ep01.mp4')).toEqual({ ...makeEpisode(), showId });
+    expect(store.getEpisode('serie/ep01.mp4')).toEqual({
+      ...makeEpisode(),
+      showId,
+      // Colunas que o scan nao escreve: linha nova nasce sem quadro e sem
+      // carimbo de tentativa.
+      thumbFile: null,
+      thumbCheckedAt: null,
+    });
     expect(store.getEpisode('serie/nao-existe.mp4')).toBeNull();
 
     store.close();
@@ -320,6 +362,8 @@ describe('idempotencia de upsertEpisodes', () => {
         size: 999,
       }),
       showId,
+      thumbFile: null,
+      thumbCheckedAt: null,
     });
 
     store.close();
@@ -580,6 +624,9 @@ describe('metadata da serie (schema 3)', () => {
     store.upsertShowMetadata({
       showId,
       posterFile: `${showId}.jpg`,
+      backdropFile: `${showId}.jpg`,
+      backdropCheckedAt: null,
+      backdropSource: null,
       year: 1985,
       overview: 'Sinopse.',
       source: 'tvmaze',
@@ -590,6 +637,9 @@ describe('metadata da serie (schema 3)', () => {
     expect(store.getShowMetadata(showId)).toEqual({
       showId,
       posterFile: `${showId}.jpg`,
+      backdropFile: `${showId}.jpg`,
+      backdropCheckedAt: null,
+      backdropSource: null,
       year: 1985,
       overview: 'Sinopse.',
       source: 'tvmaze',
@@ -608,6 +658,9 @@ describe('metadata da serie (schema 3)', () => {
     store.upsertShowMetadata({
       showId,
       posterFile: null,
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
       year: null,
       overview: null,
       source: null,
@@ -630,6 +683,9 @@ describe('metadata da serie (schema 3)', () => {
     store.upsertShowMetadata({
       showId,
       posterFile: null,
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
       year: null,
       overview: null,
       source: null,
@@ -639,6 +695,9 @@ describe('metadata da serie (schema 3)', () => {
     store.upsertShowMetadata({
       showId,
       posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
       year: 1985,
       overview: 'Achei depois.',
       source: 'itunes',
@@ -663,6 +722,9 @@ describe('metadata da serie (schema 3)', () => {
       store.upsertShowMetadata({
         showId,
         posterFile: `${showId}.jpg`,
+        backdropFile: null,
+        backdropCheckedAt: null,
+        backdropSource: null,
         year: null,
         overview: null,
         source: 'tvmaze',
@@ -733,6 +795,9 @@ describe('metadata da serie (schema 3)', () => {
     store.upsertShowMetadata({
       showId: 1,
       posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
       year: 1985,
       overview: null,
       source: 'tvmaze',
@@ -747,7 +812,449 @@ describe('metadata da serie (schema 3)', () => {
     const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
       version: number;
     };
-    expect(versao.version).toBe(7);
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('countEpisodesByShow', () => {
+  it('conta cada serie separadamente, numa consulta so', () => {
+    const store = openStore(':memory:');
+    const a = makeShow(store, 'a');
+    const b = makeShow(store, 'b');
+    store.upsertEpisodes(a, [
+      makeEpisode({ id: 'a/ep01.mp4', orderIndex: 0 }),
+      makeEpisode({ id: 'a/ep02.mp4', orderIndex: 1 }),
+      makeEpisode({ id: 'a/ep03.mp4', orderIndex: 2 }),
+    ]);
+    store.upsertEpisodes(b, [makeEpisode({ id: 'b/ep01.mp4' })]);
+
+    const contagem = store.countEpisodesByShow();
+    expect(contagem.get(a)).toBe(3);
+    expect(contagem.get(b)).toBe(1);
+    store.close();
+  });
+
+  it('serie sem episodio nao aparece no mapa', () => {
+    // Quem chama trata a ausencia como zero; o canal e filtrado da listagem.
+    const store = openStore(':memory:');
+    const vazia = makeShow(store, 'vazia');
+    expect(store.countEpisodesByShow().has(vazia)).toBe(false);
+    store.close();
+  });
+
+  it('bate exatamente com listEpisodes().length, inclusive depois de podar', () => {
+    // E o valor que `episodeCount` carregava antes de a contagem virar lote:
+    // qualquer divergencia mudaria o contrato publico.
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [
+      makeEpisode({ id: 'serie/ep01.mp4', orderIndex: 0 }),
+      makeEpisode({ id: 'serie/ep02.mp4', orderIndex: 1 }),
+      makeEpisode({ id: 'serie/ep03.mp4', orderIndex: 2 }),
+    ]);
+    expect(store.countEpisodesByShow().get(showId)).toBe(store.listEpisodes(showId).length);
+
+    store.pruneEpisodes(showId, ['serie/ep01.mp4']);
+    expect(store.countEpisodesByShow().get(showId)).toBe(store.listEpisodes(showId).length);
+
+    store.pruneEpisodes(showId, []);
+    expect(store.countEpisodesByShow().get(showId) ?? 0).toBe(store.listEpisodes(showId).length);
+    store.close();
+  });
+
+  it('acervo vazio devolve um mapa vazio, nao lanca', () => {
+    const store = openStore(':memory:');
+    expect(store.countEpisodesByShow().size).toBe(0);
+    store.close();
+  });
+});
+
+describe('hasShowsWithoutMetadata', () => {
+  it('acervo vazio nao tem trabalho pendente', () => {
+    const store = openStore(':memory:');
+    expect(store.hasShowsWithoutMetadata()).toBe(false);
+    store.close();
+  });
+
+  it('serie sem linha nenhuma conta como pendente', () => {
+    const store = openStore(':memory:');
+    makeShow(store, 'serie');
+    expect(store.hasShowsWithoutMetadata()).toBe(true);
+    store.close();
+  });
+
+  it('linha de "nao encontrado" JA e resposta: nao conta como pendente', () => {
+    // Se contasse, cada abertura do catalogo dispararia uma rodada nova de rede
+    // para uma serie que o provedor ja disse nao conhecer.
+    const store = openStore(':memory:');
+    const showId = makeShow(store, 'obscura');
+    store.upsertShowMetadata({
+      showId,
+      posterFile: null,
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: null,
+      overview: null,
+      source: null,
+      fetchedAt: 1,
+      notFound: true,
+    });
+    expect(store.hasShowsWithoutMetadata()).toBe(false);
+    store.close();
+  });
+
+  it('basta UMA serie sem linha, entre varias resolvidas', () => {
+    const store = openStore(':memory:');
+    const resolvida = makeShow(store, 'resolvida');
+    store.upsertShowMetadata({
+      showId: resolvida,
+      posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: null,
+      overview: null,
+      source: 'tvmaze',
+      fetchedAt: 1,
+      notFound: false,
+    });
+    expect(store.hasShowsWithoutMetadata()).toBe(false);
+
+    makeShow(store, 'nova');
+    expect(store.hasShowsWithoutMetadata()).toBe(true);
+    store.close();
+  });
+});
+
+describe('temporadas', () => {
+  it('devolve as temporadas presentes, crescente e sem repetir', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [
+      makeEpisode({ id: 'serie/s02e01.mp4', season: 2, orderIndex: 0 }),
+      makeEpisode({ id: 'serie/s01e01.mp4', season: 1, orderIndex: 1 }),
+      makeEpisode({ id: 'serie/s02e02.mp4', season: 2, orderIndex: 2 }),
+    ]);
+
+    expect(store.listSeasons(showId)).toEqual([1, 2]);
+    store.close();
+  });
+
+  it('episodio sem temporada nao entra na lista', () => {
+    // A aba "Sem temporada" e deduzida pelo cliente quando a lista chega.
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [
+      makeEpisode({ id: 'serie/solto.mp4', season: null, orderIndex: 0 }),
+      makeEpisode({ id: 'serie/s01e01.mp4', season: 1, orderIndex: 1 }),
+    ]);
+
+    expect(store.listSeasons(showId)).toEqual([1]);
+    store.close();
+  });
+
+  it('serie sem pastas de temporada devolve [] e nao null', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode({ season: null })]);
+
+    expect(store.listSeasons(showId)).toEqual([]);
+    expect(store.listSeasonsByShow().get(showId)).toBeUndefined();
+    store.close();
+  });
+
+  it('listSeasonsByShow devolve o mesmo que listSeasons, serie a serie', () => {
+    // As duas alimentam o mesmo campo do contrato: `GET /api/channels` usa a
+    // consulta em lote e o "no ar" usa a de uma serie so.
+    const store = openStore(':memory:');
+    const a = makeShow(store, 'a');
+    const b = makeShow(store, 'b');
+    store.upsertEpisodes(a, [
+      makeEpisode({ id: 'a/s03e01.mp4', season: 3, orderIndex: 0 }),
+      makeEpisode({ id: 'a/s01e01.mp4', season: 1, orderIndex: 1 }),
+    ]);
+    store.upsertEpisodes(b, [makeEpisode({ id: 'b/s02e01.mp4', season: 2 })]);
+
+    const emLote = store.listSeasonsByShow();
+    expect(emLote.get(a)).toEqual(store.listSeasons(a));
+    expect(emLote.get(b)).toEqual(store.listSeasons(b));
+    expect(emLote.get(a)).toEqual([1, 3]);
+    store.close();
+  });
+
+  it('acervo vazio devolve um mapa vazio, nao lanca', () => {
+    const store = openStore(':memory:');
+    expect(store.listSeasonsByShow().size).toBe(0);
+    store.close();
+  });
+});
+
+describe('indexVersion', () => {
+  it('nao anda sozinho: duas leituras seguidas dao o mesmo numero', () => {
+    const store = openStore(':memory:');
+    expect(store.indexVersion()).toBe(store.indexVersion());
+    store.close();
+  });
+
+  it('anda a cada escrita que muda a grade', () => {
+    const store = openStore(':memory:');
+    const inicial = store.indexVersion();
+
+    const showId = makeShow(store);
+    const depoisDoShow = store.indexVersion();
+    expect(depoisDoShow).toBeGreaterThan(inicial);
+
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    const depoisDoEpisodio = store.indexVersion();
+    expect(depoisDoEpisodio).toBeGreaterThan(depoisDoShow);
+
+    store.pruneEpisodes(showId, []);
+    expect(store.indexVersion()).toBeGreaterThan(depoisDoEpisodio);
+
+    store.close();
+  });
+
+  it('nao anda por metadata: a capa chega sem mexer na grade', () => {
+    // Se andasse, cada rodada de capa jogaria fora o cache de timeline inteiro.
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode()]);
+
+    const antes = store.indexVersion();
+    store.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1985,
+      overview: null,
+      source: 'tmdb',
+      fetchedAt: 1,
+      notFound: false,
+    });
+    store.upsertWatchHistory({
+      episodeId: 'serie/ep01.mp4',
+      positionMs: 1,
+      durationMs: 2,
+      updatedAt: 3,
+    });
+    expect(store.indexVersion()).toBe(antes);
+
+    store.close();
+  });
+
+  it('enxerga o scan que rodou em OUTRO processo', () => {
+    // `node dist/server/scan.js` e o unico jeito de reindexar no container: sem
+    // isto o servidor serviria a grade antiga ate reiniciar.
+    const base = mkdtempSync(join(tmpdir(), 'index-store-versao-'));
+    const dbPath = join(base, 'library.db');
+
+    const servidor = openStore(dbPath);
+    const showId = makeShow(servidor, 'serie');
+    servidor.upsertEpisodes(showId, [makeEpisode()]);
+    const antes = servidor.indexVersion();
+
+    const scanAvulso = openStore(dbPath);
+    scanAvulso.upsertEpisodes(showId, [makeEpisode({ id: 'serie/ep02.mp4', orderIndex: 1 })]);
+    scanAvulso.close();
+
+    expect(servidor.indexVersion()).toBeGreaterThan(antes);
+    servidor.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('arte 16:9 (schema 8)', () => {
+  it('guarda o nome do arquivo e devolve null quando nao ha', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+
+    store.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: null,
+      overview: null,
+      source: 'tmdb',
+      fetchedAt: 1,
+      notFound: false,
+    });
+    expect(store.getShowMetadata(showId)?.backdropFile).toBe('1.jpg');
+
+    store.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: null,
+      overview: null,
+      source: 'tvmaze',
+      fetchedAt: 2,
+      notFound: false,
+    });
+    expect(store.getShowMetadata(showId)?.backdropFile).toBeNull();
+
+    store.close();
+  });
+
+  it('indice na versao 7 ganha a coluna sem perder dado', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v7-'));
+    const dbPath = join(base, 'library.db');
+
+    const sete = openStore(dbPath);
+    const showId = makeShow(sete, 'serie');
+    sete.upsertEpisodes(sete.listShows()[0]!.id, [makeEpisode()]);
+    sete.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tvmaze',
+      fetchedAt: 42,
+      notFound: false,
+    });
+    sete.upsertWatchHistory({
+      episodeId: 'serie/ep01.mp4',
+      positionMs: 600_000,
+      durationMs: 1_320_000,
+      updatedAt: 7,
+    });
+    sete.setSetting('audio_lang', 'por');
+    sete.close();
+
+    // Um banco exatamente como o schema 7 deixava: sem as colunas de arte.
+    rebobinar(dbPath, 7);
+
+    const store = openStore(dbPath);
+
+    // Migrou sem tocar no que ja existia...
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie']);
+    expect(store.getEpisode('serie/ep01.mp4')?.title).toBe('ep01');
+    expect(store.getWatchHistory('serie/ep01.mp4')?.positionMs).toBe(600_000);
+    expect(store.getSetting('audio_lang')).toBe('por');
+    expect(store.getShowMetadata(showId)).toMatchObject({
+      posterFile: '1.jpg',
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tvmaze',
+      fetchedAt: 42,
+    });
+    // ...e a coluna nova existe, comecando vazia.
+    expect(store.getShowMetadata(showId)?.backdropFile).toBeNull();
+
+    store.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tmdb',
+      fetchedAt: 43,
+      notFound: false,
+    });
+    expect(store.getShowMetadata(showId)?.backdropFile).toBe('1.jpg');
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('carimbo de busca da arte (schema 9)', () => {
+  it('separa "nunca procurei" de "procurei e nao ha"', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+
+    const base = {
+      showId,
+      posterFile: '1.jpg',
+      backdropSource: null,
+      year: null,
+      overview: null,
+      source: 'tmdb',
+      fetchedAt: 1,
+      notFound: false,
+    };
+
+    store.upsertShowMetadata({ ...base, backdropFile: null, backdropCheckedAt: null });
+    expect(store.getShowMetadata(showId)?.backdropCheckedAt).toBeNull();
+
+    // Procurada e nao havia: arquivo continua nulo, mas o carimbo mudou.
+    store.upsertShowMetadata({ ...base, backdropFile: null, backdropCheckedAt: 99 });
+    const row = store.getShowMetadata(showId)!;
+    expect(row.backdropFile).toBeNull();
+    expect(row.backdropCheckedAt).toBe(99);
+
+    store.close();
+  });
+
+  it('indice na versao 8 ganha a coluna sem perder dado', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v8-'));
+    const dbPath = join(base, 'library.db');
+
+    const oito = openStore(dbPath);
+    const showId = makeShow(oito, 'serie');
+    oito.upsertEpisodes(showId, [makeEpisode()]);
+    oito.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      backdropCheckedAt: 123,
+      backdropSource: null,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tmdb',
+      fetchedAt: 42,
+      notFound: false,
+    });
+    oito.close();
+
+    // Um banco exatamente como o schema 8 deixava: sem `backdrop_checked_at`.
+    rebobinar(dbPath, 8);
+
+    const store = openStore(dbPath);
+
+    // Migrou sem tocar em capa, arte, ano nem sinopse...
+    expect(store.getEpisode('serie/ep01.mp4')?.title).toBe('ep01');
+    expect(store.getShowMetadata(showId)).toMatchObject({
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tmdb',
+      fetchedAt: 42,
+    });
+    // ...e a coluna nova comeca nula, que e "nunca procurei" - o unico valor
+    // honesto para uma linha escrita antes de o carimbo existir.
+    expect(store.getShowMetadata(showId)?.backdropCheckedAt).toBeNull();
+
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
     conferencia.close();
 
     rmSync(base, { recursive: true, force: true });
@@ -961,7 +1468,7 @@ describe('preferencias (schema 7)', () => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  it('indice na versao 6 e migrado para a 7 sem perder dado', () => {
+  it('indice na versao 6 e migrado sem perder dado', () => {
     const base = mkdtempSync(join(tmpdir(), 'index-store-v6-'));
     const dbPath = join(base, 'library.db');
 
@@ -977,9 +1484,8 @@ describe('preferencias (schema 7)', () => {
     });
     seis.close();
 
-    const raw = new Database(dbPath);
-    raw.exec('DROP TABLE settings; UPDATE schema_version SET version = 6');
-    raw.close();
+    // Desfaz o que veio depois da 6 para reencenar um banco daquela epoca.
+    rebobinar(dbPath, 6);
 
     const store = openStore(dbPath);
 
@@ -997,7 +1503,201 @@ describe('preferencias (schema 7)', () => {
     const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
       version: number;
     };
-    expect(versao.version).toBe(7);
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('quadro do episodio (schema 10)', () => {
+  it('carimbo separa "nunca tentei" de "tentei e nao deu"', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode()]);
+
+    // Linha nova: nunca tentada, sem quadro.
+    expect(store.getEpisode('serie/ep01.mp4')).toMatchObject({
+      thumbFile: null,
+      thumbCheckedAt: null,
+    });
+    expect(store.listThumbCandidates({ all: false }).map((c) => c.episodeId)).toEqual([
+      'serie/ep01.mp4',
+    ]);
+
+    // Tentou e o arquivo nao rendeu quadro: o carimbo existe, o arquivo nao. E
+    // este par que tira o episodio da fila - sem ele, todo arquivo que nao
+    // rende quadro voltaria em cada rodada, para sempre.
+    store.setEpisodeThumb({ episodeId: 'serie/ep01.mp4', file: null, checkedAt: 500 });
+    expect(store.getEpisode('serie/ep01.mp4')).toMatchObject({
+      thumbFile: null,
+      thumbCheckedAt: 500,
+    });
+    expect(store.listThumbCandidates({ all: false })).toEqual([]);
+    // O reset do painel ignora o carimbo: e o botao de "refaca tudo".
+    expect(store.listThumbCandidates({ all: true })).toHaveLength(1);
+
+    store.setEpisodeThumb({ episodeId: 'serie/ep01.mp4', file: '7.jpg', checkedAt: 600 });
+    expect(store.getEpisode('serie/ep01.mp4')?.thumbFile).toBe('7.jpg');
+    expect(store.listThumbFiles()).toEqual(['7.jpg']);
+
+    store.close();
+  });
+
+  it('o candidato carrega rowid, duracao e o nome da serie, e nada mais', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store, 'thundercats');
+    store.upsertEpisodes(showId, [
+      makeEpisode({ id: 'tc/ep01.mkv', orderIndex: 1, durationMs: 1_320_000 }),
+      makeEpisode({ id: 'tc/ep02.mkv', orderIndex: 0, durationMs: 1_000 }),
+    ]);
+
+    const fila = store.listThumbCandidates({ all: false });
+    // Ordem do catalogo: canal, e depois a grade dentro dele.
+    expect(fila.map((c) => c.episodeId)).toEqual(['tc/ep02.mkv', 'tc/ep01.mkv']);
+    expect(fila[0]).toEqual({
+      rowId: expect.any(Number) as number,
+      episodeId: 'tc/ep02.mkv',
+      durationMs: 1_000,
+      showName: 'thundercats',
+    });
+    // rowid e a identidade da LINHA: dois episodios, dois nomes de arquivo.
+    expect(fila[0]?.rowId).not.toBe(fila[1]?.rowId);
+
+    store.close();
+  });
+
+  it('rescan que troca o arquivo apaga o quadro; reencontrar o mesmo nao', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    store.setEpisodeThumb({ episodeId: 'serie/ep01.mp4', file: '1.jpg', checkedAt: 500 });
+
+    // Rescan incremental tipico: o mesmo arquivo, o mesmo par (mtime, size).
+    // Apagar aqui custaria 15 mil ffmpeg por madrugada para produzir
+    // exatamente as mesmas imagens.
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    expect(store.getEpisode('serie/ep01.mp4')).toMatchObject({
+      thumbFile: '1.jpg',
+      thumbCheckedAt: 500,
+    });
+
+    // Arquivo trocado no NAS: pode ser outro episodio inteiro, e servir a
+    // miniatura antiga seria mostrar uma cena que nao esta mais ali.
+    store.upsertEpisodes(showId, [makeEpisode({ size: 999, mtimeMs: 2_000 })]);
+    expect(store.getEpisode('serie/ep01.mp4')).toMatchObject({
+      thumbFile: null,
+      thumbCheckedAt: null,
+    });
+    // E ele volta para a fila, porque o carimbo tambem foi embora.
+    expect(store.listThumbCandidates({ all: false })).toHaveLength(1);
+    expect(store.listThumbFiles()).toEqual([]);
+
+    store.close();
+  });
+
+  it('setShowBackdrop grava a arte sem inventar uma busca de metadata', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+
+    expect(store.listShowsWithoutBackdrop().map((s) => s.id)).toEqual([showId]);
+
+    store.setShowBackdrop({ showId, file: `${String(showId)}.jpg`, source: 'frame' });
+
+    const row = store.getShowMetadata(showId)!;
+    expect(row.backdropFile).toBe(`${String(showId)}.jpg`);
+    expect(row.backdropSource).toBe('frame');
+    // Nada de capa, ano ou sinopse inventados - e a linha continua dizendo que
+    // ninguem procurou metadata para esta serie ainda.
+    expect(row).toMatchObject({ posterFile: null, year: null, overview: null, fetchedAt: 0 });
+    expect(store.hasShowsWithoutMetadata()).toBe(true);
+    // Com arte, sai da fila de quem precisa de uma.
+    expect(store.listShowsWithoutBackdrop()).toEqual([]);
+
+    // E o provedor, quando responde, grava por cima sem ser atrapalhado.
+    store.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      backdropCheckedAt: 10,
+      backdropSource: 'tmdb',
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tmdb',
+      fetchedAt: 10,
+      notFound: false,
+    });
+    expect(store.hasShowsWithoutMetadata()).toBe(false);
+    expect(store.getShowMetadata(showId)?.backdropSource).toBe('tmdb');
+
+    store.close();
+  });
+
+  it('indice na versao 9 ganha as colunas sem perder dado', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v9-'));
+    const dbPath = join(base, 'library.db');
+
+    const nove = openStore(dbPath);
+    const showId = makeShow(nove, 'serie');
+    nove.upsertEpisodes(showId, [makeEpisode()]);
+    nove.upsertWatchHistory({
+      episodeId: 'serie/ep01.mp4',
+      positionMs: 600_000,
+      durationMs: 1_320_000,
+      updatedAt: 7,
+    });
+    nove.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      backdropCheckedAt: 123,
+      backdropSource: null,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tmdb',
+      fetchedAt: 42,
+      notFound: false,
+    });
+    nove.setSetting('audio_lang', 'por');
+    nove.close();
+
+    // Um banco exatamente como o schema 9 deixava.
+    rebobinar(dbPath, 9);
+
+    const store = openStore(dbPath);
+
+    // Migrou sem tocar em episodio, historico, preferencia nem metadata...
+    expect(store.getEpisode('serie/ep01.mp4')?.title).toBe('ep01');
+    expect(store.getWatchHistory('serie/ep01.mp4')?.positionMs).toBe(600_000);
+    expect(store.getSetting('audio_lang')).toBe('por');
+    expect(store.getShowMetadata(showId)).toMatchObject({
+      posterFile: '1.jpg',
+      backdropFile: '1.jpg',
+      backdropCheckedAt: 123,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tmdb',
+      fetchedAt: 42,
+    });
+
+    // ...e as colunas novas comecam vazias. Para o quadro isso e "nunca
+    // tentei", entao todo episodio do acervo entra na primeira fila; para a
+    // arte e "nao sei de onde veio", que e a verdade de uma linha escrita antes
+    // de a coluna existir.
+    expect(store.getEpisode('serie/ep01.mp4')).toMatchObject({
+      thumbFile: null,
+      thumbCheckedAt: null,
+    });
+    expect(store.getShowMetadata(showId)?.backdropSource).toBeNull();
+    expect(store.listThumbCandidates({ all: false })).toHaveLength(1);
+
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
     conferencia.close();
 
     rmSync(base, { recursive: true, force: true });

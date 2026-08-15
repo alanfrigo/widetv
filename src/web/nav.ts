@@ -1,36 +1,13 @@
 /**
- * Movimento do foco em grade e em lista.
+ * Movimento do foco em lista (e em grade, quando houver uma).
  *
  * Reducer puro, sem DOM: recebe onde o cursor esta, quantos itens existem e
- * quantas colunas a tela coube AGORA, e devolve onde o cursor passa a estar. O
- * numero de colunas nao e calculado aqui de proposito - quem sabe disso e o
- * layout, e duplicar a conta do CSS em JavaScript daria duas verdades que
- * divergem no primeiro `minmax` que alguem ajustar. O que este modulo oferece e
- * `countColumns`, que le a resposta do proprio layout.
+ * quantas colunas a tela tem, e devolve onde o cursor passa a estar. Quem anda
+ * entre as FAIXAS do catalogo e da tela da serie e o `rails.ts`; aqui ficam a
+ * lista de uma coluna (as configuracoes) e o vizinho circular do zap.
  */
 
 export type NavKey = 'left' | 'right' | 'up' | 'down' | 'first' | 'last';
-
-/**
- * Quantas colunas a grade formou, deduzido da posicao vertical dos itens.
- *
- * Todos os cards da primeira linha compartilham o mesmo `offsetTop`; o primeiro
- * que descer comeca a segunda linha. Tolerancia de 1px porque sub-pixel de
- * layout arredonda diferente entre navegadores.
- *
- * @returns pelo menos 1, sempre: grade de zero coluna travaria a navegacao.
- */
-export function countColumns(tops: readonly number[]): number {
-  const first = tops[0];
-  if (first === undefined) return 1;
-
-  let columns = 0;
-  for (const top of tops) {
-    if (Math.abs(top - first) > 1) break;
-    columns += 1;
-  }
-  return Math.max(1, columns);
-}
 
 function clamp(cursor: number, count: number): number {
   if (!Number.isFinite(cursor)) return 0;

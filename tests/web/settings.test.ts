@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import type { AppSettings, LibraryStatus, ScanSummary } from '../../src/shared/api-types';
+import type {
+  AppSettings,
+  LibraryStatus,
+  ScanProgressRef,
+  ScanSummary,
+} from '../../src/shared/api-types';
 import {
   audioLanguageOptions,
   initialSettings,
@@ -8,10 +13,15 @@ import {
   scanProgressRatio,
   scanProgressText,
   scanSummaryText,
+  settingsGroupRows,
   settingsRows,
   settingsValueText,
   stepRescanTime,
   subtitleLanguageOptions,
+  thumbProgressRatio,
+  thumbProgressText,
+  thumbSummaryText,
+  thumbsRunning,
   type SettingsContext,
   type SettingsEvent,
   type SettingsField,
@@ -25,6 +35,7 @@ const SETTINGS: AppSettings = {
   subtitlesAuto: true,
   rescanTime: '03:30',
   autoRemux: false,
+  autoThumbs: true,
   smartGrouping: true,
   tmdbConfigured: false,
 };
@@ -60,6 +71,78 @@ describe('as linhas da tela', () => {
     expect(rows.slice(first).every((row) => row.kind === 'action')).toBe(true);
   });
 
+  test('a tela tem duas listas, e a de reproducao vem primeiro', () => {
+    const groups = settingsRows().map((row) => row.group);
+    expect(groups.indexOf('library')).toBeGreaterThan(0);
+    // Um grupo nao volta depois do outro: o cursor unico desce em linha reta.
+    expect(groups.slice(groups.indexOf('library')).every((group) => group === 'library')).toBe(true);
+  });
+
+  test('cada linha entra numa lista so, com o indice do cursor global', () => {
+    const playback = settingsGroupRows('playback');
+    const library = settingsGroupRows('library');
+
+    expect(playback.map((row) => row.field)).toEqual([
+      'audioLang',
+      'subtitleLang',
+      'subtitlesAuto',
+    ]);
+    expect(library.map((row) => row.field)).toEqual([
+      'smartGrouping',
+      'autoRemux',
+      'autoThumbs',
+      'rescanTime',
+      'scanIncremental',
+      'scanFull',
+      'refreshMetadata',
+      'generateThumbs',
+    ]);
+
+    // Os indices sao os de `settingsRows()`, e nao a posicao dentro do grupo:
+    // e o que faz o cursor unico casar com a linha desenhada.
+    expect([...playback, ...library].map((row) => row.index)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
+    for (const row of [...playback, ...library]) {
+      expect(settingsRows()[row.index]?.field).toBe(row.field);
+    }
+  });
+
+  test('a divisao e so de desenho: o cursor atravessa as duas listas', () => {
+    // Ultima linha de "Reprodução" desce direto na primeira de "Biblioteca".
+    const last = settingsGroupRows('playback').at(-1);
+    const first = settingsGroupRows('library')[0];
+    const moved = reduceSettings({ ...initialSettings(), cursor: last?.index ?? 0 }, { type: 'down' }, context());
+    expect(moved.state.cursor).toBe(first?.index);
+  });
+
+  test('so marca stepper a linha em que as setas fazem alguma coisa', () => {
+    const stepper = settingsRows().filter((row) => row.stepper).map((row) => row.field);
+    const parada = settingsRows().filter((row) => !row.stepper).map((row) => row.field);
+
+    // As duas varreduras nao tem valor nenhum para percorrer com ← →.
+    expect(parada).toEqual(['scanIncremental', 'scanFull']);
+    // A rebusca de capas e acao E stepper: as setas escolhem o modo, e a dica
+    // da linha manda usar ← →. Sem a marca, o CSS esconderia a seta esquerda.
+    expect(stepper).toContain('refreshMetadata');
+    // A geracao de miniaturas escolhe o mesmo par de modos, pela mesma tecla.
+    expect(stepper).toContain('generateThumbs');
+  });
+
+  test('a marca casa com quem o reducer deixa as setas mexerem', () => {
+    for (const row of settingsRows()) {
+      if (row.stepper) continue;
+      // Linha sem stepper nao pode reagir a seta nenhuma: nem comando, nem
+      // mudanca no estado da tela. Se reagir, a seta escondida seria mentira.
+      const start = at(row.field);
+      for (const key of ['left', 'right'] as const) {
+        const result = reduceSettings(start, { type: key }, context());
+        expect(result.command).toBeNull();
+        expect(result.state).toEqual(start);
+      }
+    }
+  });
+
   test('todo campo do contrato tem uma linha e uma so', () => {
     const fields = settingsRows().map((row) => row.field);
     expect(new Set(fields).size).toBe(fields.length);
@@ -74,6 +157,8 @@ describe('as linhas da tela', () => {
         'scanIncremental',
         'scanFull',
         'refreshMetadata',
+        'autoThumbs',
+        'generateThumbs',
       ]),
     );
   });
@@ -155,6 +240,33 @@ describe('liga e desliga', () => {
   test('a seta que aponta para o lado em que ja esta nao gasta um PATCH', () => {
     expect(fire('smartGrouping', { type: 'right' }).command).toBeNull();
     expect(fire('autoRemux', { type: 'left' }).command).toBeNull();
+  });
+
+  test('a linha das miniaturas grava o campo do contrato', () => {
+    expect(fire('autoThumbs', { type: 'left' }).command).toEqual({
+      type: 'patch',
+      patch: { autoThumbs: false },
+    });
+    expect(fire('autoThumbs', { type: 'select' }, { autoThumbs: false }).command).toEqual({
+      type: 'patch',
+      patch: { autoThumbs: true },
+    });
+  });
+
+  test('servidor sem o campo das miniaturas nao vira "Ligado" a partir do nada', () => {
+    // O servidor esta sendo escrito em paralelo: um mais velho nao manda
+    // `autoThumbs`, e a linha nao pode inventar um valor para mostrar.
+    const older = { ...SETTINGS } as Partial<AppSettings>;
+    delete older.autoThumbs;
+    const settings = older as AppSettings;
+
+    expect(settingsValueText('autoThumbs', settings, initialSettings())).toBe('Desligado');
+    expect(
+      reduceSettings(at('autoThumbs'), { type: 'right' }, {
+        settings,
+        languages: audioLanguageOptions(),
+      }).command,
+    ).toEqual({ type: 'patch', patch: { autoThumbs: true } });
   });
 
   test('Enter alterna', () => {
@@ -240,6 +352,35 @@ describe('acoes de manutencao', () => {
       type: 'refreshMetadata',
       reset: false,
     });
+  });
+
+  test('gerar miniaturas escolhe o modo com a seta e dispara com Enter', () => {
+    const chosen = fire('generateThumbs', { type: 'right' });
+    expect(chosen.command).toBeNull();
+    expect(chosen.state.thumbsReset).toBe(true);
+
+    const fired = reduceSettings(chosen.state, { type: 'select' }, context());
+    expect(fired.command).toEqual({ type: 'generateThumbs', reset: true });
+    expect(fired.state.busy).toBe('generateThumbs');
+  });
+
+  test('sem escolher o modo, a geracao so completa o que falta', () => {
+    expect(fire('generateThumbs', { type: 'select' }).command).toEqual({
+      type: 'generateThumbs',
+      reset: false,
+    });
+  });
+
+  test('o modo de uma acao nao contamina o da outra', () => {
+    // As duas linhas oferecem o mesmo par de modos: um campo so faria "refazer
+    // tudo" nas miniaturas virar "refazer tudo" tambem nas capas, que e a
+    // rodada cara do provedor.
+    const chosen = fire('generateThumbs', { type: 'right' }).state;
+    expect(chosen.metadataReset).toBe(false);
+    expect(
+      reduceSettings({ ...chosen, cursor: at('refreshMetadata').cursor }, { type: 'select' }, context())
+        .command,
+    ).toEqual({ type: 'refreshMetadata', reset: false });
   });
 
   test('linha ocupada nao aceita um segundo Enter', () => {
@@ -329,6 +470,19 @@ describe('texto das linhas', () => {
       settingsValueText('refreshMetadata', SETTINGS, { ...initialSettings(), metadataReset: true }),
     ).toBe('Refazer tudo');
   });
+
+  test('cada acao com modo mostra o modo DELA', () => {
+    const state: SettingsUiState = { ...initialSettings(), thumbsReset: true };
+    expect(settingsValueText('generateThumbs', SETTINGS, state)).toBe('Refazer tudo');
+    expect(settingsValueText('refreshMetadata', SETTINGS, state)).toBe('Só o que falta');
+  });
+
+  test('a linha das miniaturas automaticas diz ligado ou desligado', () => {
+    expect(settingsValueText('autoThumbs', SETTINGS, initialSettings())).toBe('Ligado');
+    expect(
+      settingsValueText('autoThumbs', { ...SETTINGS, autoThumbs: false }, initialSettings()),
+    ).toBe('Desligado');
+  });
 });
 
 /* --- estado da biblioteca ------------------------------------------------- */
@@ -353,6 +507,7 @@ function status(over: Partial<LibraryStatus> = {}): LibraryStatus {
   return {
     scan: { state: 'idle', progress: null, startedAt: null, last: null },
     metadata: { state: 'idle', last: null },
+    thumbs: { state: 'idle', progress: null, last: null },
     remux: { state: 'idle' },
     ...over,
   };
@@ -463,5 +618,94 @@ describe('resumo da ultima rodada', () => {
       }),
     );
     expect(text).toBe('Última busca de capas: 38 de 40 identificadas · 31 capas baixadas · 2 sem resultado');
+  });
+});
+
+/* --- fila de miniaturas --------------------------------------------------- */
+
+function thumbing(progress: ScanProgressRef | null): LibraryStatus {
+  return status({ thumbs: { state: 'running', progress, last: null } });
+}
+
+/** Servidor mais velho do que esta tela: o campo nem vem na resposta. */
+function withoutThumbs(): LibraryStatus {
+  const older = { ...status() } as Partial<LibraryStatus>;
+  delete older.thumbs;
+  return older as LibraryStatus;
+}
+
+describe('progresso da fila de miniaturas', () => {
+  test('conta onde esta, como a varredura', () => {
+    expect(thumbProgressText(thumbing({ done: 120, total: 340, show: 'The Simpsons' }))).toBe(
+      '120 de 340 — The Simpsons',
+    );
+    expect(thumbProgressRatio(thumbing({ done: 170, total: 340, show: 'X' }))).toBe(0.5);
+  });
+
+  test('fila recem-disparada diz que comecou', () => {
+    expect(thumbProgressText(thumbing(null))).toBe('Preparando as miniaturas…');
+    expect(thumbProgressRatio(thumbing(null))).toBeNull();
+  });
+
+  test('parada nao tem progresso nenhum', () => {
+    expect(thumbProgressText(status())).toBeNull();
+    expect(thumbProgressRatio(status())).toBeNull();
+    expect(thumbsRunning(status())).toBe(false);
+  });
+
+  test('a fila rodando e o que segura o polling da tela', () => {
+    expect(thumbsRunning(thumbing(null))).toBe(true);
+  });
+
+  test('servidor sem a fila nao derruba o bloco de estado', () => {
+    const older = withoutThumbs();
+    expect(thumbsRunning(older)).toBe(false);
+    expect(thumbProgressText(older)).toBeNull();
+    expect(thumbProgressRatio(older)).toBeNull();
+    expect(thumbSummaryText(older)).toBeNull();
+  });
+
+  test('a fila tem resumo proprio', () => {
+    const text = thumbSummaryText(
+      status({
+        thumbs: {
+          state: 'idle',
+          progress: null,
+          last: {
+            considered: 340,
+            generated: 118,
+            skipped: 220,
+            failed: 2,
+            durationMs: 65_000,
+            finishedAt: 1,
+          },
+        },
+      }),
+    );
+    expect(text).toBe('Últimas miniaturas: 118 de 340 geradas · 220 pulados · 2 falhas · em 1 min 5 s');
+  });
+
+  test('rodada limpa nao lista pulados nem falhas', () => {
+    const text = thumbSummaryText(
+      status({
+        thumbs: {
+          state: 'idle',
+          progress: null,
+          last: {
+            considered: 4,
+            generated: 4,
+            skipped: 0,
+            failed: 0,
+            durationMs: 8_000,
+            finishedAt: 1,
+          },
+        },
+      }),
+    );
+    expect(text).toBe('Últimas miniaturas: 4 de 4 geradas · em 8 s');
+  });
+
+  test('servidor recem-ligado nao tem rodada de miniaturas para contar', () => {
+    expect(thumbSummaryText(status())).toBeNull();
   });
 });

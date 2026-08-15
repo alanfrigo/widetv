@@ -1,53 +1,161 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Linha do catalogo da serie: S37E01 · titulo · duracao · selo de resolucao. -->
+<!--
+  Linha da lista de episodios: numero, miniatura 16:9, titulo com selos e o
+  botao de play a direita.
+
+  A miniatura tira a altura da largura por `WideFrame` (9/16 no `onMeasure`):
+  `ep_thumb_w` muda com a resolucao da TV, e altura em `dp` fixo deformaria.
+
+  A linha inteira e o alvo do D-pad; o `row_episode` desenha o estado focado.
+  Ele e transparente em repouso de proposito - a lista de episodios do desenho
+  nao tem fundo por linha, so o destaque de quem esta selecionado.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/episode_row"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="@drawable/row_selectable"
+    android:layout_marginBottom="4dp"
+    android:background="@drawable/row_episode"
     android:focusable="true"
     android:gravity="center_vertical"
     android:orientation="horizontal"
-    android:paddingStart="@dimen/space_sm"
-    android:paddingTop="@dimen/space_sm"
-    android:paddingEnd="@dimen/space_sm"
-    android:paddingBottom="@dimen/space_sm">
+    android:paddingStart="12dp"
+    android:paddingTop="11dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="11dp">
 
     <TextView
-        android:id="@+id/episode_code"
-        android:layout_width="96dp"
+        android:id="@+id/episode_n"
+        android:layout_width="26dp"
         android:layout_height="wrap_content"
-        android:textColor="@color/accent"
-        android:textSize="@dimen/text_body"
+        android:fontFamily="@font/manrope_extrabold"
+        android:gravity="end"
+        android:textColor="@color/dim_2"
+        android:textSize="@dimen/text_row"
         android:textStyle="bold" />
 
-    <TextView
-        android:id="@+id/episode_title"
+    <com.widetv.app.ui.WideFrame
+        android:layout_width="@dimen/ep_thumb_w"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="15dp">
+
+        <ImageView
+            android:id="@+id/episode_art"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/stripes_thumb"
+            android:contentDescription="@string/cd_episode_thumb"
+            android:scaleType="centerCrop" />
+
+        <ProgressBar
+            android:id="@+id/episode_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:layout_gravity="bottom"
+            android:indeterminate="false"
+            android:max="1000"
+            android:maxHeight="3dp"
+            android:minHeight="3dp"
+            android:progressDrawable="@drawable/progress_track"
+            android:visibility="gone" />
+    </com.widetv.app.ui.WideFrame>
+
+    <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
+        android:layout_marginStart="15dp"
         android:layout_weight="1"
-        android:ellipsize="end"
-        android:maxLines="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/episode_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:letterSpacing="-0.01"
+            android:maxLines="1"
+            android:textColor="@color/text"
+            android:textSize="@dimen/text_body"
+            android:textStyle="bold" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/episode_meta_duration"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/muted"
+                android:textSize="@dimen/text_meta"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="7dp"
+                android:alpha="0.4"
+                android:importantForAccessibility="no"
+                android:text="@string/dot_separator"
+                android:textColor="@color/muted"
+                android:textSize="@dimen/text_meta" />
+
+            <TextView
+                android:id="@+id/episode_badge"
+                android:layout_width="wrap_content"
+                android:layout_height="15dp"
+                android:layout_marginStart="7dp"
+                android:background="@drawable/tag_outline"
+                android:gravity="center"
+                android:letterSpacing="0.06"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
+                android:textColor="@color/muted"
+                android:textSize="@dimen/text_tag"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/episode_tracks"
+                android:layout_width="wrap_content"
+                android:layout_height="15dp"
+                android:layout_marginStart="7dp"
+                android:background="@drawable/tag_outline"
+                android:gravity="center"
+                android:letterSpacing="0.06"
+                android:paddingStart="5dp"
+                android:paddingEnd="5dp"
+                android:textColor="@color/muted"
+                android:textSize="@dimen/text_tag"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/episode_state"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="7dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/accent"
+                android:textSize="@dimen/text_meta"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/episode_play"
+        android:layout_width="33dp"
+        android:layout_height="33dp"
+        android:layout_marginStart="15dp"
+        android:background="@drawable/play_circle_dark"
+        android:gravity="center"
+        android:importantForAccessibility="no"
+        android:text="@string/glyph_play"
         android:textColor="@color/text"
-        android:textSize="@dimen/text_body" />
-
-    <TextView
-        android:id="@+id/episode_duration"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/space_sm"
-        android:textColor="@color/text_dim"
-        android:textSize="@dimen/text_meta" />
-
-    <TextView
-        android:id="@+id/episode_badge"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/space_sm"
-        android:background="@drawable/badge_outline"
-        android:paddingStart="6dp"
-        android:paddingTop="2dp"
-        android:paddingEnd="6dp"
-        android:paddingBottom="2dp"
-        android:textColor="@color/text_dim"
-        android:textSize="@dimen/text_meta" />
+        android:textSize="@dimen/text_micro" />
 </LinearLayout>

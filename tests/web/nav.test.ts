@@ -1,32 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { countColumns, moveCursor, stepIndex, type NavKey } from '../../src/web/nav';
+import { moveCursor, stepIndex, type NavKey } from '../../src/web/nav';
 
 /** Aplica uma sequencia de teclas, como quem segura a seta. */
 function walk(start: number, keys: NavKey[], count: number, columns: number): number {
   return keys.reduce((cursor, key) => moveCursor(cursor, key, count, columns), start);
 }
-
-describe('countColumns', () => {
-  test('conta quantos itens dividem a primeira linha', () => {
-    expect(countColumns([0, 0, 0, 0, 300, 300, 300, 300])).toBe(4);
-  });
-
-  test('grade de uma coluna so', () => {
-    expect(countColumns([0, 240, 480])).toBe(1);
-  });
-
-  test('linha unica: todos os itens sao colunas', () => {
-    expect(countColumns([12, 12, 12])).toBe(3);
-  });
-
-  test('sub-pixel de layout nao quebra a contagem', () => {
-    expect(countColumns([0, 0.5, 1, 300.2])).toBe(3);
-  });
-
-  test('grade vazia ainda devolve uma coluna, para nao travar a navegacao', () => {
-    expect(countColumns([])).toBe(1);
-  });
-});
 
 describe('moveCursor na grade', () => {
   // 10 itens em 4 colunas:  0 1 2 3 / 4 5 6 7 / 8 9

@@ -107,6 +107,91 @@ class TrackPanelTest {
     assertEquals(closed, reduceTrackPanel(closed, TrackPanelEvent.Move(1)).state)
   }
 
+  // Abas do segmented control
+
+  @Test
+  fun `a aba de legendas leva o cursor para a primeira linha da secao`() {
+    val state = open()
+    // 4 e a linha "Desativadas", a primeira da secao de legendas (3 e o cabecalho).
+    val after = reduceTrackPanel(state, TrackPanelEvent.Tab(TrackKind.TEXT)).state
+    assertEquals(4, after.cursor)
+    assertEquals(TrackKind.TEXT, activeTab(after))
+  }
+
+  @Test
+  fun `a aba de audio traz o cursor de volta para a primeira faixa`() {
+    var state = reduceTrackPanel(open(), TrackPanelEvent.Tab(TrackKind.TEXT)).state
+    state = reduceTrackPanel(state, TrackPanelEvent.Tab(TrackKind.AUDIO)).state
+    assertEquals(1, state.cursor)
+    assertEquals(TrackKind.AUDIO, activeTab(state))
+  }
+
+  @Test
+  fun `a aba nao escolhe nada, so anda`() {
+    val before = open()
+    val result = reduceTrackPanel(before, TrackPanelEvent.Tab(TrackKind.TEXT))
+    assertNull(result.choose)
+    assertEquals(before.audio, result.state.audio)
+    assertEquals(before.text, result.state.text)
+  }
+
+  @Test
+  fun `secao que nao existe nao move o cursor`() {
+    // Episodio sem legenda: a aba fica sem efeito em vez de jogar o cursor num
+    // lugar que nao ha.
+    val state = open(text = emptyList())
+    assertEquals(state.cursor, reduceTrackPanel(state, TrackPanelEvent.Tab(TrackKind.TEXT)).state.cursor)
+  }
+
+  @Test
+  fun `painel fechado ignora as abas`() {
+    val closed = TrackPanelState()
+    assertEquals(closed, reduceTrackPanel(closed, TrackPanelEvent.Tab(TrackKind.TEXT)).state)
+  }
+
+  @Test
+  fun `a aba marcada segue o cursor, mesmo quando ele anda com a seta`() {
+    // Descer da ultima faixa de audio para a primeira legenda TEM que acender a
+    // outra aba: um campo separado para isso poderia discordar do cursor.
+    var state = open()
+    repeat(2) { state = reduceTrackPanel(state, TrackPanelEvent.Move(1)).state }
+    assertEquals(4, state.cursor)
+    assertEquals(TrackKind.TEXT, activeTab(state))
+  }
+
+  @Test
+  fun `painel vazio nao inventa aba`() {
+    assertEquals(TrackKind.AUDIO, activeTab(TrackPanelState()))
+  }
+
+  // Detalhe e nota do rodape
+
+  @Test
+  fun `o detalhe junta codec, arranjo e a posicao da faixa`() {
+    assertEquals("eac3 · 5.1 · faixa 1", formatTrackDetail("audio/eac3", 6, 0))
+    assertEquals("aac · estéreo · faixa 2", formatTrackDetail("audio/aac", 2, 1))
+  }
+
+  @Test
+  fun `o que o container nao disse nao aparece no detalhe`() {
+    assertEquals("faixa 1", formatTrackDetail(null, 0, 0))
+    assertEquals("subrip · faixa 3", formatTrackDetail("application/subrip", -1, 2))
+  }
+
+  @Test
+  fun `arranjo incomum sai em numero de canais`() {
+    assertEquals("mono", formatChannelLayout(1))
+    assertEquals("7.1", formatChannelLayout(8))
+    assertEquals("3 canais", formatChannelLayout(3))
+    assertNull(formatChannelLayout(0))
+  }
+
+  @Test
+  fun `a nota do rodape muda com o interruptor`() {
+    assertTrue(panelNote(remember = true).startsWith("A escolha vale para a casa toda"))
+    assertTrue(panelNote(remember = false).startsWith("A escolha vale só nesta sessão"))
+  }
+
   // Escolha
 
   @Test

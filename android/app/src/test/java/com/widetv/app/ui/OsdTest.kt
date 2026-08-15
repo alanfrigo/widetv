@@ -1,6 +1,7 @@
 package com.widetv.app.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -108,5 +109,69 @@ class OsdTest {
   @Test
   fun `altura desconhecida nao ganha selo`() {
     assertNull(formatResolutionBadge(null))
+  }
+
+  // Linha do card e do overlay
+
+  @Test
+  fun `o subtitulo do card junta codigo e titulo`() {
+    assertEquals("S02E14 · Titulo", formatEpisodeSub(ep()))
+  }
+
+  @Test
+  fun `sem numeracao sobra o titulo inteiro`() {
+    val episode = ep(title = "Especial de Natal", season = null, episode = null)
+    assertEquals("Especial de Natal", formatEpisodeSub(episode))
+  }
+
+  // Overlay do player
+
+  @Test
+  fun `o selo do canal e escrito por extenso`() {
+    assertEquals("Canal 07", formatChannelBadge(7))
+  }
+
+  @Test
+  fun `o relogio do scrub so ganha hora quando passa dela`() {
+    assertEquals("0:00", formatClock(0))
+    assertEquals("12:34", formatClock(754_000))
+    assertEquals("1:02:03", formatClock(3_723_000))
+    // Posicao negativa aparece no ExoPlayer antes do primeiro quadro.
+    assertEquals("0:00", formatClock(-5))
+  }
+
+  @Test
+  fun `o canto esquerdo do scrub diz onde esta no episodio`() {
+    assertEquals("12:34 no episódio", formatScrubLeft(754_000))
+  }
+
+  @Test
+  fun `ao vivo o recado explica por que a barra nao obedece`() {
+    assertEquals("ao vivo · a grade não para", formatScrubNote(live = true, remainingMs = 60_000))
+  }
+
+  @Test
+  fun `sob demanda o recado vira o quanto falta`() {
+    assertEquals("faltam 4 min", formatScrubNote(live = false, remainingMs = 4 * 60_000L))
+    assertEquals("", formatScrubNote(live = false, remainingMs = 0))
+  }
+
+  @Test
+  fun `a hora do proximo arredonda para cima e nunca fica negativa`() {
+    assertEquals("em 9 min", formatUpNextTime(endsAtMs = 540_000, nowMs = 0))
+    assertEquals("em 1 min", formatUpNextTime(endsAtMs = 30_000, nowMs = 0))
+    assertEquals("agora", formatUpNextTime(endsAtMs = 0, nowMs = 10_000))
+  }
+
+  @Test
+  fun `a dica de teclado nao anuncia tecla que o modo recusa`() {
+    // Ao vivo nao ha pausa nem salto; ensinar o gesto errado e pior que calar.
+    val live = playerHint(live = true)
+    assertTrue(live.contains("trocar de canal"))
+    assertFalse(live.contains("pausar"))
+
+    val vod = playerHint(live = false)
+    assertTrue(vod.contains("pausar"))
+    assertFalse(vod.contains("trocar de canal"))
   }
 }

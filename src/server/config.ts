@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 
 import { isValidPasswordHash } from './auth/password';
+import type { SecureCookiePolicy } from './auth/session';
 import type { RescanTime } from './library/rescan-timer';
 
 /**
@@ -23,7 +24,12 @@ export interface AppConfig {
   channelEpochMs: number;
   authPasswordHash: string;
   sessionSecret: string;
-  secureCookies: boolean;
+  /**
+   * `true`/`false` mandam sempre; qualquer outra coisa (inclusive ausente) e
+   * `auto`, que marca `Secure` so quando a chamada chegou por HTTPS. Veja o
+   * porque em `auth/session.ts`.
+   */
+  secureCookies: SecureCookiePolicy;
   /** Indexa o acervo sozinho quando o indice ainda nao existe. */
   autoScan: boolean;
   /**
@@ -32,6 +38,12 @@ export interface AppConfig {
    * espaco em DATA_DIR, entao da para desligar.
    */
   autoRemux: boolean;
+  /**
+   * Tira um quadro de cada episodio, em segundo plano, para a lista de
+   * episodios e as faixas do catalogo. Um ffmpeg por episodio: barato por
+   * arquivo, longo num acervo grande - por isso da para desligar.
+   */
+  autoThumbs: boolean;
   /**
    * Horario LOCAL do rescan diario da biblioteca (adiciona e remove episodios
    * sozinho). `null` quando desligado (RESCAN_TIME=off).
@@ -64,6 +76,22 @@ function required(env: Env, key: string): string {
     throw new ConfigError(`${key} e obrigatorio. Veja .env.example.`);
   }
   return raw;
+}
+
+/**
+ * `SECURE_COOKIES` e tri-estado.
+ *
+ * O default mudou de "sempre Secure" para `auto` porque "sempre" quebrava o
+ * caso normal do app: servidor numa casa, aparelhos falando por HTTP na LAN.
+ * O cookie era guardado e nunca reenviado, e o app de TV ficava piscando entre
+ * login e catalogo. `auto` ainda marca `Secure` assim que existe TLS - direto
+ * ou por `x-forwarded-proto` -, e quem quer a garantia dura escreve `true`.
+ */
+function parseSecureCookies(raw: string | undefined): SecureCookiePolicy {
+  const value = raw?.trim().toLowerCase();
+  if (value === 'false') return 'never';
+  if (value === 'true') return 'always';
+  return 'auto';
 }
 
 function parsePort(raw: string | undefined): number {
@@ -168,13 +196,15 @@ export function loadConfig(env: Env): AppConfig {
     channelEpochMs: parseEpoch(env.CHANNEL_EPOCH),
     authPasswordHash,
     sessionSecret,
-    // Default seguro: so desliga quem escrever exatamente "false".
-    secureCookies: env.SECURE_COOKIES?.trim().toLowerCase() !== 'false',
+    secureCookies: parseSecureCookies(env.SECURE_COOKIES),
     // Ligado por padrao: quem sobe isto num NAS nao tem shell no container, e
     // um deploy novo sem indice nao serve canal nenhum.
     autoScan: env.AUTO_SCAN?.trim().toLowerCase() !== 'false',
     // Mesma regra do AUTO_SCAN: so "false" desliga.
     autoRemux: env.AUTO_REMUX?.trim().toLowerCase() !== 'false',
+    // Idem. Ligado por padrao porque o desenho das telas e feito de miniaturas:
+    // sem elas o acervo inteiro abre listrado.
+    autoThumbs: env.AUTO_THUMBS?.trim().toLowerCase() !== 'false',
     rescanTime: parseRescanTimeEnv(env.RESCAN_TIME),
     // Mesma regra do AUTO_SCAN: so "false" desliga. Ligado por padrao porque o
     // acervo tipico vem de release em pasta por temporada.

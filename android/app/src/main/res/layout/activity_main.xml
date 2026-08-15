@@ -4,8 +4,12 @@
   serie, configuracoes e portao de acesso. Trocar de tela e trocar visibilidade
   — nao ha Fragment, nao ha navegacao e nao ha transicao a esperar.
 
-  A ordem so importa no empilhamento: o portao fica por ultimo porque, quando
-  aparece, nada mais pode receber foco.
+  A ordem importa no empilhamento: o player fica embaixo (as outras telas o
+  cobrem quando aparecem) e o portao fica por ultimo porque, quando aparece,
+  nada mais pode receber foco.
+
+  O desenho e de 1440 px de largura; a TV alvo e 1080p, que da ~960dp. Logo
+  1 px do desenho = 0.75 dp. Toda medida solta neste arquivo ja esta convertida.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -16,7 +20,9 @@
     android:focusable="true"
     android:focusableInTouchMode="true">
 
-    <!-- ================= PLAYER ================= -->
+    <!-- ============================================================
+         PLAYER
+         ============================================================ -->
     <FrameLayout
         android:id="@+id/player_screen"
         android:layout_width="match_parent"
@@ -25,9 +31,10 @@
         android:visibility="gone">
 
         <!--
-          Sem controles na tela: o controle remoto ja e a interface, e uma barra
-          de play flutuando tiraria espaco do desenho. As legendas escolhidas no
-          painel saem pela SubtitleView que a propria PlayerView carrega.
+          A PlayerView nao desenha controle nenhum: o overlay abaixo e a
+          interface inteira, desenhada com as regras do projeto. As legendas
+          escolhidas no painel saem pela SubtitleView que a propria PlayerView
+          carrega.
         -->
         <androidx.media3.ui.PlayerView
             android:id="@+id/stage"
@@ -45,485 +52,1814 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|start"
-            android:layout_margin="@dimen/space_lg"
-            android:background="@drawable/osd_pill"
+            android:layout_marginStart="@dimen/page_x"
+            android:layout_marginBottom="@dimen/page_x"
+            android:background="@drawable/pill"
             android:maxLines="1"
-            android:paddingStart="@dimen/space_md"
-            android:paddingTop="10dp"
-            android:paddingEnd="@dimen/space_md"
-            android:paddingBottom="10dp"
+            android:paddingStart="14dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="8dp"
             android:textColor="@color/text"
-            android:textSize="@dimen/text_osd"
+            android:textSize="@dimen/text_card"
             android:visibility="gone" />
 
         <!--
-          Painel de trilhas (OK durante a reproducao). Lateral, e nao modal no
-          centro: quem escolhe legenda quer ver o efeito na cena atras.
+          Overlay do player: duas faixas com degrade, uma em cima e outra
+          embaixo, e o video inteiro visivel no meio. Some junto (o pai some),
+          por isso as faixas nao precisam de visibilidade propria.
+        -->
+        <FrameLayout
+            android:id="@+id/overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
 
-          `blocksDescendants`: o cursor do painel e do reducer. Se as linhas
-          fossem focaveis, o RecyclerView comeria as setas antes de elas
-          chegarem ao `onKeyDown` da Activity.
+            <!-- Faixa de cima: 28px 48px 64px no desenho. -->
+            <LinearLayout
+                android:id="@+id/overlay_top"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top"
+                android:background="@drawable/scrim_top"
+                android:gravity="top"
+                android:orientation="horizontal"
+                android:paddingStart="@dimen/page_x"
+                android:paddingTop="21dp"
+                android:paddingEnd="@dimen/page_x"
+                android:paddingBottom="48dp">
+
+                <TextView
+                    android:id="@+id/live_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:background="@drawable/pill_live"
+                    android:gravity="center"
+                    android:letterSpacing="0.14"
+                    android:paddingStart="11dp"
+                    android:paddingEnd="11dp"
+                    android:text="@string/player_live"
+                    android:textAllCaps="true"
+                    android:textColor="@color/live_ink"
+                    android:textSize="@dimen/text_micro"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/channel_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginStart="11dp"
+                    android:background="@drawable/pill"
+                    android:gravity="center"
+                    android:letterSpacing="0.06"
+                    android:paddingStart="11dp"
+                    android:paddingEnd="11dp"
+                    android:textColor="@color/text"
+                    android:textSize="@dimen/text_meta"
+                    android:textStyle="bold" />
+
+                <!-- Empurra o bloco "A seguir" para a direita. -->
+                <Space
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <LinearLayout
+                    android:id="@+id/upnext"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="end"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:letterSpacing="0.16"
+                        android:text="@string/player_upnext"
+                        android:textAllCaps="true"
+                        android:textColor="@color/muted"
+                        android:textSize="@dimen/text_tag"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/upnext_title"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:maxWidth="330dp"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/upnext_time"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:textColor="@color/muted"
+                        android:textSize="@dimen/text_meta" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Faixa de baixo: 110px 48px 34px no desenho. -->
+            <LinearLayout
+                android:id="@+id/overlay_bottom"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom"
+                android:background="@drawable/scrim_bottom"
+                android:orientation="vertical"
+                android:paddingStart="@dimen/page_x"
+                android:paddingTop="83dp"
+                android:paddingEnd="@dimen/page_x"
+                android:paddingBottom="26dp">
+
+                <!-- Cabecalho: nome da serie + titulo a esquerda, botoes a direita. -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="17dp"
+                    android:gravity="bottom"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/overlay_show"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginBottom="5dp"
+                            android:ellipsize="end"
+                            android:letterSpacing="0.16"
+                            android:maxLines="1"
+                            android:textAllCaps="true"
+                            android:textColor="@color/accent"
+                            android:textSize="@dimen/text_meta"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/overlay_title"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:ellipsize="end"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:letterSpacing="-0.03"
+                            android:maxLines="1"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_player"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tracks_open"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:nextFocusDown="@id/play_toggle"
+                        android:nextFocusRight="@id/fullscreen"
+                        android:paddingStart="15dp"
+                        android:paddingEnd="15dp"
+                        android:text="@string/tracks_open"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/fullscreen"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:nextFocusDown="@id/play_toggle"
+                        android:nextFocusLeft="@id/tracks_open"
+                        android:text="@string/glyph_fullscreen"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Linha de transporte: play, trilho e controles da direita. -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/play_toggle"
+                        android:layout_width="45dp"
+                        android:layout_height="45dp"
+                        android:background="@drawable/play_circle"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:nextFocusUp="@id/tracks_open"
+                        android:nextFocusRight="@id/seek_back"
+                        android:text="@string/glyph_play"
+                        android:textColor="@color/accent_ink"
+                        android:textSize="@dimen/text_card" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="15dp"
+                        android:layout_marginEnd="15dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <!--
+                          `minHeight`/`maxHeight` iguais a altura: sem isso o
+                          ProgressBar impoe a altura minima do tema e o trilho
+                          fica gordo demais.
+                        -->
+                        <ProgressBar
+                            android:id="@+id/scrub_bar"
+                            style="?android:attr/progressBarStyleHorizontal"
+                            android:layout_width="match_parent"
+                            android:layout_height="4.5dp"
+                            android:indeterminate="false"
+                            android:max="1000"
+                            android:maxHeight="4.5dp"
+                            android:minHeight="4.5dp"
+                            android:progressDrawable="@drawable/progress_track" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:id="@+id/scrub_left"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:textColor="@color/text_2"
+                                android:textSize="@dimen/text_meta"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/scrub_note"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:gravity="center"
+                                android:maxLines="1"
+                                android:textColor="@color/muted"
+                                android:textSize="@dimen/text_meta"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/scrub_right"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:textColor="@color/text_2"
+                                android:textSize="@dimen/text_meta"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/seek_back"
+                        android:layout_width="33dp"
+                        android:layout_height="33dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:nextFocusLeft="@id/play_toggle"
+                        android:nextFocusRight="@id/seek_fwd"
+                        android:text="@string/player_seek_back"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_micro"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/seek_fwd"
+                        android:layout_width="33dp"
+                        android:layout_height="33dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:nextFocusLeft="@id/seek_back"
+                        android:text="@string/player_seek_fwd"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_micro"
+                        android:textStyle="bold" />
+
+                    <!--
+                      O volume nao e focavel: quem manda e a tecla de volume do
+                      controle. A pilula so mostra o nivel.
+                    -->
+                    <LinearLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="33dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:importantForAccessibility="no"
+                            android:text="@string/glyph_volume"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_micro"
+                            android:textStyle="bold" />
+
+                        <!--
+                          Trilho e preenchimento sao duas Views porque o Kotlin
+                          troca a largura do `volume_fill` direto — mais barato
+                          que animar um ProgressBar a cada tecla de volume.
+                        -->
+                        <FrameLayout
+                            android:id="@+id/volume"
+                            android:layout_width="54dp"
+                            android:layout_height="3dp"
+                            android:layout_marginStart="8dp"
+                            android:background="@color/white_22">
+
+                            <View
+                                android:id="@+id/volume_fill"
+                                android:layout_width="27dp"
+                                android:layout_height="match_parent"
+                                android:background="@color/text" />
+                        </FrameLayout>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/overlay_hint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:letterSpacing="0.02"
+                    android:text="@string/player_hint_vod"
+                    android:textColor="@color/dim"
+                    android:textSize="@dimen/text_micro"
+                    android:textStyle="bold" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- Veu do painel de trilhas: escurece o video sem esconde-lo. -->
+        <View
+            android:id="@+id/tracks_veil"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/overlay_veil"
+            android:visibility="gone" />
+
+        <!--
+          Painel de trilhas. Lateral, e nao modal no centro: quem escolhe
+          legenda quer ver o efeito na cena atras.
         -->
         <LinearLayout
             android:id="@+id/tracks"
-            android:layout_width="@dimen/track_panel_width"
+            android:layout_width="@dimen/panel_w"
             android:layout_height="match_parent"
             android:layout_gravity="end"
             android:background="@drawable/panel_bg"
             android:orientation="vertical"
-            android:paddingStart="@dimen/space_md"
-            android:paddingTop="@dimen/space_lg"
-            android:paddingEnd="@dimen/space_md"
-            android:paddingBottom="@dimen/space_lg"
+            android:paddingStart="27dp"
+            android:paddingTop="27dp"
+            android:paddingEnd="27dp"
+            android:paddingBottom="21dp"
             android:visibility="gone">
 
-            <TextView
-                android:layout_width="wrap_content"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:paddingStart="@dimen/space_sm"
-                android:text="@string/tracks_title"
-                android:textColor="@color/text"
-                android:textSize="26sp"
-                android:textStyle="bold" />
+                android:orientation="horizontal">
 
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="@font/manrope_extrabold"
+                        android:letterSpacing="-0.02"
+                        android:text="@string/tracks_title"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_panel"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tracks_sub"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:textColor="@color/muted"
+                        android:textSize="@dimen/text_meta"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tracks_close"
+                    android:layout_width="30dp"
+                    android:layout_height="30dp"
+                    android:layout_marginStart="10dp"
+                    android:background="@drawable/btn_soft"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/glyph_close"
+                    android:textColor="@color/text_2"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
+
+            <!--
+              Segmented control. O trilho reaproveita `row_track` (branco 4% com
+              raio 14) porque o desenho pede exatamente esse retangulo.
+            -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:background="@drawable/row_track"
+                android:orientation="horizontal"
+                android:padding="4dp">
+
+                <TextView
+                    android:id="@+id/tab_audio"
+                    android:layout_width="0dp"
+                    android:layout_height="33dp"
+                    android:layout_marginEnd="2dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/season_tab"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/tracks_audio"
+                    android:textColor="@color/text_2"
+                    android:textSize="@dimen/text_card"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tab_subs"
+                    android:layout_width="0dp"
+                    android:layout_height="33dp"
+                    android:layout_marginStart="2dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/season_tab"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/tracks_subtitles"
+                    android:textColor="@color/text_2"
+                    android:textSize="@dimen/text_card"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!--
+              Uma lista so, com cabecalhos de secao (`item_track_header.xml`)
+              separando audio de legendas — no Android o cursor e do reducer, e
+              duas listas dobrariam o caminho do D-pad sem ganho nenhum.
+
+              `blocksDescendants`: se as linhas fossem focaveis, o RecyclerView
+              comeria as setas antes de elas chegarem ao `onKeyDown` da Activity.
+            -->
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/track_list"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
-                android:layout_marginTop="@dimen/space_sm"
+                android:layout_marginTop="18dp"
                 android:layout_weight="1"
+                android:clipToPadding="false"
                 android:descendantFocusability="blocksDescendants"
                 android:focusable="false" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="18dp"
+                android:background="@color/line" />
+
+            <LinearLayout
+                android:id="@+id/track_remember"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:background="@drawable/row_track"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingTop="10dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="10dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/track_remember"
+                    android:textColor="@color/text"
+                    android:textSize="@dimen/text_card"
+                    android:textStyle="bold" />
+
+                <!--
+                  Estado do interruptor vem do Kotlin (`isChecked`); ele proprio
+                  nao recebe foco porque quem confirma e a linha inteira.
+                -->
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/track_remember_switch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="22dp"
+                    android:clickable="false"
+                    android:focusable="false"
+                    android:showText="false"
+                    android:switchMinWidth="39dp"
+                    android:thumb="@drawable/switch_knob"
+                    android:track="@drawable/switch_track" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/panel_note"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:lineSpacingMultiplier="1.5"
+                android:text="@string/panel_note"
+                android:textColor="@color/dim"
+                android:textSize="@dimen/text_micro"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ============================================================
+         CATALOGO
+         ============================================================ -->
+    <FrameLayout
+        android:id="@+id/home"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/surface"
+        android:visibility="gone">
+
+        <!--
+          `clipChildren=false` em toda a cadeia de rolagem: o card focado cresce
+          3% e ganha um contorno de 3dp com folga de 3dp — se qualquer pai
+          cortasse, a fileira apareceria com a borda comida.
+        -->
+        <androidx.core.widget.NestedScrollView
+            android:id="@+id/rows_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:clipChildren="false"
+                android:orientation="vertical"
+                android:paddingBottom="42dp">
+
+                <!--
+                  Hero. A topbar fica sobreposta (irma deste NestedScrollView),
+                  por isso o hero comeca em y=0 e o degrade do proprio scrim faz
+                  o texto da topbar continuar legivel sobre a arte.
+                -->
+                <FrameLayout
+                    android:id="@+id/hero"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/hero_h">
+
+                    <ImageView
+                        android:id="@+id/hero_art"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@drawable/stripes_hero"
+                        android:contentDescription="@string/cd_backdrop"
+                        android:scaleType="centerCrop" />
+
+                    <View
+                        android:id="@+id/hero_scrim"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@drawable/hero_scrim"
+                        android:importantForAccessibility="no" />
+
+                    <LinearLayout
+                        android:layout_width="465dp"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="bottom|start"
+                        android:layout_marginStart="@dimen/page_x"
+                        android:layout_marginBottom="54dp"
+                        android:orientation="vertical">
+
+                        <LinearLayout
+                            android:id="@+id/hero_chip"
+                            android:layout_width="wrap_content"
+                            android:layout_height="23dp"
+                            android:background="@drawable/pill_accent"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingStart="10dp"
+                            android:paddingEnd="10dp">
+
+                            <!-- Ponto do "ao vivo". O pulso e animado no Kotlin. -->
+                            <View
+                                android:layout_width="5dp"
+                                android:layout_height="5dp"
+                                android:background="@drawable/badge_live"
+                                android:importantForAccessibility="no" />
+
+                            <TextView
+                                android:id="@+id/hero_chip_text"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="7dp"
+                                android:letterSpacing="0.16"
+                                android:textAllCaps="true"
+                                android:textColor="@color/accent"
+                                android:textSize="@dimen/text_tag"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+
+                        <TextView
+                            android:id="@+id/hero_title"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="13dp"
+                            android:ellipsize="end"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:letterSpacing="-0.035"
+                            android:maxLines="2"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_hero"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/hero_meta"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="13dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:textColor="@color/text_2"
+                            android:textSize="@dimen/text_card"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/hero_text"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="13dp"
+                            android:ellipsize="end"
+                            android:lineSpacingMultiplier="1.6"
+                            android:maxLines="3"
+                            android:textColor="@color/muted_2"
+                            android:textSize="@dimen/text_body" />
+
+                        <LinearLayout
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="17dp"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:id="@+id/hero_play"
+                                android:layout_width="wrap_content"
+                                android:layout_height="42dp"
+                                android:background="@drawable/btn_primary"
+                                android:focusable="true"
+                                android:fontFamily="@font/manrope_extrabold"
+                                android:gravity="center"
+                                android:nextFocusUp="@id/topbar_nav_home"
+                                android:nextFocusRight="@id/hero_episodes"
+                                android:paddingStart="23dp"
+                                android:paddingEnd="23dp"
+                                android:text="@string/hero_play"
+                                android:textColor="@color/accent_ink"
+                                android:textSize="@dimen/text_button"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/hero_episodes"
+                                android:layout_width="wrap_content"
+                                android:layout_height="42dp"
+                                android:layout_marginStart="9dp"
+                                android:background="@drawable/btn_soft"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:nextFocusUp="@id/topbar_nav_home"
+                                android:nextFocusLeft="@id/hero_play"
+                                android:nextFocusRight="@id/hero_first"
+                                android:paddingStart="20dp"
+                                android:paddingEnd="20dp"
+                                android:text="@string/hero_episodes"
+                                android:textColor="@color/text"
+                                android:textSize="@dimen/text_button"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/hero_first"
+                                android:layout_width="wrap_content"
+                                android:layout_height="42dp"
+                                android:layout_marginStart="9dp"
+                                android:background="@drawable/btn_ghost"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:nextFocusUp="@id/topbar_nav_home"
+                                android:nextFocusLeft="@id/hero_episodes"
+                                android:paddingStart="20dp"
+                                android:paddingEnd="20dp"
+                                android:text="@string/hero_first"
+                                android:textColor="@color/muted_2"
+                                android:textSize="@dimen/text_button"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </FrameLayout>
+
+                <!-- Faixa: No ar agora -->
+                <LinearLayout
+                    android:id="@+id/row_live"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:clipChildren="false"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingEnd="@dimen/page_x">
+
+                        <View
+                            android:layout_width="6dp"
+                            android:layout_height="6dp"
+                            android:background="@drawable/badge_live"
+                            android:importantForAccessibility="no" />
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:text="@string/row_live_title"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_row"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/row_live_aside"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/muted"
+                            android:textSize="@dimen/text_meta"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/rail_live"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:clipChildren="false"
+                        android:clipToPadding="false"
+                        android:descendantFocusability="afterDescendants"
+                        android:nestedScrollingEnabled="false"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingTop="8dp"
+                        android:paddingEnd="@dimen/page_x"
+                        android:paddingBottom="8dp" />
+                </LinearLayout>
+
+                <!-- Faixa: Continuar assistindo. Some quando nao ha historico. -->
+                <LinearLayout
+                    android:id="@+id/row_resume"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/row_gap"
+                    android:clipChildren="false"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingEnd="@dimen/page_x">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:text="@string/row_resume_title"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_row"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/row_resume_aside"
+                            android:textColor="@color/muted"
+                            android:textSize="@dimen/text_meta"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/rail_resume"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:clipChildren="false"
+                        android:clipToPadding="false"
+                        android:descendantFocusability="afterDescendants"
+                        android:nestedScrollingEnabled="false"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingTop="8dp"
+                        android:paddingEnd="@dimen/page_x"
+                        android:paddingBottom="8dp" />
+                </LinearLayout>
+
+                <!-- Faixa: Todo o acervo -->
+                <LinearLayout
+                    android:id="@+id/row_shelf"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/row_gap"
+                    android:clipChildren="false"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingEnd="@dimen/page_x">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:text="@string/row_shelf_title"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_row"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/row_shelf_aside"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/row_shelf_aside"
+                            android:textColor="@color/muted"
+                            android:textSize="@dimen/text_meta"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/rail_shelf"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:clipChildren="false"
+                        android:clipToPadding="false"
+                        android:descendantFocusability="afterDescendants"
+                        android:nestedScrollingEnabled="false"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingTop="8dp"
+                        android:paddingEnd="@dimen/page_x"
+                        android:paddingBottom="8dp" />
+                </LinearLayout>
+            </LinearLayout>
+        </androidx.core.widget.NestedScrollView>
+
+        <!--
+          Topbar sobreposta ao hero. Irma do NestedScrollView (e nao filha dele)
+          para nao rolar junto: o desenho a mostra sempre colada no topo.
+        -->
+        <LinearLayout
+            android:id="@+id/topbar"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/topbar_h"
+            android:layout_gravity="top"
+            android:background="@drawable/scrim_top"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/page_x"
+            android:paddingEnd="@dimen/page_x">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:paddingStart="@dimen/space_sm"
-                android:paddingTop="@dimen/space_sm"
-                android:text="@string/tracks_hint"
-                android:textColor="@color/text_faint"
-                android:textSize="@dimen/text_meta" />
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_wide"
+                android:textAllCaps="true"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_wordmark"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_tv"
+                android:textAllCaps="true"
+                android:textColor="@color/accent"
+                android:textSize="@dimen/text_wordmark"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="27dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/topbar_nav_home"
+                    android:layout_width="wrap_content"
+                    android:layout_height="27dp"
+                    android:background="@drawable/nav_item"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:nextFocusDown="@id/hero_play"
+                    android:nextFocusRight="@id/topbar_nav_live"
+                    android:paddingStart="11dp"
+                    android:paddingEnd="11dp"
+                    android:text="@string/nav_home"
+                    android:textColor="@color/text"
+                    android:textSize="@dimen/text_meta"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/topbar_nav_live"
+                    android:layout_width="wrap_content"
+                    android:layout_height="27dp"
+                    android:layout_marginStart="5dp"
+                    android:background="@drawable/nav_item"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:nextFocusDown="@id/hero_play"
+                    android:nextFocusLeft="@id/topbar_nav_home"
+                    android:nextFocusRight="@id/topbar_nav_shelf"
+                    android:paddingStart="11dp"
+                    android:paddingEnd="11dp"
+                    android:text="@string/nav_live"
+                    android:textColor="@color/muted"
+                    android:textSize="@dimen/text_meta"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/topbar_nav_shelf"
+                    android:layout_width="wrap_content"
+                    android:layout_height="27dp"
+                    android:layout_marginStart="5dp"
+                    android:background="@drawable/nav_item"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:nextFocusDown="@id/hero_play"
+                    android:nextFocusLeft="@id/topbar_nav_live"
+                    android:nextFocusRight="@id/topbar_search_input"
+                    android:paddingStart="11dp"
+                    android:paddingEnd="11dp"
+                    android:text="@string/nav_shelf"
+                    android:textColor="@color/muted"
+                    android:textSize="@dimen/text_meta"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:id="@+id/topbar_search"
+                android:layout_width="195dp"
+                android:layout_height="30dp"
+                android:background="@drawable/pill"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:importantForAccessibility="no"
+                    android:text="@string/glyph_search"
+                    android:textColor="@color/muted"
+                    android:textSize="@dimen/text_meta" />
+
+                <EditText
+                    android:id="@+id/topbar_search_input"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:autofillHints="no"
+                    android:background="@null"
+                    android:gravity="center_vertical"
+                    android:hint="@string/search_hint"
+                    android:imeOptions="actionSearch"
+                    android:inputType="text"
+                    android:nextFocusDown="@id/hero_play"
+                    android:nextFocusLeft="@id/topbar_nav_shelf"
+                    android:nextFocusRight="@id/home_settings"
+                    android:singleLine="true"
+                    android:textColor="@color/text"
+                    android:textColorHint="@color/muted"
+                    android:textSize="@dimen/text_meta" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/home_settings"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/pill"
+                android:focusable="true"
+                android:gravity="center"
+                android:nextFocusDown="@id/hero_play"
+                android:nextFocusLeft="@id/topbar_search_input"
+                android:nextFocusRight="@id/home_logout"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="@string/settings_open"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_meta"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/home_logout"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/pill"
+                android:focusable="true"
+                android:gravity="center"
+                android:nextFocusDown="@id/hero_play"
+                android:nextFocusLeft="@id/home_settings"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="@string/home_logout"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_meta"
+                android:textStyle="bold" />
         </LinearLayout>
+
+        <!-- Estado vazio / carregando. Cobre o hero, que sem dados nao existe. -->
+        <TextView
+            android:id="@+id/home_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:textColor="@color/muted"
+            android:textSize="@dimen/text_body"
+            android:visibility="gone" />
     </FrameLayout>
 
-    <!-- ================= CATALOGO ================= -->
-    <LinearLayout
-        android:id="@+id/home"
+    <!-- ============================================================
+         SERIE
+         ============================================================ -->
+    <FrameLayout
+        android:id="@+id/series"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@color/bg"
-        android:orientation="vertical"
-        android:paddingStart="@dimen/space_xl"
-        android:paddingTop="@dimen/space_lg"
-        android:paddingEnd="@dimen/space_xl"
+        android:background="@color/surface"
         android:visibility="gone">
 
         <!--
-          O acesso as configuracoes fica no cabecalho, e nao numa tecla nem num
-          card da grade: e uma seta para CIMA a partir da primeira fileira, que e
-          um caminho que quem so quer assistir nunca percorre — o foco nasce num
-          card e desce dali. `nextFocusDown` traz o foco de volta a grade, senao
-          ele desceria pelo vao a esquerda do botao e nao acharia nada.
+          Backdrop fixo no fundo. O conteudo sobe por cima dele com um
+          `paddingTop` menor que a altura do hero (322dp - 142dp de
+          sobreposicao = 180dp), que e a margem negativa do desenho.
         -->
-        <LinearLayout
+        <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:layout_height="@dimen/shero_h"
+            android:layout_gravity="top">
+
+            <ImageView
+                android:id="@+id/series_backdrop"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/stripes_hero"
+                android:contentDescription="@string/cd_backdrop"
+                android:scaleType="centerCrop" />
+
+            <View
+                android:id="@+id/series_backdrop_scrim"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/hero_scrim"
+                android:importantForAccessibility="no" />
+        </FrameLayout>
+
+        <androidx.core.widget.NestedScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:paddingTop="180dp">
 
             <LinearLayout
-                android:layout_width="0dp"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <!-- Bloco principal: capa 2:3 ao lado da coluna de texto. -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:paddingStart="@dimen/page_x"
+                    android:paddingEnd="@dimen/page_x">
+
+                    <com.widetv.app.ui.PosterFrame
+                        android:id="@+id/series_art"
+                        android:layout_width="@dimen/series_cover_w"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/stripes">
+
+                        <ImageView
+                            android:id="@+id/series_poster"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:contentDescription="@string/cd_poster"
+                            android:scaleType="centerCrop"
+                            android:visibility="gone" />
+
+                        <TextView
+                            android:id="@+id/series_initials"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:gravity="center"
+                            android:textColor="@color/ghost"
+                            android:textSize="@dimen/text_shero"
+                            android:textStyle="bold" />
+                    </com.widetv.app.ui.PosterFrame>
+
+                    <!--
+                      `paddingTop` de 72dp (96px): o desenho alinha o topo do
+                      texto abaixo do topo da capa, que sobe mais que o texto.
+                    -->
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="30dp"
+                        android:layout_weight="1"
+                        android:orientation="vertical"
+                        android:paddingTop="72dp">
+
+                        <TextView
+                            android:id="@+id/series_channel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="21dp"
+                            android:background="@drawable/pill_accent"
+                            android:gravity="center"
+                            android:letterSpacing="0.16"
+                            android:paddingStart="9dp"
+                            android:paddingEnd="9dp"
+                            android:textAllCaps="true"
+                            android:textColor="@color/accent"
+                            android:textSize="@dimen/text_tag"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/series_title"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:ellipsize="end"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:letterSpacing="-0.035"
+                            android:maxLines="2"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_shero"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/series_meta"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="9dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:textColor="@color/text_2"
+                            android:textSize="@dimen/text_card"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/series_overview"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:ellipsize="end"
+                            android:lineSpacingMultiplier="1.65"
+                            android:maxLines="4"
+                            android:textColor="@color/muted_2"
+                            android:textSize="@dimen/text_card" />
+
+                        <LinearLayout
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="18dp"
+                            android:orientation="horizontal">
+
+                            <!--
+                              O rotulo muda ("Continuar S01E08" / "Do inicio"),
+                              por isso o botao e um bloco com `series_resume_text`
+                              dentro em vez de um TextView so.
+                            -->
+                            <LinearLayout
+                                android:id="@+id/series_resume"
+                                android:layout_width="wrap_content"
+                                android:layout_height="41dp"
+                                android:background="@drawable/btn_primary"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:nextFocusRight="@id/series_live"
+                                android:orientation="horizontal"
+                                android:paddingStart="21dp"
+                                android:paddingEnd="21dp">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:importantForAccessibility="no"
+                                    android:text="@string/glyph_play"
+                                    android:textColor="@color/accent_ink"
+                                    android:textSize="@dimen/text_micro" />
+
+                                <TextView
+                                    android:id="@+id/series_resume_text"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="8dp"
+                                    android:fontFamily="@font/manrope_extrabold"
+                                    android:text="@string/series_start"
+                                    android:textColor="@color/accent_ink"
+                                    android:textSize="@dimen/text_button"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <LinearLayout
+                                android:id="@+id/series_live"
+                                android:layout_width="wrap_content"
+                                android:layout_height="41dp"
+                                android:layout_marginStart="9dp"
+                                android:background="@drawable/btn_soft"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:nextFocusLeft="@id/series_resume"
+                                android:nextFocusRight="@id/series_start"
+                                android:orientation="horizontal"
+                                android:paddingStart="18dp"
+                                android:paddingEnd="18dp">
+
+                                <View
+                                    android:layout_width="6dp"
+                                    android:layout_height="6dp"
+                                    android:background="@drawable/badge_live"
+                                    android:importantForAccessibility="no" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="7dp"
+                                    android:text="@string/series_live"
+                                    android:textColor="@color/text"
+                                    android:textSize="@dimen/text_button"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/series_start"
+                                android:layout_width="wrap_content"
+                                android:layout_height="41dp"
+                                android:layout_marginStart="9dp"
+                                android:background="@drawable/btn_ghost"
+                                android:focusable="true"
+                                android:gravity="center"
+                                android:nextFocusLeft="@id/series_live"
+                                android:paddingStart="18dp"
+                                android:paddingEnd="18dp"
+                                android:text="@string/series_start"
+                                android:textColor="@color/muted_2"
+                                android:textSize="@dimen/text_button"
+                                android:textStyle="bold" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!--
+                  Daqui para baixo o fundo e opaco: cobre o que sobra do
+                  backdrop quando a pagina rola.
+                -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="30dp"
+                    android:background="@color/surface"
+                    android:orientation="vertical"
+                    android:paddingBottom="42dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="bottom"
+                        android:orientation="horizontal"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingEnd="@dimen/page_x"
+                        android:paddingBottom="13dp">
+
+                        <androidx.recyclerview.widget.RecyclerView
+                            android:id="@+id/season_tabs"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:clipToPadding="false"
+                            android:descendantFocusability="afterDescendants"
+                            android:nestedScrollingEnabled="false" />
+
+                        <TextView
+                            android:id="@+id/season_aside"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="12dp"
+                            android:layout_marginBottom="12dp"
+                            android:textColor="@color/muted"
+                            android:textSize="@dimen/text_meta"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginStart="@dimen/page_x"
+                        android:layout_marginEnd="@dimen/page_x"
+                        android:background="@color/line" />
+
+                    <!--
+                      `nestedScrollingEnabled=false`: quem rola e o
+                      NestedScrollView de fora; a lista so se estica.
+                    -->
+                    <androidx.recyclerview.widget.RecyclerView
+                        android:id="@+id/series_episodes"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:clipToPadding="false"
+                        android:descendantFocusability="afterDescendants"
+                        android:nestedScrollingEnabled="false"
+                        android:paddingStart="@dimen/page_x"
+                        android:paddingEnd="@dimen/page_x" />
+                </LinearLayout>
+            </LinearLayout>
+        </androidx.core.widget.NestedScrollView>
+
+        <!-- Barra sobreposta ao backdrop: voltar + wordmark. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/topbar_h"
+            android:layout_gravity="top"
+            android:background="@drawable/scrim_top"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/page_x"
+            android:paddingEnd="@dimen/page_x">
+
+            <TextView
+                android:id="@+id/series_back"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:background="@drawable/pill"
+                android:focusable="true"
+                android:gravity="center"
+                android:nextFocusDown="@id/series_resume"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="@string/action_back"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_meta"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="15dp"
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_wide"
+                android:textAllCaps="true"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_wordmark"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_tv"
+                android:textAllCaps="true"
+                android:textColor="@color/accent"
+                android:textSize="@dimen/text_wordmark"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </FrameLayout>
+
+    <!-- ============================================================
+         CONFIGURACOES
+         ============================================================ -->
+    <LinearLayout
+        android:id="@+id/settings"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/surface"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/topbar_h"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="@dimen/page_x"
+            android:paddingEnd="@dimen/page_x">
+
+            <TextView
+                android:id="@+id/settings_back"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:background="@drawable/pill"
+                android:focusable="true"
+                android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:text="@string/action_back"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_meta"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="15dp"
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_wide"
+                android:textAllCaps="true"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_wordmark"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_tv"
+                android:textAllCaps="true"
+                android:textColor="@color/accent"
+                android:textSize="@dimen/text_wordmark"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <androidx.core.widget.NestedScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:paddingStart="@dimen/page_x"
+            android:paddingTop="12dp"
+            android:paddingEnd="@dimen/page_x"
+            android:paddingBottom="42dp">
+
+            <!-- Coluna central de 735dp (980px no desenho). -->
+            <LinearLayout
+                android:layout_width="735dp"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
                 android:orientation="vertical">
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:letterSpacing="0.22"
-                    android:text="@string/gate_wordmark"
-                    android:textColor="@color/accent"
-                    android:textSize="@dimen/text_section"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_xs"
-                    android:text="@string/home_title"
+                    android:fontFamily="@font/manrope_extrabold"
+                    android:letterSpacing="-0.03"
+                    android:text="@string/settings_title"
                     android:textColor="@color/text"
-                    android:textSize="@dimen/text_title"
+                    android:textSize="@dimen/text_settings"
                     android:textStyle="bold" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/home_settings"
-                style="@style/WideTv.Button"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:nextFocusDown="@id/home_grid"
-                android:text="@string/settings_open" />
-        </LinearLayout>
-
-        <FrameLayout
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="@dimen/space_md"
-            android:layout_weight="1">
-
-            <!--
-              `clipChildren=false` + folga em volta: o card em foco cresce 6% e
-              precisa de onde crescer, senao a fileira da borda aparece cortada.
-            -->
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/home_grid"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:clipChildren="false"
-                android:clipToPadding="false"
-                android:descendantFocusability="afterDescendants"
-                android:paddingStart="@dimen/space_sm"
-                android:paddingTop="@dimen/space_sm"
-                android:paddingEnd="@dimen/space_sm"
-                android:paddingBottom="@dimen/space_lg" />
-
-            <TextView
-                android:id="@+id/home_status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:textColor="@color/text_dim"
-                android:textSize="@dimen/text_body"
-                android:visibility="gone" />
-        </FrameLayout>
-    </LinearLayout>
-
-    <!-- ================= SERIE ================= -->
-    <LinearLayout
-        android:id="@+id/series"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/bg"
-        android:orientation="horizontal"
-        android:paddingStart="@dimen/space_xl"
-        android:paddingTop="@dimen/space_lg"
-        android:paddingEnd="@dimen/space_xl"
-        android:paddingBottom="@dimen/space_lg"
-        android:visibility="gone">
-
-        <com.widetv.app.ui.PosterFrame
-            android:id="@+id/series_art"
-            android:layout_width="@dimen/series_poster_width"
-            android:layout_height="wrap_content"
-            android:background="@drawable/poster_placeholder">
-
-            <ImageView
-                android:id="@+id/series_poster"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:contentDescription="@string/cd_poster"
-                android:scaleType="centerCrop"
-                android:visibility="gone" />
-
-            <TextView
-                android:id="@+id/series_initials"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:gravity="center"
-                android:textColor="@color/text_faint"
-                android:textSize="64sp"
-                android:textStyle="bold" />
-        </com.widetv.app.ui.PosterFrame>
-
-        <LinearLayout
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_marginStart="@dimen/space_lg"
-            android:layout_weight="1"
-            android:orientation="vertical">
-
-            <TextView
-                android:id="@+id/series_title"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:ellipsize="end"
-                android:maxLines="2"
-                android:textColor="@color/text"
-                android:textSize="@dimen/text_title"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/series_meta"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_xs"
-                android:textColor="@color/text_dim"
-                android:textSize="@dimen/text_body" />
-
-            <TextView
-                android:id="@+id/series_overview"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_sm"
-                android:ellipsize="end"
-                android:lineSpacingMultiplier="1.25"
-                android:maxLines="5"
-                android:textColor="@color/text_dim"
-                android:textSize="@dimen/text_body" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_md"
-                android:orientation="horizontal">
 
                 <TextView
-                    android:id="@+id/series_live"
-                    style="@style/WideTv.Button"
-                    android:layout_width="wrap_content"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="@string/series_live" />
-
-                <TextView
-                    android:id="@+id/series_start"
-                    style="@style/WideTv.Button"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="@dimen/space_sm"
-                    android:text="@string/series_start" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_md"
-                android:letterSpacing="0.16"
-                android:text="@string/series_episodes"
-                android:textColor="@color/text_faint"
-                android:textSize="@dimen/text_meta"
-                android:textStyle="bold" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/series_episodes"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_marginTop="@dimen/space_xs"
-                android:layout_weight="1"
-                android:clipToPadding="false"
-                android:descendantFocusability="afterDescendants" />
-        </LinearLayout>
-    </LinearLayout>
-
-    <!-- ================= CONFIGURACOES ================= -->
-    <LinearLayout
-        android:id="@+id/settings"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/bg"
-        android:orientation="vertical"
-        android:paddingStart="@dimen/space_xl"
-        android:paddingTop="@dimen/space_lg"
-        android:paddingEnd="@dimen/space_xl"
-        android:paddingBottom="@dimen/space_lg"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:letterSpacing="0.22"
-            android:text="@string/gate_wordmark"
-            android:textColor="@color/accent"
-            android:textSize="@dimen/text_section"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_xs"
-            android:text="@string/settings_title"
-            android:textColor="@color/text"
-            android:textSize="@dimen/text_title"
-            android:textStyle="bold" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="@dimen/space_md"
-            android:layout_weight="1"
-            android:orientation="horizontal">
-
-            <!--
-              O cursor da lista e do reducer, como no painel de trilhas:
-              `blocksDescendants` para as setas chegarem inteiras ao `onKeyDown`
-              da Activity em vez de serem comidas pelo RecyclerView.
-            -->
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/settings_list"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1.4"
-                android:descendantFocusability="blocksDescendants"
-                android:focusable="false" />
-
-            <!-- Estado da biblioteca: um scan leva minutos e a tela tem que provar que anda. -->
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="@dimen/space_lg"
-                android:layout_weight="1"
-                android:background="@drawable/panel_bg"
-                android:orientation="vertical"
-                android:padding="@dimen/space_md">
+                    android:layout_marginTop="5dp"
+                    android:lineSpacingMultiplier="1.4"
+                    android:text="@string/settings_hint"
+                    android:textColor="@color/muted"
+                    android:textSize="@dimen/text_card"
+                    android:textStyle="bold" />
 
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:letterSpacing="0.16"
+                    android:layout_marginTop="30dp"
+                    android:letterSpacing="0.18"
+                    android:text="@string/settings_group_playback"
+                    android:textAllCaps="true"
+                    android:textColor="@color/dim"
+                    android:textSize="@dimen/text_tag"
+                    android:textStyle="bold" />
+
+                <!--
+                  O cursor da lista e do reducer, como no painel de trilhas:
+                  `blocksDescendants` para as setas chegarem inteiras ao
+                  `onKeyDown` da Activity em vez de serem comidas pelo
+                  RecyclerView. `nestedScrollingEnabled=false` porque quem rola
+                  e o NestedScrollView de fora.
+                -->
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/settings_playback"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:descendantFocusability="blocksDescendants"
+                    android:focusable="false"
+                    android:nestedScrollingEnabled="false" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="30dp"
+                    android:letterSpacing="0.18"
                     android:text="@string/settings_library"
-                    android:textColor="@color/text_faint"
-                    android:textSize="@dimen/text_meta"
+                    android:textAllCaps="true"
+                    android:textColor="@color/dim"
+                    android:textSize="@dimen/text_tag"
                     android:textStyle="bold" />
 
-                <ProgressBar
-                    android:id="@+id/settings_progress"
-                    style="?android:attr/progressBarStyleHorizontal"
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/settings_library"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_sm"
-                    android:max="100"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/settings_progress_text"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_xs"
-                    android:textColor="@color/text"
-                    android:textSize="@dimen/text_body"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/settings_scan_summary"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_sm"
-                    android:lineSpacingMultiplier="1.25"
-                    android:textColor="@color/text_dim"
-                    android:textSize="@dimen/text_meta"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/settings_metadata"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_xs"
-                    android:lineSpacingMultiplier="1.25"
-                    android:textColor="@color/text_dim"
-                    android:textSize="@dimen/text_meta"
-                    android:visibility="gone" />
+                    android:layout_marginTop="9dp"
+                    android:descendantFocusability="blocksDescendants"
+                    android:focusable="false"
+                    android:nestedScrollingEnabled="false" />
 
                 <TextView
                     android:id="@+id/settings_message"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_sm"
+                    android:layout_marginTop="15dp"
                     android:textColor="@color/accent"
                     android:textSize="@dimen/text_meta"
+                    android:textStyle="bold"
                     android:visibility="gone" />
+
+                <!-- Estado da biblioteca: um scan leva minutos e a tela tem que provar que anda. -->
+                <LinearLayout
+                    android:id="@+id/scan_card"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="30dp"
+                    android:background="@drawable/row_setting"
+                    android:orientation="vertical"
+                    android:padding="18dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:text="@string/scan_title"
+                            android:textColor="@color/text"
+                            android:textSize="@dimen/text_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/scan_pct"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="@font/manrope_extrabold"
+                            android:textColor="@color/accent"
+                            android:textSize="@dimen/text_meta"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <ProgressBar
+                        android:id="@+id/settings_progress"
+                        style="?android:attr/progressBarStyleHorizontal"
+                        android:layout_width="match_parent"
+                        android:layout_height="6dp"
+                        android:layout_marginTop="11dp"
+                        android:indeterminate="false"
+                        android:max="100"
+                        android:maxHeight="6dp"
+                        android:minHeight="6dp"
+                        android:progressDrawable="@drawable/progress_track" />
+
+                    <TextView
+                        android:id="@+id/scan_state"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="11dp"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/settings_scan_summary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="9dp"
+                        android:lineSpacingMultiplier="1.55"
+                        android:textColor="@color/muted"
+                        android:textSize="@dimen/text_meta"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/settings_metadata"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:lineSpacingMultiplier="1.55"
+                        android:textColor="@color/muted"
+                        android:textSize="@dimen/text_meta"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
+                </LinearLayout>
             </LinearLayout>
+        </androidx.core.widget.NestedScrollView>
+    </LinearLayout>
+
+    <!-- ============================================================
+         ACESSO
+         ============================================================ -->
+    <LinearLayout
+        android:id="@+id/gate"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/surface"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="@dimen/page_x"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_wide"
+                android:textAllCaps="true"
+                android:textColor="@color/text"
+                android:textSize="@dimen/text_settings"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="@font/manrope_extrabold"
+                android:letterSpacing="0.18"
+                android:text="@string/wordmark_tv"
+                android:textAllCaps="true"
+                android:textColor="@color/accent"
+                android:textSize="@dimen/text_settings"
+                android:textStyle="bold" />
         </LinearLayout>
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_sm"
-            android:text="@string/settings_hint"
-            android:textColor="@color/text_faint"
-            android:textSize="@dimen/text_meta" />
-    </LinearLayout>
-
-    <!-- ================= ACESSO ================= -->
-    <LinearLayout
-        android:id="@+id/gate"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/bg"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="@dimen/space_xl"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:letterSpacing="0.18"
-            android:text="@string/gate_wordmark"
-            android:textColor="@color/text"
-            android:textSize="@dimen/text_wordmark"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_xs"
+            android:layout_marginTop="8dp"
             android:text="@string/gate_subtitle"
-            android:textColor="@color/text_dim"
+            android:textColor="@color/muted"
             android:textSize="@dimen/text_body" />
 
         <TextView
-            android:layout_width="480dp"
+            android:layout_width="360dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_xl"
-            android:letterSpacing="0.14"
+            android:layout_marginTop="30dp"
+            android:letterSpacing="0.16"
             android:text="@string/gate_server_label"
-            android:textColor="@color/text_faint"
-            android:textSize="@dimen/text_meta"
+            android:textAllCaps="true"
+            android:textColor="@color/dim"
+            android:textSize="@dimen/text_tag"
             android:textStyle="bold" />
 
         <EditText
             android:id="@+id/gate_server"
-            style="@style/WideTv.Field"
-            android:layout_width="480dp"
-            android:layout_height="wrap_content"
+            android:layout_width="360dp"
+            android:layout_height="42dp"
+            android:layout_marginTop="6dp"
             android:autofillHints="no"
+            android:background="@drawable/btn_soft"
+            android:gravity="center_vertical"
             android:hint="@string/gate_server_hint"
             android:imeOptions="actionNext"
-            android:inputType="textUri" />
+            android:inputType="textUri"
+            android:nextFocusDown="@id/gate_password"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:singleLine="true"
+            android:textColor="@color/text"
+            android:textColorHint="@color/dim"
+            android:textSize="@dimen/text_body" />
 
         <TextView
-            android:layout_width="480dp"
+            android:layout_width="360dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_md"
-            android:letterSpacing="0.14"
+            android:layout_marginTop="15dp"
+            android:letterSpacing="0.16"
             android:text="@string/gate_password_label"
-            android:textColor="@color/text_faint"
-            android:textSize="@dimen/text_meta"
+            android:textAllCaps="true"
+            android:textColor="@color/dim"
+            android:textSize="@dimen/text_tag"
             android:textStyle="bold" />
 
         <EditText
             android:id="@+id/gate_password"
-            style="@style/WideTv.Field"
-            android:layout_width="480dp"
-            android:layout_height="wrap_content"
+            android:layout_width="360dp"
+            android:layout_height="42dp"
+            android:layout_marginTop="6dp"
             android:autofillHints="no"
+            android:background="@drawable/btn_soft"
+            android:gravity="center_vertical"
             android:hint="@string/gate_password_hint"
             android:imeOptions="actionDone"
-            android:inputType="textPassword" />
+            android:inputType="textPassword"
+            android:nextFocusDown="@id/gate_submit"
+            android:nextFocusUp="@id/gate_server"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:singleLine="true"
+            android:textColor="@color/text"
+            android:textColorHint="@color/dim"
+            android:textSize="@dimen/text_body" />
 
         <TextView
             android:id="@+id/gate_submit"
-            style="@style/WideTv.Button"
-            android:layout_width="480dp"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_md"
-            android:text="@string/gate_enter" />
+            android:layout_width="360dp"
+            android:layout_height="42dp"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/btn_primary"
+            android:focusable="true"
+            android:fontFamily="@font/manrope_extrabold"
+            android:gravity="center"
+            android:nextFocusUp="@id/gate_password"
+            android:text="@string/gate_enter"
+            android:textColor="@color/accent_ink"
+            android:textSize="@dimen/text_button"
+            android:textStyle="bold" />
 
         <TextView
             android:id="@+id/gate_error"
-            android:layout_width="480dp"
+            android:layout_width="360dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_sm"
-            android:textColor="@color/danger"
-            android:textSize="@dimen/text_meta" />
+            android:layout_marginTop="10dp"
+            android:textColor="@color/live"
+            android:textSize="@dimen/text_meta"
+            android:textStyle="bold" />
     </LinearLayout>
 </FrameLayout>

@@ -5,6 +5,7 @@ import {
   type EpisodeRef,
   type LibraryStatus,
   type NowPlaying,
+  type ResumeEntry,
   type ScanMode,
   type SettingsPatch,
   type TaskAccepted,
@@ -73,6 +74,38 @@ export async function fetchNow(channelNumber: number): Promise<TimedNow | null> 
   if (!response.ok) throw new Error(`${API.now(channelNumber)} respondeu ${response.status}`);
 
   return { data: (await response.json()) as NowPlaying, sentAtMs, receivedAtMs };
+}
+
+export interface TimedNowAll {
+  data: NowPlaying[];
+  sentAtMs: number;
+  receivedAtMs: number;
+}
+
+/**
+ * Grade de TODOS os canais numa tacada, para a faixa "No ar agora".
+ *
+ * Mede o round-trip pelo mesmo motivo de `fetchNow`: a faixa projeta a barra de
+ * progresso adiante com `expectedOffsetMs`, e sem os dois carimbos o desvio de
+ * relogio do aparelho apareceria como barra torta em todos os cards.
+ *
+ * Lanca quando a rota nao existe ou falha - a faixa e opcional, e quem chama
+ * decide esconde-la em vez de derrubar o catalogo.
+ */
+export async function fetchNowAll(): Promise<TimedNowAll> {
+  const sentAtMs = Date.now();
+  const response = await fetch(API.nowAll, { credentials: 'same-origin' });
+  const receivedAtMs = Date.now();
+
+  if (response.status === 401) throw new UnauthorizedError();
+  if (!response.ok) throw new Error(`${API.nowAll} respondeu ${response.status}`);
+
+  return { data: (await response.json()) as NowPlaying[], sentAtMs, receivedAtMs };
+}
+
+/** Faixa "Continuar assistindo", ja resolvida pelo servidor. */
+export async function fetchResume(): Promise<ResumeEntry[]> {
+  return getJson<ResumeEntry[]>(API.resume);
 }
 
 /**
@@ -180,6 +213,14 @@ export async function startScan(mode: ScanMode): Promise<TaskAccepted> {
 
 export async function refreshMetadata(reset: boolean): Promise<TaskAccepted> {
   return startTask(API.libraryMetadata, { reset });
+}
+
+/**
+ * Dispara a extracao de quadros. `reset` refaz todos; sem ele o servidor so
+ * preenche o que falta, que e a rodada barata do dia a dia.
+ */
+export async function startThumbs(reset: boolean): Promise<TaskAccepted> {
+  return startTask(API.libraryThumbs, { reset });
 }
 
 export async function login(password: string): Promise<boolean> {

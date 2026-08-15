@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { cpus } from 'node:os';
 
-import type { EpisodeRow, Store } from './index-store';
+import type { EpisodeInput, Store } from './index-store';
 import { probeFile } from './probe';
 import type { ProbeResult } from './probe-types';
 import { scanLibrary, type ScannedEpisode } from './scanner';
@@ -83,7 +83,12 @@ async function mapWithLimit<T, R>(
   return results;
 }
 
-function toRow(measured: Measured, showId: number): Omit<EpisodeRow, 'showId'> {
+/**
+ * O scan nao escreve o quadro do episodio: quem escreve e a fila de miniaturas,
+ * e o indice preserva a coluna quando o rescan reencontra o MESMO arquivo. Por
+ * isso o tipo de escrita e mais estreito que a linha lida.
+ */
+function toRow(measured: Measured, showId: number): EpisodeInput {
   const { episode, probe, mtimeMs, size } = measured;
   return {
     id: episode.relativePath,

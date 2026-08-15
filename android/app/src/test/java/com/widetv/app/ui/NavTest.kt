@@ -52,9 +52,19 @@ class NavTest {
   }
 
   @Test
-  fun `o player so abre a partir da serie`() {
+  fun `o player abre da serie e tambem do acervo`() {
     assertEquals(ScreenId.PLAYER, reduceNav(series, NavEvent.OpenPlayer(7)).state.screen)
-    assertEquals(home, reduceNav(home, NavEvent.OpenPlayer(7)).state)
+    // O hero e a faixa "No ar agora" entram no canal sem passar pela serie: era
+    // exatamente o atalho que a grade 5xN nao tinha.
+    val fromHome = reduceNav(home, NavEvent.OpenPlayer(7))
+    assertEquals(ScreenId.PLAYER, fromHome.state.screen)
+    assertEquals(7, fromHome.state.channelNumber)
+  }
+
+  @Test
+  fun `o portao nao abre player nenhum`() {
+    assertEquals(gate, reduceNav(gate, NavEvent.OpenPlayer(7)).state)
+    assertEquals(settings, reduceNav(settings, NavEvent.OpenPlayer(7)).state)
   }
 
   // Configuracoes

@@ -2,7 +2,9 @@ import { API } from '@shared/api-types';
 import type { ChannelSummary, EpisodeRef, NowPlaying } from '@shared/api-types';
 
 import type { EpisodeRow, ShowMetadataRow, ShowRow } from '../library/index-store';
-import { buildTimeline, channelPhaseOffsetMs, resolveSlot } from '../schedule/clock';
+import { channelPhaseOffsetMs, resolveSlot } from '../schedule/clock';
+
+import { readGrid, type TimelineCache } from './timeline-cache';
 
 /**
  * Traducao entre o acervo em disco e a grade ao vivo.
@@ -15,8 +17,18 @@ export interface ChannelSource {
   listShows(): ShowRow[];
   getShowByChannel(channelNumber: number): ShowRow | null;
   listEpisodes(showId: number): EpisodeRow[];
-  /** Capa/ano/sinopse da serie; null quando a busca ainda nao rodou. */
+  /** Quantos episodios cada serie tem, de uma vez, para a listagem do catalogo. */
+  countEpisodesByShow(): Map<number, number>;
+  /** Temporadas de uma serie, crescente; `[]` quando nao usa pastas. */
+  listSeasons(showId: number): number[];
+  /** As temporadas de todas as series de uma vez, para a listagem do catalogo. */
+  listSeasonsByShow(): Map<number, number[]>;
+  /** Capa/arte/ano/sinopse da serie; null quando a busca ainda nao rodou. */
   getShowMetadata(showId: number): ShowMetadataRow | null;
+  /** Ha serie sem metadata? Gatilho barato da listagem, resolvido no banco. */
+  hasShowsWithoutMetadata(): boolean;
+  /** Muda quando a grade muda; e o que invalida o cache de timeline. */
+  indexVersion(): number;
 }
 
 /**
@@ -28,7 +40,7 @@ export interface ChannelSource {
  * nao aparece aqui - o cliente troca de dublagem trocando de arquivo, nunca
  * escolhendo faixa dentro dele.
  */
-function toRef(row: EpisodeRow): EpisodeRef {
+export function toRef(row: EpisodeRow): EpisodeRef {
   return {
     id: row.id,
     title: row.title,
@@ -39,37 +51,78 @@ function toRef(row: EpisodeRow): EpisodeRef {
     height: row.height,
     audioTracks: row.audioTracks,
     subtitleTracks: row.subtitleTracks,
+    // Sai da COLUNA, sem `stat` no disco - mesma razao da capa logo abaixo:
+    // isto roda uma vez por episodio em `/api/channels/:n/episodes` e duas
+    // vezes por canal em `/api/now`, e uma chamada sincrona ao filesystem por
+    // linha custaria mais do que vale. A coluna so ganha o nome do arquivo
+    // DEPOIS de ele existir, e a rota do quadro confere o arquivo de verdade
+    // antes de servir - um 404 la e mais barato que a lentidao aqui.
+    thumbUrl: row.thumbFile === null ? null : API.thumb(row.id),
   };
 }
 
 /**
- * `posterUrl` sai da coluna `poster_file`, e nao de um `stat` no disco: esta
- * funcao roda a cada `GET /api/channels` e 460 chamadas sincronas ao
- * filesystem por request custariam mais do que valem. A linha so ganha
- * `posterFile` DEPOIS do arquivo ter sido escrito, e a rota da capa confere o
- * arquivo de verdade antes de servir - um 404 la e mais barato que a lentidao
- * aqui.
+ * As duas artes saem das colunas `poster_file`/`backdrop_file`, e nao de um
+ * `stat` no disco: estas funcoes rodam a cada `GET /api/channels` e 460
+ * chamadas sincronas ao filesystem por request custariam mais do que valem. A
+ * linha so ganha o nome do arquivo DEPOIS de ele ter sido escrito, e a rota da
+ * imagem confere o arquivo de verdade antes de servir - um 404 la e mais barato
+ * que a lentidao aqui.
  */
+export function posterUrlOf(channelNumber: number, metadata: ShowMetadataRow | null): string | null {
+  return metadata?.posterFile == null ? null : API.poster(channelNumber);
+}
+
+export function backdropUrlOf(
+  channelNumber: number,
+  metadata: ShowMetadataRow | null,
+): string | null {
+  return metadata?.backdropFile == null ? null : API.backdrop(channelNumber);
+}
+
 function toSummary(
   show: ShowRow,
   episodeCount: number,
   metadata: ShowMetadataRow | null,
+  seasons: number[],
 ): ChannelSummary {
   return {
     number: show.channelNumber,
     name: show.name,
     episodeCount,
-    posterUrl: metadata?.posterFile == null ? null : API.poster(show.channelNumber),
+    posterUrl: posterUrlOf(show.channelNumber, metadata),
+    backdropUrl: backdropUrlOf(show.channelNumber, metadata),
     year: metadata?.year ?? null,
     overview: metadata?.overview ?? null,
+    seasons,
   };
 }
 
+/**
+ * O catalogo inteiro.
+ *
+ * Contagem e temporadas saem de UMA consulta cada, para o acervo todo.
+ * Perguntar serie a serie seriam ~460 idas ao banco por request - e, no caso da
+ * contagem, materializar os ~14 mil episodios do acervo (com JSON.parse de
+ * trilhas linha a linha) para usar so o `length` de cada lista. Esta rota abre
+ * junto com o catalogo, toda vez.
+ *
+ * Serie sem episodio nao entra em nenhum dos dois mapas: `?? 0` e `?? []`
+ * cobrem esse caso, e o filtro logo abaixo tira o canal da listagem - e o mesmo
+ * resultado de quando a contagem vinha de `listEpisodes().length`.
+ */
 export function listChannels(source: ChannelSource): ChannelSummary[] {
+  const counts = source.countEpisodesByShow();
+  const seasons = source.listSeasonsByShow();
   return source
     .listShows()
     .map((show) =>
-      toSummary(show, source.listEpisodes(show.id).length, source.getShowMetadata(show.id)),
+      toSummary(
+        show,
+        counts.get(show.id) ?? 0,
+        source.getShowMetadata(show.id),
+        seasons.get(show.id) ?? [],
+      ),
     )
     .filter((channel) => channel.episodeCount > 0)
     .sort((a, b) => a.number - b.number);
@@ -80,6 +133,7 @@ export function listChannels(source: ChannelSource): ChannelSummary[] {
  *
  * @param epochMs  instante zero global da grade
  * @param nowMs    relogio do servidor; entra por parametro para o resultado ser reproduzivel
+ * @param cache    grade ja montada; ausente le tudo da fonte
  * @returns `null` quando o canal nao existe ou nao tem episodio - nunca lanca por isso,
  *          porque um canal vazio e um estado normal do acervo, nao um erro de programa.
  */
@@ -88,14 +142,15 @@ export function resolveNowPlaying(
   channelNumber: number,
   epochMs: number,
   nowMs: number,
+  cache?: TimelineCache,
 ): NowPlaying | null {
   const show = source.getShowByChannel(channelNumber);
   if (show === null) return null;
 
-  const episodes = source.listEpisodes(show.id);
-  if (episodes.length === 0) return null;
+  const grid = cache === undefined ? readGrid(source, show.id) : cache.get(show.id);
+  if (grid === null) return null;
 
-  const timeline = buildTimeline(episodes);
+  const { episodes, timeline } = grid;
   const cycleMs = timeline[timeline.length - 1]!;
 
   // Desloca o inicio do canal por um valor estavel derivado do slug, para que
@@ -104,13 +159,41 @@ export function resolveNowPlaying(
   const slot = resolveSlot(episodes, epochMs - phase, nowMs, timeline);
 
   return {
-    channel: toSummary(show, episodes.length, source.getShowMetadata(show.id)),
+    // A metadata fica FORA do cache: ela chega pela rede depois do scan, sem
+    // mexer no indice, e cachea-la junto seguraria a capa ate o proximo rescan.
+    channel: toSummary(show, episodes.length, source.getShowMetadata(show.id), grid.seasons),
     episode: toRef(episodes[slot.index]!),
     offsetMs: slot.offsetMs,
     serverTimeMs: nowMs,
     endsAtMs: slot.endsAtMs,
     next: toRef(episodes[slot.nextIndex]!),
   };
+}
+
+/**
+ * O que esta no ar em todos os canais, na MESMA ordem de `listChannels`.
+ *
+ * Canal sem episodio sai do array em vez de virar `null`: a faixa "No ar agora"
+ * so desenha o que tem o que tocar, e um buraco no meio da lista obrigaria todo
+ * cliente a filtrar antes de renderizar.
+ *
+ * Ordena aqui em vez de confiar na ordem da fonte porque `listChannels` tambem
+ * ordena: as duas respostas alimentam a mesma tela, e uma divergencia de ordem
+ * emparelharia o canal errado com o episodio errado.
+ */
+export function listNowPlaying(
+  source: ChannelSource,
+  epochMs: number,
+  nowMs: number,
+  cache?: TimelineCache,
+): NowPlaying[] {
+  const shows = [...source.listShows()].sort((a, b) => a.channelNumber - b.channelNumber);
+  const playing: NowPlaying[] = [];
+  for (const show of shows) {
+    const now = resolveNowPlaying(source, show.channelNumber, epochMs, nowMs, cache);
+    if (now !== null) playing.push(now);
+  }
+  return playing;
 }
 
 /**

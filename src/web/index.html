@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0a0a0f" />
+    <meta name="theme-color" content="#080807" />
     <title>WideTV</title>
   </head>
   <body>
@@ -13,14 +13,37 @@
       `screen.ts`; aqui so existe a casca. Todo conteudo que vem da API (nome de
       serie, sinopse, titulo de episodio, estado da varredura) e escrito por
       `textContent` no `main.ts`, nunca por markup montado com string.
+
+      Este arquivo e o CONTRATO entre `app.css` e `main.ts`: as classes daqui sao
+      as que a folha estiliza e as que o TypeScript repete ao montar card,
+      episodio, linha de configuracao e linha de trilha. Trocar um nome de classe
+      aqui e mexer nos dois lados.
     -->
     <header class="topbar" id="topbar" hidden>
-      <p class="wordmark">wide<span class="wordmark__tv">tv</span></p>
-      <div class="topbar__actions">
-        <button class="button button--ghost topbar__action" id="open-settings" type="button">
-          Configurações
-        </button>
-        <button class="button button--ghost topbar__action" id="logout" type="button">Sair</button>
+      <div class="topbar__left">
+        <p class="wordmark">wide<span class="wordmark__tv">tv</span></p>
+        <nav class="topnav" id="topnav" aria-label="Seções">
+          <button class="topnav__item is-active" id="nav-home" type="button">Início</button>
+          <button class="topnav__item" id="nav-live" type="button">Ao vivo</button>
+          <button class="topnav__item" id="nav-shelf" type="button">Séries</button>
+        </nav>
+      </div>
+
+      <div class="topbar__right">
+        <div class="search" id="search">
+          <span class="search__icon" aria-hidden="true"></span>
+          <input
+            class="search__input"
+            id="search-input"
+            type="search"
+            placeholder="Buscar no acervo"
+            aria-label="Buscar no acervo"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <button class="pill" id="open-settings" type="button">Configurações</button>
+        <button class="pill" id="logout" type="button">Sair</button>
       </div>
     </header>
 
@@ -37,7 +60,7 @@
             autocomplete="current-password"
             spellcheck="false"
           />
-          <button class="button button--primary login__submit" id="login-submit" type="submit">
+          <button class="btn btn--primary login__submit" id="login-submit" type="submit">
             Entrar
           </button>
           <p class="login__error" id="login-error" role="alert"></p>
@@ -46,7 +69,60 @@
 
       <!-- 2. Catalogo ------------------------------------------------------ -->
       <section class="screen screen--home" id="screen-home" hidden>
-        <div class="grid" id="grid"></div>
+        <!--
+          Hero: o canal que estava no ar da ultima vez. `hero__art` recebe a arte
+          16:9 do provedor; sem ela fica o padrao listrado que o CSS ja desenha.
+        -->
+        <div class="hero" id="hero" hidden>
+          <div class="hero__art" id="hero-art"></div>
+          <div class="hero__scrim" aria-hidden="true"></div>
+
+          <div class="hero__body">
+            <p class="chip chip--live" id="hero-chip">
+              <span class="dot dot--live" aria-hidden="true"></span
+              ><span id="hero-chip-text"></span>
+            </p>
+            <h1 class="hero__title" id="hero-title"></h1>
+            <p class="hero__meta" id="hero-meta"></p>
+            <p class="hero__text" id="hero-text"></p>
+            <div class="hero__actions">
+              <button class="btn btn--primary" id="hero-play" type="button">
+                <span class="tri" aria-hidden="true"></span>Entrar no canal
+              </button>
+              <button class="btn btn--soft" id="hero-episodes" type="button">Ver episódios</button>
+              <button class="btn btn--ghost" id="hero-first" type="button">Do início</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="rows" id="rows">
+          <!-- As faixas nascem no `main.ts`; aqui so existe a moldura. -->
+          <section class="row" id="row-live" hidden>
+            <div class="row__head">
+              <h2 class="row__title">
+                <span class="dot dot--live" aria-hidden="true"></span>No ar agora
+              </h2>
+              <span class="row__aside" id="row-live-aside"></span>
+            </div>
+            <div class="rail" id="rail-live"></div>
+          </section>
+
+          <section class="row" id="row-resume" hidden>
+            <div class="row__head">
+              <h2 class="row__title">Continuar assistindo</h2>
+              <span class="row__aside">do histórico do servidor</span>
+            </div>
+            <div class="rail" id="rail-resume"></div>
+          </section>
+
+          <section class="row" id="row-shelf">
+            <div class="row__head">
+              <h2 class="row__title">Todo o acervo</h2>
+              <span class="row__aside" id="row-shelf-aside">A → Z</span>
+            </div>
+            <div class="rail rail--shelf" id="rail-shelf"></div>
+          </section>
+        </div>
 
         <div class="empty" id="home-empty" hidden>
           <h2 class="empty__title" id="home-empty-title">Nenhuma série no acervo</h2>
@@ -60,51 +136,95 @@
 
       <!-- 3. Serie --------------------------------------------------------- -->
       <section class="screen screen--series" id="screen-series" hidden>
+        <div class="shero">
+          <div class="shero__art" id="series-art"></div>
+          <div class="shero__scrim" aria-hidden="true"></div>
+          <header class="shero__bar">
+            <button class="pill pill--back" id="series-back" type="button">
+              <span class="pill__arrow" aria-hidden="true">←</span>Voltar
+            </button>
+            <p class="wordmark">wide<span class="wordmark__tv">tv</span></p>
+          </header>
+        </div>
+
         <div class="series">
-          <div class="series__hero">
-            <div class="poster poster--hero" id="series-poster"></div>
+          <div class="cover cover--series" id="series-poster"></div>
 
-            <div class="series__info">
-              <h1 class="series__title" id="series-title"></h1>
-              <p class="series__meta" id="series-meta"></p>
-              <p class="series__overview" id="series-overview"></p>
+          <div class="series__info">
+            <p class="chip" id="series-channel"></p>
+            <h1 class="series__title" id="series-title"></h1>
+            <p class="series__meta" id="series-meta"></p>
+            <p class="series__overview" id="series-overview"></p>
 
-              <div class="series__actions">
-                <button class="button button--primary" id="watch-live" type="button">
-                  <span aria-hidden="true">▶</span> Assistir ao vivo
-                </button>
-                <button class="button" id="watch-first" type="button">Do início</button>
-              </div>
+            <div class="series__actions">
+              <button class="btn btn--primary" id="series-resume" type="button">
+                <span class="tri" aria-hidden="true"></span
+                ><span id="series-resume-text">Do início</span>
+              </button>
+              <button class="btn btn--soft" id="series-live" type="button">
+                <span class="dot dot--live dot--static" aria-hidden="true"></span>Entrar no canal
+              </button>
+              <button class="btn btn--ghost" id="series-first" type="button">Do início</button>
             </div>
           </div>
+        </div>
 
-          <h2 class="series__section">Episódios</h2>
-          <ol class="episodes" id="episode-list"></ol>
+        <div class="episodes">
+          <div class="seasons">
+            <!-- Abas montadas no `main.ts` a partir de `ChannelSummary.seasons`. -->
+            <div class="seasons__tabs" id="season-tabs"></div>
+            <span class="seasons__aside" id="season-aside"></span>
+          </div>
+          <ol class="episodes__list" id="episode-list"></ol>
         </div>
       </section>
 
       <!-- 4. Configuracoes ------------------------------------------------- -->
       <section class="screen screen--settings" id="screen-settings" hidden>
+        <header class="settings__bar">
+          <button class="pill pill--back" id="settings-back" type="button">
+            <span class="pill__arrow" aria-hidden="true">←</span>Voltar
+          </button>
+          <p class="wordmark">wide<span class="wordmark__tv">tv</span></p>
+        </header>
+
         <div class="settings">
-          <h1 class="settings__title">Configurações</h1>
-          <p class="settings__hint">
-            ↑ ↓ escolhem a linha · ← → mudam o valor · Enter confirma · Esc volta
-          </p>
+          <div class="settings__intro">
+            <h1 class="settings__title">Configurações</h1>
+            <p class="settings__hint">
+              Valem para a casa toda — ficam gravadas no servidor. ↑ ↓ escolhem a linha · ← →
+              mudam o valor · Enter confirma · Esc volta.
+            </p>
+          </div>
 
           <!-- As linhas nascem no `main.ts`, a partir de `settingsRows()`. -->
-          <ul class="settings__list" id="settings-list"></ul>
+          <section class="settings__group">
+            <h2 class="settings__legend">Reprodução</h2>
+            <ul class="settings__list" id="settings-playback"></ul>
+          </section>
+
+          <section class="settings__group">
+            <h2 class="settings__legend">Biblioteca</h2>
+            <ul class="settings__list" id="settings-library"></ul>
+          </section>
 
           <p class="settings__message" id="settings-message" role="status" hidden></p>
 
-          <section class="settings__status" id="settings-scan-status" aria-live="polite">
-            <h2 class="settings__legend">Biblioteca</h2>
-            <div class="settings__bar" id="settings-progress" hidden>
-              <div class="settings__bar-fill" id="settings-progress-fill"></div>
+          <section class="scan" id="settings-scan" aria-live="polite">
+            <div class="scan__head">
+              <h2 class="scan__title" id="scan-title">Biblioteca</h2>
+              <span class="scan__pct" id="scan-pct" hidden></span>
             </div>
-            <p class="settings__state" id="settings-scan-text"></p>
-            <p class="settings__summary" id="settings-scan-summary" hidden></p>
-            <p class="settings__summary" id="settings-metadata-summary" hidden></p>
-            <p class="settings__note" id="settings-tmdb"></p>
+            <div class="scan__bar" id="scan-bar" hidden>
+              <div class="scan__fill" id="scan-fill"></div>
+            </div>
+            <p class="scan__state" id="scan-state"></p>
+            <div class="scan__notes">
+              <p class="scan__note" id="scan-summary" hidden></p>
+              <p class="scan__note" id="scan-metadata" hidden></p>
+              <p class="scan__note" id="scan-thumbs" hidden></p>
+              <p class="scan__note" id="scan-tmdb"></p>
+            </div>
           </section>
         </div>
       </section>
@@ -121,9 +241,18 @@
 
         <div class="overlay" id="overlay">
           <div class="overlay__top">
-            <p class="live-badge" id="live-badge" hidden>
-              <span class="live-badge__dot" aria-hidden="true"></span>Ao vivo
-            </p>
+            <div class="overlay__badges">
+              <span class="live" id="live-badge" hidden
+                ><span class="dot dot--white" aria-hidden="true"></span>Ao vivo</span
+              >
+              <span class="chan" id="channel-badge"></span>
+            </div>
+
+            <div class="upnext" id="upnext" hidden>
+              <span class="upnext__label">A seguir</span>
+              <span class="upnext__title" id="upnext-title"></span>
+              <span class="upnext__time" id="upnext-time"></span>
+            </div>
           </div>
 
           <div class="overlay__bottom">
@@ -132,40 +261,100 @@
                 <p class="overlay__show" id="overlay-show"></p>
                 <p class="overlay__title" id="overlay-title"></p>
               </div>
-              <button class="button button--ghost" id="tracks-open" type="button">Trilhas</button>
+
+              <div class="overlay__tools">
+                <button class="ctl ctl--wide" id="tracks-open" type="button">
+                  <span class="cc" aria-hidden="true">CC</span>Áudio e legendas
+                </button>
+                <button class="ctl ctl--square" id="fullscreen" type="button" aria-label="Tela cheia">
+                  ⤢
+                </button>
+              </div>
             </div>
 
-            <div class="scrub" id="scrub" hidden>
-              <div class="scrub__bar" id="scrub-bar">
-                <div class="scrub__fill" id="scrub-fill"></div>
+            <div class="transport">
+              <button class="play" id="play-toggle" type="button" aria-label="Pausar">
+                <span class="play__pause" id="play-pause" aria-hidden="true"
+                  ><span></span><span></span
+                ></span>
+                <span class="play__tri" id="play-tri" aria-hidden="true" hidden></span>
+              </button>
+
+              <div class="scrub" id="scrub">
+                <div class="scrub__bar" id="scrub-bar">
+                  <div class="scrub__buffer" id="scrub-buffer"></div>
+                  <div class="scrub__fill" id="scrub-fill"></div>
+                  <span class="scrub__knob" id="scrub-knob"></span>
+                </div>
+                <div class="scrub__times">
+                  <span class="scrub__time" id="scrub-left"></span>
+                  <span class="scrub__note" id="scrub-note"></span>
+                  <span class="scrub__time" id="scrub-right"></span>
+                </div>
               </div>
-              <p class="scrub__time" id="scrub-time"></p>
+
+              <div class="transport__side" id="transport-side">
+                <button class="ctl ctl--tiny" id="seek-back" type="button">−10</button>
+                <button class="ctl ctl--tiny" id="seek-fwd" type="button">+10</button>
+                <div class="volume" id="volume">
+                  <span class="volume__icon" id="volume-icon" aria-hidden="true">♪</span>
+                  <span class="volume__track"
+                    ><span class="volume__fill" id="volume-fill"></span
+                  ></span>
+                </div>
+              </div>
             </div>
 
             <p class="overlay__hint" id="overlay-hint"></p>
           </div>
         </div>
 
-        <p class="player-notice" id="player-notice" hidden></p>
+        <p class="notice" id="player-notice" hidden></p>
 
-        <aside class="tracks" id="tracks-panel" hidden aria-label="Trilhas de legenda e áudio">
-          <header class="tracks__head">
-            <h2 class="tracks__title">Trilhas</h2>
-            <button class="button button--ghost" id="tracks-close" type="button">Fechar</button>
-          </header>
+        <div class="veil" id="tracks-veil" hidden></div>
 
-          <section class="tracks__section">
-            <h3 class="tracks__legend">Legendas</h3>
-            <ul class="tracks__list" id="subtitle-list"></ul>
-          </section>
+        <aside class="panel" id="tracks-panel" hidden aria-label="Áudio e legendas">
+          <div class="panel__head">
+            <div class="panel__heading">
+              <h2 class="panel__title">Áudio e legendas</h2>
+              <p class="panel__sub" id="tracks-sub"></p>
+            </div>
+            <button class="panel__close" id="tracks-close" type="button" aria-label="Fechar">
+              ✕
+            </button>
+          </div>
 
-          <section class="tracks__section">
-            <h3 class="tracks__legend">Áudio</h3>
-            <ul class="tracks__list" id="audio-list"></ul>
-            <p class="tracks__note" id="audio-note" hidden>
+          <div class="segmented" id="tracks-segmented">
+            <button class="segmented__tab is-active" id="tab-audio" type="button">Áudio</button>
+            <button class="segmented__tab" id="tab-subs" type="button">Legendas</button>
+          </div>
+
+          <div class="panel__scroll" id="panel-scroll">
+            <ul class="tracklist" id="audio-list"></ul>
+            <p class="panel__note panel__note--inline" id="audio-note" hidden>
               No ao vivo a dublagem é a do canal; abra o episódio no catálogo para escolher.
             </p>
-          </section>
+
+            <div class="panel__divider" aria-hidden="true"></div>
+
+            <div class="panel__section">
+              <p class="panel__legend">Legendas neste episódio</p>
+              <ul class="tracklist" id="subtitle-list"></ul>
+            </div>
+          </div>
+
+          <div class="panel__foot">
+            <button class="remember" id="tracks-remember" type="button" aria-pressed="true">
+              <span class="remember__label">Lembrar este idioma</span>
+              <span class="switch" id="remember-switch" aria-hidden="true"
+                ><span class="switch__knob"></span
+              ></span>
+            </button>
+            <p class="panel__note">
+              A escolha vale para toda a casa: fica gravada no servidor, não no navegador. ↑ ↓
+              escolhem · Enter confirma · Esc fecha.
+            </p>
+          </div>
         </aside>
       </section>
     </main>

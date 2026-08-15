@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Listrado do hero e do fundo da serie: N = 14 px no desenho, periodo de 28 px
+  = 21 dp. Mais largo que o dos cards de proposito - a mesma malha fina numa
+  area de 465 dp viraria ruido. Veja `stripes.xml` para o porque do ladrilho.
+-->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:antialias="true"
+    android:filter="true"
+    android:src="@drawable/stripes_tile_hero"
+    android:tileMode="repeat" />

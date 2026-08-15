@@ -15,6 +15,7 @@ import {
   readPreferredSubtitle,
   reduceTracks,
   subtitleLabel,
+  trackDetail,
   writePreferredAudio,
   writePreferredSubtitle,
   type TracksContext,
@@ -48,36 +49,40 @@ function aud(over: Partial<AudioTrackRef> = {}): AudioTrackRef {
 }
 
 describe('abrir e fechar', () => {
-  test('nasce fechado e sem legenda', () => {
+  test('nasce fechado, no audio e lembrando a escolha', () => {
     expect(initialTracks()).toEqual({
       open: false,
-      section: 'subtitles',
+      section: 'audio',
       cursor: 0,
       subtitle: null,
       audio: null,
+      remember: true,
     });
   });
 
-  test('abre nas legendas, com o cursor na linha que ja esta ligada', () => {
-    const state = run(initialTracks(), [{ type: 'open' }, { type: 'down' }, { type: 'select' }]);
-    expect(state.subtitle).toBe(0);
-
-    const again = reduceTracks({ ...state, open: false }, { type: 'open' }, CTX).state;
-    expect(again).toMatchObject({ open: true, section: 'subtitles', cursor: 1 });
+  test('abre no audio, que e a primeira secao do painel', () => {
+    expect(open()).toMatchObject({ open: true, section: 'audio', cursor: 0 });
   });
 
-  test('legenda desligada abre com o cursor em "Desativadas"', () => {
-    expect(open()).toMatchObject({ open: true, section: 'subtitles', cursor: 0 });
+  test('o cursor nasce na faixa que ja esta tocando', () => {
+    const state: TracksState = { ...initialTracks(), audio: 1 };
+    expect(reduceTracks(state, { type: 'open' }, CTX).state.cursor).toBe(1);
   });
 
-  test('legenda que sumiu do episodio novo nao deixa o cursor no vazio', () => {
-    const state: TracksState = { ...open(), subtitle: 7 };
+  test('episodio de faixa unica abre nas legendas, nao no vazio', () => {
+    const context: TracksContext = { subtitles: [0], audios: [], audioSwitchable: false };
+    expect(open(context)).toMatchObject({ section: 'subtitles', cursor: 0 });
+  });
+
+  test('faixa que sumiu do episodio novo nao deixa o cursor no vazio', () => {
+    const state: TracksState = { ...initialTracks(), audio: 7, subtitle: 9 };
     expect(reduceTracks(state, { type: 'open' }, CTX).state.cursor).toBe(0);
   });
 
   test('fechar preserva o que estava escolhido', () => {
     const state = run(initialTracks(), [
       { type: 'open' },
+      { type: 'section', value: 'subtitles' },
       { type: 'down' },
       { type: 'select' },
       { type: 'close' },
@@ -86,41 +91,38 @@ describe('abrir e fechar', () => {
   });
 });
 
-describe('cursor', () => {
-  test('desce dentro das legendas', () => {
+describe('cursor atravessando as duas listas', () => {
+  test('desce dentro do audio', () => {
     expect(run(open(), [{ type: 'down' }]).cursor).toBe(1);
-    expect(run(open(), [{ type: 'down' }, { type: 'down' }]).cursor).toBe(2);
   });
 
-  test('o fim das legendas emenda na primeira linha do audio', () => {
-    const state = run(open(), [{ type: 'down' }, { type: 'down' }, { type: 'down' }]);
-    expect(state).toMatchObject({ section: 'audio', cursor: 0 });
+  test('o fim do audio emenda na primeira linha das legendas', () => {
+    const state = run(open(), [{ type: 'down' }, { type: 'down' }]);
+    expect(state).toMatchObject({ section: 'subtitles', cursor: 0 });
   });
 
-  test('subir do audio volta para a ultima legenda', () => {
-    const state = run(open(), [
-      { type: 'section', value: 'audio' },
-      { type: 'up' },
-    ]);
-    expect(state).toMatchObject({ section: 'subtitles', cursor: 2 });
+  test('subir da primeira legenda volta para a ultima faixa de audio', () => {
+    const state = run(open(), [{ type: 'section', value: 'subtitles' }, { type: 'up' }]);
+    expect(state).toMatchObject({ section: 'audio', cursor: 1 });
   });
 
   test('as pontas do painel seguram o cursor', () => {
     expect(run(open(), [{ type: 'up' }]).cursor).toBe(0);
 
     const bottom = run(open(), [
-      { type: 'section', value: 'audio' },
+      { type: 'section', value: 'subtitles' },
       { type: 'down' },
       { type: 'down' },
       { type: 'down' },
     ]);
-    expect(bottom).toMatchObject({ section: 'audio', cursor: 1 });
+    // Tres legendas na lista: "Desativadas" mais as duas do episodio.
+    expect(bottom).toMatchObject({ section: 'subtitles', cursor: 2 });
   });
 
-  test('sem audio no arquivo, a lista de legendas nao emenda em nada', () => {
+  test('sem audio no arquivo, as legendas nao emendam em nada', () => {
     const context: TracksContext = { subtitles: [0], audios: [], audioSwitchable: false };
-    const state = run(open(context), [{ type: 'down' }, { type: 'down' }], context);
-    expect(state).toMatchObject({ section: 'subtitles', cursor: 1 });
+    const state = run(open(context), [{ type: 'up' }], context);
+    expect(state).toMatchObject({ section: 'subtitles', cursor: 0 });
   });
 
   test('pular para uma secao vazia nao move o cursor para lugar nenhum', () => {
@@ -128,34 +130,42 @@ describe('cursor', () => {
     const state = run(open(context), [{ type: 'section', value: 'audio' }], context);
     expect(state.section).toBe('subtitles');
   });
+
+  test('a aba leva o cursor para a escolha atual daquela secao', () => {
+    const state: TracksState = { ...open(), subtitle: 1 };
+    const moved = reduceTracks(state, { type: 'section', value: 'subtitles' }, CTX).state;
+    expect(moved).toMatchObject({ section: 'subtitles', cursor: 2 });
+  });
 });
 
 describe('selecao', () => {
+  const subs = (state: TracksState): TracksState => ({ ...state, section: 'subtitles' });
+
   test('a primeira linha desliga a legenda', () => {
-    const ligada = run(open(), [{ type: 'down' }, { type: 'select' }]);
-    const result = reduceTracks({ ...ligada, cursor: 0 }, { type: 'select' }, CTX);
+    const state = subs({ ...open(), subtitle: 0, cursor: 0 });
+    const result = reduceTracks(state, { type: 'select' }, CTX);
     expect(result.state.subtitle).toBeNull();
-    expect(result.command).toEqual({ type: 'subtitle', index: null });
+    expect(result.command).toEqual({ type: 'subtitle', index: null, remember: true });
   });
 
   test('a linha da legenda manda o indice que o servidor entende', () => {
-    const result = reduceTracks({ ...open(), cursor: 2 }, { type: 'select' }, CTX);
+    const result = reduceTracks(subs({ ...open(), cursor: 2 }), { type: 'select' }, CTX);
     expect(result.state.subtitle).toBe(1);
-    expect(result.command).toEqual({ type: 'subtitle', index: 1 });
+    expect(result.command).toEqual({ type: 'subtitle', index: 1, remember: true });
   });
 
   test('o indice vem da lista do episodio, nao da posicao da linha', () => {
     // Episodio cujas legendas de texto sao a 2 e a 5 do container.
     const context: TracksContext = { subtitles: [2, 5], audios: [], audioSwitchable: false };
     const result = reduceTracks({ ...open(context), cursor: 2 }, { type: 'select' }, context);
-    expect(result.command).toEqual({ type: 'subtitle', index: 5 });
+    expect(result.command).toEqual({ type: 'subtitle', index: 5, remember: true });
   });
 
-  test('trocar de audio quando o navegador deixa', () => {
+  test('trocar de audio quando o servidor deixa', () => {
     const state: TracksState = { ...open(), section: 'audio', cursor: 1 };
     const result = reduceTracks(state, { type: 'select' }, CTX);
     expect(result.state.audio).toBe(1);
-    expect(result.command).toEqual({ type: 'audio', index: 1 });
+    expect(result.command).toEqual({ type: 'audio', index: 1, remember: true });
   });
 
   test('linha de audio desabilitada nao marca faixa que nao esta tocando', () => {
@@ -168,6 +178,47 @@ describe('selecao', () => {
   test('selecionar linha inexistente nao inventa comando', () => {
     const state: TracksState = { ...open(), cursor: 9 };
     expect(reduceTracks(state, { type: 'select' }, CTX).command).toBeNull();
+  });
+});
+
+describe('lembrar este idioma', () => {
+  test('o interruptor comeca ligado e alterna', () => {
+    expect(initialTracks().remember).toBe(true);
+    const off = reduceTracks(open(), { type: 'toggleRemember' }, CTX);
+    expect(off.state.remember).toBe(false);
+    expect(off.command).toBeNull();
+    expect(reduceTracks(off.state, { type: 'toggleRemember' }, CTX).state.remember).toBe(true);
+  });
+
+  test('desligado, a escolha viaja marcada para nao ser gravada', () => {
+    const state: TracksState = { ...open(), section: 'audio', cursor: 1, remember: false };
+    expect(reduceTracks(state, { type: 'select' }, CTX).command).toEqual({
+      type: 'audio',
+      index: 1,
+      remember: false,
+    });
+  });
+
+  test('o interruptor sobrevive a abrir e fechar o painel', () => {
+    const state = run(initialTracks(), [
+      { type: 'open' },
+      { type: 'toggleRemember' },
+      { type: 'close' },
+      { type: 'open' },
+    ]);
+    expect(state.remember).toBe(false);
+  });
+});
+
+describe('detalhe da linha', () => {
+  test('codec e numero da faixa, que e o que o probe sabe', () => {
+    expect(trackDetail({ codec: 'eac3', index: 0 })).toBe('eac3 · faixa 1');
+    expect(trackDetail({ codec: 'subrip', index: 2 })).toBe('subrip · faixa 3');
+  });
+
+  test('sem codec sobra a faixa, sem separador orfao', () => {
+    expect(trackDetail({ codec: null, index: 1 })).toBe('faixa 2');
+    expect(trackDetail({ codec: '  ', index: 0 })).toBe('faixa 1');
   });
 });
 

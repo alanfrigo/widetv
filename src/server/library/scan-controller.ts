@@ -6,6 +6,7 @@ import type {
   ScanProgressRef,
   ScanSummary,
   TaskAccepted,
+  ThumbSummary,
 } from '@shared/api-types';
 
 import type { EnrichReport, Enricher } from '../metadata/service';
@@ -15,9 +16,11 @@ import type { Store } from './index-store';
 import { runRemux, type RemuxJobOptions, type RemuxReport } from './remux-job';
 import { startDailyRescan, type RescanTime } from './rescan-timer';
 import { runScan, type ScanJobOptions, type ScanReport } from './scan-job';
+import { runThumbs, type ThumbJobOptions, type ThumbReport } from './thumb-job';
 
 /**
- * Dono unico das tarefas de fundo da biblioteca: scan, metadata e remux.
+ * Dono unico das tarefas de fundo da biblioteca: scan, metadata, remux e
+ * quadros.
  *
  * Existe para haver UM lugar com a trava de scan. Os tres gatilhos - bootstrap
  * do boot, rescan da madrugada e o botao do painel - pedem a mesma varredura;
@@ -45,6 +48,14 @@ export interface LibraryController {
   refreshMetadata(reset: boolean): TaskAccepted;
   /** Dispara a rodada de remux quando ligada; no-op quando desligada. */
   triggerRemux(): void;
+  /**
+   * Rodada de quadros pedida pela PESSOA (o botao do painel): roda mesmo com
+   * `autoThumbs` desligado - desligar a automacao nao e proibir o pedido - e
+   * devolve `started:false` quando ja ha uma em voo.
+   */
+  startThumbs(reset: boolean): TaskAccepted;
+  /** Dispara a rodada de quadros quando ligada; no-op quando desligada. */
+  triggerThumbs(): void;
   /** Indice vazio: indexa em segundo plano. Chamado uma vez, no boot. */
   bootstrap(): void;
   /** Reage a mudanca de preferencia sem reiniciar o servidor. */
@@ -63,6 +74,7 @@ export interface LibraryControllerDeps {
   /** Injetaveis para teste. */
   scan?: (options: ScanJobOptions) => Promise<ScanReport>;
   remux?: (options: RemuxJobOptions) => Promise<RemuxReport>;
+  thumbs?: (options: ThumbJobOptions) => Promise<ThumbReport>;
   now?: () => number;
   startTimer?: typeof startDailyRescan;
 }
@@ -75,6 +87,7 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
   const now = deps.now ?? Date.now;
   const scan = deps.scan ?? runScan;
   const remux = deps.remux ?? runRemux;
+  const thumbs = deps.thumbs ?? runThumbs;
   const startTimer = deps.startTimer ?? startDailyRescan;
   const { log } = deps;
 
@@ -83,6 +96,7 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
   // faria `status()` (consultado em polling curto) tocar o banco.
   const inicial = deps.settings.get();
   let autoRemux = inicial.autoRemux;
+  let autoThumbs = inicial.autoThumbs;
   let smartGrouping = inicial.smartGrouping;
   /** So para detectar mudanca de horario; o valor util vem de `settings.rescanTime()`. */
   let rescanTimeRaw = inicial.rescanTime;
@@ -95,6 +109,10 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
   let currentScan: Promise<void> | null = null;
 
   let remuxRunning = false;
+
+  let thumbsRunning = false;
+  let thumbsProgress: ScanProgressRef | null = null;
+  let lastThumbs: ThumbSummary | null = null;
 
   let lastMetadataReport: EnrichReport | null = null;
   let lastMetadata: MetadataSummary | null = null;
@@ -152,6 +170,82 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
       });
   }
 
+  /**
+   * Rodada de quadros. Trava propria, e nao a do scan: as duas convivem de
+   * proposito - um rescan noturno nao pode esperar horas de ffmpeg para
+   * comecar, e o que a fila de quadros le do indice (quem ainda nao foi
+   * tentado) e uma consulta por rodada, nao uma transacao aberta.
+   *
+   * Nunca lanca e nunca espera: um acervo de 15 mil episodios leva horas aqui.
+   */
+  function beginThumbs(reset: boolean, origem: string): TaskAccepted {
+    if (thumbsRunning) return { started: false, reason: 'extracao de quadros ja esta em andamento' };
+
+    thumbsRunning = true;
+    thumbsProgress = null;
+    let ultimoLog = 0;
+
+    void thumbs({
+      store: deps.store,
+      libraryRoot: deps.libraryRoot,
+      dataDir: deps.dataDir,
+      reset,
+      // Prioridade do remux sobre o quadro: veja o cabecalho de thumb-job.ts. O
+      // remux e o que faz o MKV TOCAR; a miniatura e ilustracao, e a tela ja
+      // tem um desenho para quando ela falta. Uma fila unica poria 15 mil
+      // miniaturas na frente da conversao que faz o acervo abrir.
+      shouldYield: () => remuxRunning,
+      onProgress: (progresso) => {
+        thumbsProgress = {
+          done: progresso.done,
+          total: progresso.total,
+          show: progresso.show,
+        };
+        const agora = now();
+        if (agora - ultimoLog < SCAN_LOG_INTERVAL_MS && progresso.done < progresso.total) return;
+        ultimoLog = agora;
+        log(`${origem} ${progresso.done}/${progresso.total}  ${progresso.show}`);
+      },
+      log,
+      now,
+    })
+      .then((report) => {
+        lastThumbs = {
+          considered: report.considered,
+          generated: report.generated,
+          skipped: report.skipped,
+          failed: report.failed,
+          durationMs: report.durationMs,
+          finishedAt: now(),
+        };
+        if (report.considered === 0 && report.backdrops === 0) return;
+        log(
+          `${origem} concluido: ${report.generated} quadros` +
+            (report.retried > 0 ? ` (${report.retried} na segunda tentativa)` : '') +
+            `, ${report.backdrops} artes de canal, ${report.skipped} pulados` +
+            (report.failed > 0 ? `, ${report.failed} falharam` : ''),
+        );
+      })
+      .catch((error: unknown) => {
+        // A rodada morreu inteira (DATA_DIR sem escrita, por exemplo). Nada de
+        // `lastThumbs`: nao ha numero confiavel, e o log conta o que houve.
+        log(`${origem} falhou: ${detail(error)}`);
+      })
+      .finally(() => {
+        thumbsRunning = false;
+        thumbsProgress = null;
+      });
+
+    return { started: true };
+  }
+
+  function triggerThumbs(): void {
+    // Desligado no painel: nao ha rodada nova. Desligar tambem nao apaga o que
+    // ja existe - as miniaturas em disco continuam sendo servidas.
+    if (!autoThumbs) return;
+    beginThumbs(false, 'quadros');
+  }
+
   function concluirScan(report: ScanReport, origem: string): void {
     lastScan = {
       shows: report.shows,
@@ -187,10 +281,15 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
     // Capas depois dos canais, e sem esperar: os canais ja funcionam sem elas,
     // e uma rodada de rede em 460 series nao pode atrasar nada.
     deps.enricher.trigger();
-    // Remux por ultimo, pelo mesmo motivo: os canais ja funcionam, so os MKV
-    // ainda nao tocam - e cada um passa a tocar assim que a sua copia fica
-    // pronta, sem esperar a rodada inteira.
+    // Remux depois, pelo mesmo motivo: os canais ja funcionam, so os MKV ainda
+    // nao tocam - e cada um passa a tocar assim que a sua copia fica pronta,
+    // sem esperar a rodada inteira.
     triggerRemux();
+    // Quadros por ultimo, e sem esperar o remux terminar: a fila deles cede a
+    // vez sozinha enquanto houver remux rodando (veja `beginThumbs`). Ultimo
+    // porque e o mais longo e o menos essencial - a tela desenha o listrado no
+    // lugar da miniatura que ainda nao existe.
+    triggerThumbs();
   }
 
   function falharScan(error: unknown, origem: string, iniciadoEm: number): void {
@@ -307,6 +406,11 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
           state: deps.enricher.running ? 'running' : 'idle',
           last: lastMetadata,
         },
+        thumbs: {
+          state: thumbsRunning ? 'running' : 'idle',
+          progress: thumbsProgress,
+          last: lastThumbs,
+        },
         remux: { state: remuxRunning ? 'running' : 'idle' },
       };
     },
@@ -328,11 +432,20 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
         //
         // A capa antiga some da tela ate a nova chegar - e o preco de admitir
         // que ela estava errada, e o arquivo em disco e sobrescrito pelo
-        // proprio showId.
+        // proprio showId. `notFound: true` tambem e o que devolve a gravacao ao
+        // caminho de SOBRESCRITA: sem nada para preservar, a fusao do
+        // enriquecimento vira substituicao, que e exatamente o pedido aqui.
         for (const show of deps.store.listShows()) {
           deps.store.upsertShowMetadata({
             showId: show.id,
             posterFile: null,
+            backdropFile: null,
+            // Zera o carimbo junto: "buscar tudo de novo" inclui a arte 16:9.
+            backdropCheckedAt: null,
+            // E a origem dela: sem isso, a arte tirada de quadro seria
+            // preservada como "nao veio da rede" e sobreviveria a um reset que
+            // existe justamente para dizer "o que esta ai esta errado".
+            backdropSource: null,
             year: null,
             overview: null,
             source: null,
@@ -343,12 +456,23 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
         log(`metadata apagada de ${deps.store.listShows().length} canais, buscando de novo`);
       }
 
-      // `trigger` nunca lanca e nunca abre uma segunda rodada.
-      deps.enricher.trigger();
+      // `trigger` nunca lanca e nunca abre uma segunda rodada. Escopo
+      // 'refresh' porque quem apertou o botao esta justamente pedindo o que a
+      // rodada automatica se recusa a fazer sozinha - reconsultar as series que
+      // ficaram sem arte 16:9 (toda linha gravada antes dela existir).
+      deps.enricher.trigger('refresh');
       return { started: true };
     },
 
     triggerRemux,
+
+    triggerThumbs,
+
+    startThumbs(reset): TaskAccepted {
+      // Sem `autoThumbs` aqui de proposito: quem apertou o botao esta pedindo
+      // esta rodada, e a preferencia governa o disparo AUTOMATICO.
+      return beginThumbs(reset, reset ? 'quadros (refazendo todos)' : 'quadros');
+    },
 
     bootstrap(): void {
       // Quem sobe isto num NAS nao tem shell no container: exigir um comando
@@ -362,6 +486,14 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
       if (settings.autoRemux !== autoRemux) {
         autoRemux = settings.autoRemux;
         log(`remux automatico ${autoRemux ? 'ligado' : 'desligado'}`);
+      }
+
+      if (settings.autoThumbs !== autoThumbs) {
+        autoThumbs = settings.autoThumbs;
+        // Desligar nao cancela a rodada em voo nem apaga o que ja existe: matar
+        // o ffmpeg no meio deixaria arquivo pela metade, e as miniaturas ja
+        // prontas continuam sendo servidas.
+        log(`extracao de quadros ${autoThumbs ? 'ligada' : 'desligada'}`);
       }
 
       if (settings.smartGrouping !== smartGrouping) {

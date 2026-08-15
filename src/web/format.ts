@@ -1,4 +1,6 @@
-import type { EpisodeRef } from '@shared/api-types';
+import type { AudioTrackRef, EpisodeRef } from '@shared/api-types';
+
+import { normalizeLang } from './tracks';
 
 /**
  * Formatacao de texto da interface.
@@ -12,20 +14,35 @@ import type { EpisodeRef } from '@shared/api-types';
 /** Largura util do rotulo quando o arquivo nao traz numeracao. */
 const MAX_LABEL = 32;
 
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+/**
+ * `S01E08` / `EP 08`.
+ *
+ * @returns null quando o arquivo nao traz numeracao nenhuma - e o que separa o
+ *          `SxxExx · Titulo` do titulo sozinho, sem repetir o nome duas vezes.
+ */
+export function episodeCode(episode: EpisodeRef): string | null {
+  const { season, episode: number } = episode;
+  if (season !== null && number !== null) return `S${pad2(season)}E${pad2(number)}`;
+  if (number !== null) return `EP ${pad2(number)}`;
+  return null;
+}
+
 /**
  * Rotulo do episodio. Nome de arquivo de acervo caseiro raramente traz
  * numeracao confiavel, entao o titulo e a saida de emergencia.
  */
 export function formatEpisodeLabel(episode: EpisodeRef): string {
-  const { season, episode: number } = episode;
+  return episodeCode(episode) ?? episode.title.toUpperCase().slice(0, MAX_LABEL);
+}
 
-  if (season !== null && number !== null) {
-    return `S${String(season).padStart(2, '0')}E${String(number).padStart(2, '0')}`;
-  }
-  if (number !== null) {
-    return `EP ${String(number).padStart(2, '0')}`;
-  }
-  return episode.title.toUpperCase().slice(0, MAX_LABEL);
+/** Linha do overlay e do painel de trilhas: `S01E08 · O roubo do seculo`. */
+export function episodeHeadline(episode: EpisodeRef): string {
+  const code = episodeCode(episode);
+  return code === null ? episode.title : `${code} · ${episode.title}`;
 }
 
 export type ResolutionBadge = '4K' | '1080p' | '720p' | 'SD';
@@ -66,12 +83,12 @@ export function resolutionBadge(
 }
 
 /**
- * Duracao arredondada ao minuto. Nunca "0 MIN" para episodio que existe: um
+ * Duracao arredondada ao minuto. Nunca "0 min" para episodio que existe: um
  * arquivo de 40 segundos e curto, nao vazio.
  */
 export function formatDurationMin(durationMs: number): string {
-  if (!Number.isFinite(durationMs) || durationMs <= 0) return '0 MIN';
-  return `${Math.max(1, Math.round(durationMs / 60_000))} MIN`;
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return '0 min';
+  return `${Math.max(1, Math.round(durationMs / 60_000))} min`;
 }
 
 /**
@@ -112,4 +129,122 @@ export function initialsOf(name: string): string {
   if (words.length === 0) return '?';
   if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase();
   return (words[0]![0]! + words[1]![0]!).toUpperCase();
+}
+
+/* --- canal ---------------------------------------------------------------- */
+
+/** Numero do canal com dois digitos: e o selo do card e o miolo da pilula. */
+export function channelNumberLabel(channelNumber: number): string {
+  const value = Number.isFinite(channelNumber) ? Math.max(0, Math.trunc(channelNumber)) : 0;
+  return pad2(value);
+}
+
+/** Pilula de canal, do hero ao overlay do player: `Canal 07`. */
+export function channelLabel(channelNumber: number): string {
+  return `Canal ${channelNumberLabel(channelNumber)}`;
+}
+
+/* --- tempo ---------------------------------------------------------------- */
+
+function minutesOf(ms: number): number {
+  if (!Number.isFinite(ms) || ms <= 0) return 0;
+  return Math.round(ms / 60_000);
+}
+
+/**
+ * Quanto falta do episodio, para o card do "No ar agora" e para a linha da
+ * lista. Abaixo de meio minuto o numero arredondado seria zero, e "faltam 0
+ * min" parece um episodio que ja acabou.
+ */
+export function formatRemaining(ms: number): string {
+  const minutes = minutesOf(ms);
+  return minutes <= 0 ? 'falta menos de 1 min' : `faltam ${minutes} min`;
+}
+
+/** Quando o proximo entra no ar, no bloco "A seguir" do player. */
+export function formatUpNext(ms: number): string {
+  const minutes = minutesOf(ms);
+  return minutes <= 0 ? 'em instantes' : `em ${minutes} min`;
+}
+
+/** Selo de tempo restante do card de "Continuar assistindo": `12 min`. */
+export function formatLeftBadge(ms: number): string {
+  return `${Math.max(1, minutesOf(ms))} min`;
+}
+
+/**
+ * Soma de uma temporada: `9h 12min`, `48min`.
+ *
+ * @returns null quando nao ha duracao medida - o aside mostra so a contagem em
+ *          vez de anunciar "0min" de conteudo.
+ */
+export function formatRuntime(ms: number): string | null {
+  const total = minutesOf(ms);
+  if (total <= 0) return null;
+
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  if (hours === 0) return `${minutes}min`;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}min`;
+}
+
+/* --- contagens ------------------------------------------------------------ */
+
+function plural(value: number, one: string, many: string): string {
+  const count = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  return `${count} ${count === 1 ? one : many}`;
+}
+
+export function episodesLabel(count: number): string {
+  return plural(count, 'episódio', 'episódios');
+}
+
+export function seasonsLabel(count: number): string {
+  return plural(count, 'temporada', 'temporadas');
+}
+
+export function channelsLabel(count: number): string {
+  return plural(count, 'canal', 'canais');
+}
+
+/** Aside da faixa do acervo enquanto a busca esta ligada. */
+export function resultsLabel(count: number): string {
+  const found = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  return found === 0 ? 'nenhum resultado' : plural(found, 'resultado', 'resultados');
+}
+
+/**
+ * Selo `N audios` da linha de episodio.
+ *
+ * @returns null com uma faixa so: um selo dizendo "1 audio" nao informa nada e
+ *          rouba espaco da linha.
+ */
+export function audiosBadge(count: number): string | null {
+  return count >= 2 ? `${count} áudios` : null;
+}
+
+/**
+ * Selo de idiomas do hero e da tela da serie.
+ *
+ * Conta idiomas DISTINTOS e nao faixas: dois audios em portugues (estereo e
+ * 5.1) sao uma lingua so. Faixa sem tag nao entra - o probe nao sabe o idioma
+ * dela, e chutar dois idiomas onde ha um seria inventar acervo.
+ *
+ * @returns null com menos de dois idiomas conhecidos.
+ */
+export function languagesBadge(tracks: readonly AudioTrackRef[]): string | null {
+  const langs = new Set<string>();
+  for (const track of tracks) {
+    const lang = normalizeLang(track.lang);
+    if (lang !== null) langs.add(lang);
+  }
+  return langs.size >= 2 ? `${langs.size} idiomas` : null;
+}
+
+/**
+ * Junta partes de uma linha de meta com o ponto separador, pulando o que nao se
+ * sabe. Sem isto, ano desconhecido deixaria um `·` orfao na frente do titulo.
+ */
+export function joinMeta(parts: readonly (string | null | undefined)[]): string {
+  return parts.filter((part): part is string => typeof part === 'string' && part !== '').join(' · ');
 }

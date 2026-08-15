@@ -22,11 +22,19 @@ const val TRACK_OFF = "off"
 /**
  * Uma escolha possivel. `id` e opaco para o reducer — quem o cria e quem o le e
  * a Activity.
+ *
+ * `detail` e `tag` entram DEPOIS de `selected`, e com default, para os testes e
+ * as chamadas que so precisam do rotulo continuarem valendo: sao adorno da
+ * linha, nao decisao.
  */
 data class TrackOption(
   val id: String,
   val label: String,
-  val selected: Boolean,
+  val selected: Boolean = false,
+  /** Segunda linha da linha de trilha: "eac3 · 5.1 · faixa 1". */
+  val detail: String? = null,
+  /** Etiqueta a direita quando a faixa NAO e a escolhida, ex. "padrão". */
+  val tag: String? = null,
 )
 
 data class TrackPanelState(
@@ -60,6 +68,13 @@ sealed interface TrackPanelEvent {
 
   /** +1 desce, -1 sobe. Cabecalhos sao pulados. */
   data class Move(val delta: Int) : TrackPanelEvent
+
+  /**
+   * Aba do segmented control. Leva o cursor para a PRIMEIRA linha da secao — o
+   * painel continua sendo uma lista so, com as duas secoes sempre visiveis, e a
+   * aba e um atalho para o comeco de uma delas.
+   */
+  data class Tab(val kind: TrackKind) : TrackPanelEvent
 
   data object Select : TrackPanelEvent
 
@@ -97,10 +112,24 @@ fun rows(state: TrackPanelState): List<TrackRow> {
   return out
 }
 
+/**
+ * Qual aba do segmented control esta marcada: a secao onde o cursor esta.
+ *
+ * Derivada, e nao guardada no estado, porque so ha uma verdade — descer da
+ * ultima linha de audio para a primeira legenda TEM que acender a outra aba, e
+ * um campo separado abriria a chance de ele discordar do cursor.
+ *
+ * @return AUDIO como padrao quando o painel esta fechado ou vazio: e a secao que
+ *   sempre existe primeiro.
+ */
+fun activeTab(state: TrackPanelState): TrackKind =
+  (rows(state).getOrNull(state.cursor) as? TrackRow.Option)?.kind ?: TrackKind.AUDIO
+
 fun reduceTrackPanel(state: TrackPanelState, event: TrackPanelEvent): TrackPanelResult =
   when (event) {
     is TrackPanelEvent.Open -> open(event)
     is TrackPanelEvent.Move -> move(state, event.delta)
+    is TrackPanelEvent.Tab -> tab(state, event.kind)
     TrackPanelEvent.Select -> select(state)
     TrackPanelEvent.Close -> TrackPanelResult(TrackPanelState(), close = true)
   }
@@ -135,6 +164,19 @@ private fun move(state: TrackPanelState, delta: Int): TrackPanelResult {
   return TrackPanelResult(state.copy(cursor = at))
 }
 
+/**
+ * Aba escolhida: o cursor pula para a primeira linha daquela secao.
+ *
+ * Secao que nao existe (episodio sem legenda) nao move nada — a aba fica sem
+ * efeito em vez de jogar o cursor num lugar que nao ha.
+ */
+private fun tab(state: TrackPanelState, kind: TrackKind): TrackPanelResult {
+  if (!state.open) return TrackPanelResult(state)
+  val at = rows(state).indexOfFirst { it is TrackRow.Option && it.kind == kind }
+  if (at < 0) return TrackPanelResult(state)
+  return TrackPanelResult(state.copy(cursor = at))
+}
+
 private fun select(state: TrackPanelState): TrackPanelResult {
   if (!state.open) return TrackPanelResult(state)
   val row = rows(state).getOrNull(state.cursor) as? TrackRow.Option
@@ -151,6 +193,62 @@ private fun select(state: TrackPanelState): TrackPanelResult {
 
 private fun mark(options: List<TrackOption>, id: String): List<TrackOption> =
   options.map { it.copy(selected = it.id == id) }
+
+/**
+ * Nota do rodape do painel.
+ *
+ * Ela muda com o interruptor porque a frase e a unica coisa que explica a
+ * diferenca: gravar no servidor vale para a casa toda, e nao gravar vale so ate
+ * o proximo episodio. Escrever uma frase so, com a outra metade implicita,
+ * deixaria metade das sessoes com o texto errado na tela.
+ */
+fun panelNote(remember: Boolean): String = if (remember) {
+  "A escolha vale para a casa toda: fica gravada no servidor. " +
+    "↑ ↓ escolhem · OK confirma · ← → trocam de aba · MENU deixa de lembrar."
+} else {
+  "A escolha vale só nesta sessão. " +
+    "↑ ↓ escolhem · OK confirma · ← → trocam de aba · MENU volta a lembrar."
+}
+
+/* --- detalhe da linha ----------------------------------------------------- */
+
+/**
+ * Segunda linha da linha de trilha: "eac3 · 5.1 · faixa 1".
+ *
+ * Existe porque duas faixas do mesmo idioma sao comuns num acervo caseiro
+ * (dublagem estereo e dublagem 5.1), e sem o detalhe as duas linhas ficariam
+ * escritas exatamente igual.
+ *
+ * @param mimeType `Format.sampleMimeType`, ex. "audio/eac3".
+ * @param channelCount `Format.channelCount`; `Format.NO_VALUE` (-1) some.
+ * @param index posicao da faixa entre as do mesmo tipo, 0-based.
+ */
+fun formatTrackDetail(mimeType: String?, channelCount: Int, index: Int): String {
+  val parts = mutableListOf<String>()
+  formatCodec(mimeType)?.let { parts += it }
+  formatChannelLayout(channelCount)?.let { parts += it }
+  parts += "faixa ${index + 1}"
+  return parts.joinToString(DOT)
+}
+
+/** "audio/eac3" vira "eac3". @return null quando nao ha o que mostrar. */
+fun formatCodec(mimeType: String?): String? {
+  val codec = mimeType?.substringAfterLast('/')?.trim()?.lowercase(Locale.ROOT)
+  return if (codec.isNullOrEmpty()) null else codec
+}
+
+/**
+ * Arranjo dos canais em palavra de gente: "5.1" e "estereo" dizem mais do que
+ * "6 canais" para quem escolhe dublagem.
+ */
+fun formatChannelLayout(count: Int): String? = when {
+  count <= 0 -> null
+  count == 1 -> "mono"
+  count == 2 -> "estéreo"
+  count == 6 -> "5.1"
+  count == 8 -> "7.1"
+  else -> "$count canais"
+}
 
 /**
  * Nome do idioma de uma trilha, para quando o container nao trouxe `title`.

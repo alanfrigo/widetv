@@ -89,6 +89,44 @@ class ApiClient(private val store: Store) {
     json.decodeFromString(getBody(url(Routes.CHANNELS)))
   }
 
+  /** Encerra a sessao no servidor. Falhar aqui nao muda nada do lado de ca. */
+  suspend fun logout() {
+    withContext(Dispatchers.IO) {
+      runCatching {
+        http.newCall(
+          Request.Builder().url(url(Routes.LOGOUT)).post(EMPTY_BODY).build(),
+        ).execute().close()
+      }
+    }
+  }
+
+  /**
+   * Estado de todos os canais, na ordem do catalogo.
+   *
+   * Rota NOVA: um servidor mais antigo devolve 404, e a lista vazia faz a faixa
+   * "No ar agora" simplesmente nao aparecer. Derrubar o catalogo inteiro por
+   * causa de uma faixa seria trocar o app por um detalhe dele.
+   */
+  suspend fun nowAll(): List<NowPlaying> = withContext(Dispatchers.IO) {
+    val body = getBodyOrNull(url(Routes.NOW_ALL)) ?: return@withContext emptyList()
+    json.decodeFromString(body)
+  }
+
+  /** Mesma regra do `nowAll`: rota nova, ausencia vira faixa que nao aparece. */
+  suspend fun resume(): List<ResumeEntry> = withContext(Dispatchers.IO) {
+    val body = getBodyOrNull(url(Routes.HISTORY_RESUME)) ?: return@withContext emptyList()
+    json.decodeFromString(body)
+  }
+
+  /**
+   * Rota da arte 16:9 do canal, relativa como `PosterLoader` espera.
+   *
+   * Existe para quem so tem o numero do canal na mao (a faixa ao vivo monta o
+   * card a partir do `NowPlaying`); quem tem o `ChannelSummary` usa o
+   * `backdropUrl` que veio no proprio objeto.
+   */
+  fun backdropUrl(channelNumber: Int): String = Routes.backdrop(channelNumber)
+
   /** null quando o canal nao existe (404). */
   suspend fun now(channelNumber: Int): TimedNow? = withContext(Dispatchers.IO) {
     val request = Request.Builder().url(url(Routes.now(channelNumber))).build()
@@ -172,6 +210,19 @@ class ApiClient(private val store: Store) {
   }
 
   /**
+   * Fila de extracao de quadros.
+   *
+   * @param reset refaz o quadro de quem ja tem; sem ele a fila so oferece o que
+   *   ainda esta sem miniatura.
+   */
+  suspend fun generateThumbs(reset: Boolean): TaskAccepted = withContext(Dispatchers.IO) {
+    postTask(
+      url(Routes.LIBRARY_THUMBS),
+      json.encodeToString(ThumbsRequest.serializer(), ThumbsRequest(reset)),
+    )
+  }
+
+  /**
    * Dispara uma tarefa de fundo.
    *
    * 202 e 409 NAO sao erro: os dois trazem `TaskAccepted` no corpo e viram uma
@@ -239,6 +290,9 @@ class ApiClient(private val store: Store) {
 
   private companion object {
     val JSON_MEDIA_TYPE = "application/json".toMediaType()
+
+    /** POST sem corpo: o logout so precisa do cookie. */
+    val EMPTY_BODY = ByteArray(0).toRequestBody(null, 0, 0)
   }
 }
 

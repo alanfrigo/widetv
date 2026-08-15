@@ -15,10 +15,15 @@ import type { StorageLike } from './last-channel';
  * episodio abrir com a legenda errada.
  */
 
-export type TrackSection = 'subtitles' | 'audio';
+export type TrackSection = 'audio' | 'subtitles';
 
 export interface TracksState {
   open: boolean;
+  /**
+   * Secao do segmented control. As duas listas ficam sempre visiveis (e o que o
+   * design mostra); a secao diz qual aba esta marcada e para onde o cursor do
+   * controle remoto esta apontando.
+   */
   section: TrackSection;
   /** Linha destacada dentro da secao atual. */
   cursor: number;
@@ -26,6 +31,17 @@ export interface TracksState {
   subtitle: number | null;
   /** `index` do audio ativo; null quando o navegador nao deixa escolher. */
   audio: number | null;
+  /**
+   * Interruptor "Lembrar este idioma".
+   *
+   * Mora AQUI e nao em `AppSettings` de proposito: `AppSettings` e a preferencia
+   * da casa, gravada no servidor, e este interruptor e justamente a chave que
+   * decide se a escolha desta sessao vira preferencia da casa ou nao. Guarda-lo
+   * la seria uma preferencia que fala sobre si mesma - e, pior, desligar "nao
+   * lembre" precisaria ser lembrado. Ligado por padrao: e o que o app sempre
+   * fez, e continua sendo o que a maioria quer.
+   */
+  remember: boolean;
 }
 
 export interface TracksContext {
@@ -47,13 +63,21 @@ export type TracksEvent =
   | { type: 'up' }
   | { type: 'down' }
   | { type: 'section'; value: TrackSection }
-  | { type: 'select' };
+  | { type: 'select' }
+  | { type: 'toggleRemember' };
 
-/** O que o `main.ts` precisa aplicar no elemento de video; null quando nada mudou. */
+/**
+ * O que o `main.ts` precisa aplicar; null quando nada mudou.
+ *
+ * `remember` viaja junto da escolha porque a pergunta "isto vira preferencia da
+ * casa?" e decidida pelo reducer, no mesmo instante em que a faixa e escolhida.
+ * Deixar o `main.ts` reler o estado depois abriria a porta para gravar com o
+ * interruptor que o usuario acabou de desligar.
+ */
 export type TracksCommand =
   | null
-  | { type: 'subtitle'; index: number | null }
-  | { type: 'audio'; index: number };
+  | { type: 'subtitle'; index: number | null; remember: boolean }
+  | { type: 'audio'; index: number; remember: boolean };
 
 export interface TracksResult {
   state: TracksState;
@@ -61,7 +85,14 @@ export interface TracksResult {
 }
 
 export function initialTracks(): TracksState {
-  return { open: false, section: 'subtitles', cursor: 0, subtitle: null, audio: null };
+  return {
+    open: false,
+    section: 'audio',
+    cursor: 0,
+    subtitle: null,
+    audio: null,
+    remember: true,
+  };
 }
 
 /** A linha 0 da secao de legendas e sempre "Desativadas". */
@@ -77,11 +108,31 @@ function rowCount(section: TrackSection, context: TracksContext): number {
   return section === 'subtitles' ? subtitleRowCount(context) : audioRowCount(context);
 }
 
-/** Linha em que o cursor deve nascer: a que ja esta selecionada. */
-function cursorForSelection(state: TracksState, context: TracksContext): number {
-  if (state.subtitle === null) return 0;
-  const at = context.subtitles.indexOf(state.subtitle);
-  return at === -1 ? 0 : at + 1;
+/**
+ * Linha em que o cursor deve nascer numa secao: a que ja esta selecionada.
+ *
+ * Chegar na secao com o destaque na escolha atual e o que faz o Enter ser
+ * inofensivo: quem so queria olhar nao troca de faixa sem querer.
+ */
+function cursorFor(section: TrackSection, state: TracksState, context: TracksContext): number {
+  if (section === 'subtitles') {
+    if (state.subtitle === null) return 0;
+    const at = context.subtitles.indexOf(state.subtitle);
+    return at === -1 ? 0 : at + 1;
+  }
+  if (state.audio === null) return 0;
+  const at = context.audios.indexOf(state.audio);
+  return at === -1 ? 0 : at;
+}
+
+/**
+ * Secao onde o painel abre: audio, que e a primeira do design.
+ *
+ * Episodio de faixa unica nao tem linha de audio nenhuma; abrir ali deixaria o
+ * cursor no vazio, entao o painel comeca nas legendas.
+ */
+function openSection(context: TracksContext): TrackSection {
+  return audioRowCount(context) > 0 ? 'audio' : 'subtitles';
 }
 
 export function reduceTracks(
@@ -92,51 +143,64 @@ export function reduceTracks(
   const still = (next: TracksState = state): TracksResult => ({ state: next, command: null });
 
   switch (event.type) {
-    case 'open':
-      return still({
-        ...state,
-        open: true,
-        section: 'subtitles',
-        cursor: cursorForSelection(state, context),
-      });
+    case 'open': {
+      const section = openSection(context);
+      return still({ ...state, open: true, section, cursor: cursorFor(section, state, context) });
+    }
 
     case 'close':
       return still({ ...state, open: false });
+
+    case 'toggleRemember':
+      return still({ ...state, remember: !state.remember });
 
     case 'section': {
       // Secao vazia nao recebe cursor: o painel ficaria com destaque em lugar
       // nenhum e o Enter nao teria o que selecionar.
       if (rowCount(event.value, context) === 0) return still();
-      return still({ ...state, section: event.value, cursor: 0 });
+      return still({
+        ...state,
+        section: event.value,
+        cursor: cursorFor(event.value, state, context),
+      });
     }
 
     case 'down': {
       const rows = rowCount(state.section, context);
       if (state.cursor + 1 < rows) return still({ ...state, cursor: state.cursor + 1 });
-      // Fim das legendas cai na primeira linha do audio: o painel e uma coluna
-      // so, e parar na fronteira obrigaria a decorar outra tecla.
-      if (state.section === 'subtitles' && audioRowCount(context) > 0) {
-        return still({ ...state, section: 'audio', cursor: 0 });
+      // O painel e uma coluna so, na ordem em que as listas aparecem: o fim do
+      // audio emenda na primeira legenda. Parar na fronteira obrigaria a decorar
+      // outra tecla para atravessar o que a tela mostra como uma lista continua.
+      if (state.section === 'audio' && subtitleRowCount(context) > 0) {
+        return still({ ...state, section: 'subtitles', cursor: 0 });
       }
       return still();
     }
 
     case 'up': {
       if (state.cursor > 0) return still({ ...state, cursor: state.cursor - 1 });
-      if (state.section === 'audio') {
-        return still({ ...state, section: 'subtitles', cursor: subtitleRowCount(context) - 1 });
+      if (state.section === 'subtitles' && audioRowCount(context) > 0) {
+        return still({ ...state, section: 'audio', cursor: audioRowCount(context) - 1 });
       }
       return still();
     }
 
     case 'select': {
+      const remember = state.remember;
+
       if (state.section === 'subtitles') {
         if (state.cursor === 0) {
-          return { state: { ...state, subtitle: null }, command: { type: 'subtitle', index: null } };
+          return {
+            state: { ...state, subtitle: null },
+            command: { type: 'subtitle', index: null, remember },
+          };
         }
         const index = context.subtitles[state.cursor - 1];
         if (index === undefined) return still();
-        return { state: { ...state, subtitle: index }, command: { type: 'subtitle', index } };
+        return {
+          state: { ...state, subtitle: index },
+          command: { type: 'subtitle', index, remember },
+        };
       }
 
       // Linhas desabilitadas: o navegador nao troca o audio, entao selecionar
@@ -145,9 +209,23 @@ export function reduceTracks(
       if (!context.audioSwitchable) return still();
       const index = context.audios[state.cursor];
       if (index === undefined) return still();
-      return { state: { ...state, audio: index }, command: { type: 'audio', index } };
+      return { state: { ...state, audio: index }, command: { type: 'audio', index, remember } };
     }
   }
+}
+
+/**
+ * Detalhe da linha de trilha: `eac3 · faixa 1`.
+ *
+ * So o que o probe realmente descobriu. `AudioTrackRef` nao traz contagem de
+ * canais, entao a linha nao anuncia "5.1" - inventar um dado de audio e a
+ * maneira mais rapida de a tela mentir sobre o acervo.
+ */
+export function trackDetail(track: { codec: string | null; index: number }): string {
+  const parts = [track.codec, `faixa ${track.index + 1}`].filter(
+    (part): part is string => typeof part === 'string' && part.trim() !== '',
+  );
+  return parts.join(' · ');
 }
 
 /* --- idiomas -------------------------------------------------------------- */

@@ -28,6 +28,7 @@ const KEY = {
   subtitlesAuto: 'subtitles_auto',
   rescanTime: 'rescan_time',
   autoRemux: 'auto_remux',
+  autoThumbs: 'auto_thumbs',
   smartGrouping: 'smart_grouping',
 } as const;
 
@@ -104,6 +105,7 @@ export function canonicalLang(raw: string | null | undefined): string | null {
 export interface SettingsDefaults {
   rescanTime: RescanTime | null;
   autoRemux: boolean;
+  autoThumbs: boolean;
   smartGrouping: boolean;
   tmdbConfigured: boolean;
 }
@@ -176,6 +178,7 @@ export function createSettingsService(
       subtitlesAuto: readBoolean(rows[KEY.subtitlesAuto], false),
       rescanTime: rescan === null ? null : formatRescanTime(rescan),
       autoRemux: readBoolean(rows[KEY.autoRemux], defaults.autoRemux),
+      autoThumbs: readBoolean(rows[KEY.autoThumbs], defaults.autoThumbs),
       smartGrouping: readBoolean(rows[KEY.smartGrouping], defaults.smartGrouping),
       // Nunca gravavel: e um fato sobre o ambiente, nao uma preferencia.
       tmdbConfigured: defaults.tmdbConfigured,
@@ -220,6 +223,10 @@ export function createSettingsService(
 
       if (input.autoRemux !== undefined) {
         store.setSetting(KEY.autoRemux, input.autoRemux ? 'true' : 'false');
+      }
+
+      if (input.autoThumbs !== undefined) {
+        store.setSetting(KEY.autoThumbs, input.autoThumbs ? 'true' : 'false');
       }
 
       if (input.smartGrouping !== undefined) {

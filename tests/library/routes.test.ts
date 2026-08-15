@@ -30,12 +30,15 @@ const STATUS: LibraryStatus = {
     },
   },
   metadata: { state: 'idle', last: null },
+  thumbs: { state: 'idle', progress: null, last: null },
   remux: { state: 'running' },
 };
 
 interface Registro {
   scans: ScanMode[];
   resets: boolean[];
+  /** `reset` de cada pedido de quadros que chegou ao controlador. */
+  quadros: boolean[];
 }
 
 let registro: Registro;
@@ -54,6 +57,11 @@ const controller: LibraryController = {
     return resposta;
   },
   triggerRemux: () => undefined,
+  startThumbs: (reset) => {
+    registro.quadros.push(reset);
+    return resposta;
+  },
+  triggerThumbs: () => undefined,
   bootstrap: () => undefined,
   applySettings: () => undefined,
   stop: () => undefined,
@@ -70,7 +78,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  registro = { scans: [], resets: [] };
+  registro = { scans: [], resets: [], quadros: [] };
   resposta = { started: true };
 });
 
@@ -160,5 +168,41 @@ describe('POST /api/library/metadata', () => {
     });
     expect(r.statusCode).toBe(400);
     expect(registro.resets).toEqual([]);
+  });
+});
+
+describe('POST /api/library/thumbs', () => {
+  test('sem corpo, pede so o que falta e devolve 202', async () => {
+    const r = await app.inject({ method: 'POST', url: '/api/library/thumbs' });
+    expect(r.statusCode).toBe(202);
+    expect(r.json<TaskAccepted>()).toEqual({ started: true });
+    expect(registro.quadros).toEqual([false]);
+  });
+
+  test('reset true chega no controlador', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/library/thumbs',
+      payload: { reset: true },
+    });
+    expect(r.statusCode).toBe(202);
+    expect(registro.quadros).toEqual([true]);
+  });
+
+  test('extracao ja rodando devolve 409 com o motivo', async () => {
+    resposta = { started: false, reason: 'extracao de quadros ja esta em andamento' };
+    const r = await app.inject({ method: 'POST', url: '/api/library/thumbs' });
+    expect(r.statusCode).toBe(409);
+    expect(r.json<TaskAccepted>().reason).toMatch(/ja esta em andamento/);
+  });
+
+  test('reset com tipo errado devolve 400 e nao dispara nada', async () => {
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/library/thumbs',
+      payload: { reset: 'sim' },
+    });
+    expect(r.statusCode).toBe(400);
+    expect(registro.quadros).toEqual([]);
   });
 });

@@ -12,6 +12,7 @@ import com.widetv.app.net.ScanSummary
 import com.widetv.app.net.ScanTask
 import com.widetv.app.net.TASK_IDLE
 import com.widetv.app.net.TASK_RUNNING
+import com.widetv.app.net.ThumbsTask
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -79,6 +80,68 @@ class SettingsTest {
   @Test
   fun `andar nao dispara comando nenhum`() {
     assertNull(reduceSettings(SettingsUiState(), SettingsEvent.Down, settings).command)
+  }
+
+  // Os dois grupos, um cursor so
+
+  @Test
+  fun `os dois grupos juntos sao a lista inteira, na mesma ordem`() {
+    val playback = settingsRows(SettingsGroup.PLAYBACK)
+    val library = settingsRows(SettingsGroup.LIBRARY)
+    assertEquals(rows, playback + library)
+  }
+
+  @Test
+  fun `reproducao tem so as tres linhas do design`() {
+    assertEquals(
+      listOf(
+        SettingsField.AUDIO_LANG,
+        SettingsField.SUBTITLE_LANG,
+        SettingsField.SUBTITLES_AUTO,
+      ),
+      settingsRows(SettingsGroup.PLAYBACK).map { it.field },
+    )
+  }
+
+  @Test
+  fun `os grupos sao contiguos, senao o cursor unico nao teria como se traduzir`() {
+    // `settingsGroupStart` so funciona porque cada grupo e um bloco: a posicao
+    // dentro da lista desenhada e `cursor - start`, e nada mais.
+    for (group in SettingsGroup.entries) {
+      val start = settingsGroupStart(group)
+      val size = settingsRows(group).size
+      for (at in start until start + size) assertEquals(group, rows[at].group)
+    }
+  }
+
+  @Test
+  fun `o inicio de cada grupo e a posicao dele no cursor unico`() {
+    assertEquals(0, settingsGroupStart(SettingsGroup.PLAYBACK))
+    assertEquals(
+      settingsRows(SettingsGroup.PLAYBACK).size,
+      settingsGroupStart(SettingsGroup.LIBRARY),
+    )
+  }
+
+  @Test
+  fun `a seta para baixo atravessa da ultima linha de reproducao para a primeira de biblioteca`() {
+    val lastPlayback = settingsRows(SettingsGroup.PLAYBACK).size - 1
+    val state = SettingsUiState(cursor = lastPlayback)
+    val after = reduceSettings(state, SettingsEvent.Down, settings).state
+    assertEquals(SettingsGroup.LIBRARY, rows[after.cursor].group)
+    assertEquals(settingsGroupStart(SettingsGroup.LIBRARY), after.cursor)
+  }
+
+  @Test
+  fun `subir da primeira linha de biblioteca volta para reproducao`() {
+    val state = SettingsUiState(cursor = settingsGroupStart(SettingsGroup.LIBRARY))
+    val after = reduceSettings(state, SettingsEvent.Up, settings).state
+    assertEquals(SettingsGroup.PLAYBACK, rows[after.cursor].group)
+  }
+
+  @Test
+  fun `toda linha tem dica`() {
+    for (row in rows) assertTrue(settingsRowHint(row.field).isNotBlank())
   }
 
   // Idiomas
@@ -274,6 +337,100 @@ class SettingsTest {
     assertNull(reduceSettings(row, SettingsEvent.Left, settings).command)
   }
 
+  // Miniaturas
+
+  @Test
+  fun `o interruptor de miniaturas emite o patch do proprio campo`() {
+    val result = reduceSettings(
+      cursorAt(SettingsField.AUTO_THUMBS),
+      SettingsEvent.Select,
+      settings.copy(autoThumbs = true),
+    )
+    assertEquals(
+      SettingsCommand.Patch(SettingsField.AUTO_THUMBS, SettingsValue.Flag(false)),
+      result.command,
+    )
+  }
+
+  @Test
+  fun `o interruptor de miniaturas nasce ligado, que e o padrao do servidor`() {
+    assertEquals("Ligado", settingsRowValue(SettingsField.AUTO_THUMBS, settings))
+    assertEquals(
+      "Desligado",
+      settingsRowValue(SettingsField.AUTO_THUMBS, settings.copy(autoThumbs = false)),
+    )
+  }
+
+  @Test
+  fun `a seta em Gerar miniaturas escolhe o modo, sem gastar rede`() {
+    val row = cursorAt(SettingsField.GENERATE_THUMBS)
+
+    val right = reduceSettings(row, SettingsEvent.Right, settings)
+    assertNull(right.command)
+    assertTrue(right.state.thumbsReset)
+
+    val back = reduceSettings(right.state, SettingsEvent.Left, settings)
+    assertNull(back.command)
+    assertFalse(back.state.thumbsReset)
+  }
+
+  @Test
+  fun `a seta escolhe o lado e nao alterna, tambem no modo das miniaturas`() {
+    // Direita com o modo ja em "refazer tudo" nao volta para "so o que falta":
+    // seta que alternasse faria apertar duas vezes para o mesmo lado desfazer.
+    val row = cursorAt(SettingsField.GENERATE_THUMBS).copy(thumbsReset = true)
+    assertTrue(reduceSettings(row, SettingsEvent.Right, settings).state.thumbsReset)
+  }
+
+  @Test
+  fun `o modo escolhido aparece escrito na linha`() {
+    assertEquals(
+      "Só o que falta",
+      settingsRowValue(SettingsField.GENERATE_THUMBS, settings, thumbsReset = false),
+    )
+    assertEquals(
+      "Refazer tudo",
+      settingsRowValue(SettingsField.GENERATE_THUMBS, settings, thumbsReset = true),
+    )
+  }
+
+  @Test
+  fun `OK em Gerar miniaturas dispara o modo que estava na tela`() {
+    val row = cursorAt(SettingsField.GENERATE_THUMBS)
+    assertEquals(
+      SettingsCommand.GenerateThumbs(reset = false),
+      reduceSettings(row, SettingsEvent.Select, settings).command,
+    )
+    assertEquals(
+      SettingsCommand.GenerateThumbs(reset = true),
+      reduceSettings(row.copy(thumbsReset = true), SettingsEvent.Select, settings).command,
+    )
+  }
+
+  @Test
+  fun `OK em Gerar miniaturas marca a linha como ocupada`() {
+    val result =
+      reduceSettings(cursorAt(SettingsField.GENERATE_THUMBS), SettingsEvent.Select, settings)
+    assertEquals(SettingsField.GENERATE_THUMBS, result.state.busy)
+  }
+
+  @Test
+  fun `so a geracao de quadros e acao com seta`() {
+    // A marca `stepper` e o que o desenho consulta para mostrar a seta esquerda:
+    // acao NAO implica "sem setas", e quem sabe a diferenca e o reducer.
+    val steppers = rows.filter { it.stepper }.map { it.field }
+    assertTrue(steppers.contains(SettingsField.GENERATE_THUMBS))
+    assertFalse(steppers.contains(SettingsField.SCAN_FULL))
+    assertFalse(steppers.contains(SettingsField.SCAN_INCREMENTAL))
+    assertFalse(steppers.contains(SettingsField.REFRESH_METADATA))
+    // Nenhuma linha de informacao promete seta: o cursor nem para nelas.
+    for (row in rows.filter { it.kind == SettingsKind.INFO }) assertFalse(row.stepper)
+    // E toda linha de valor continua sendo percorrivel.
+    for (row in rows.filter { it.kind != SettingsKind.ACTION && it.kind != SettingsKind.INFO }) {
+      assertTrue(row.stepper)
+    }
+  }
+
   @Test
   fun `linha ocupada nao aceita outro comando`() {
     val busy = cursorAt(SettingsField.SCAN_FULL).copy(busy = SettingsField.SCAN_FULL)
@@ -356,6 +513,12 @@ class SettingsTest {
     )
     assertEquals("1240 de 14320 — The Simpsons", scanProgressText(status))
     assertEquals(8, scanProgressPercent(status))
+    assertEquals("8%", scanPercentText(status))
+  }
+
+  @Test
+  fun `sem varredura nao ha percentual no cartao`() {
+    assertNull(scanPercentText(idle()))
   }
 
   @Test
@@ -432,6 +595,79 @@ class SettingsTest {
     )
   }
 
+  // Fila de quadros
+
+  private fun thumbsRunning(done: Int = 312, total: Int = 1840, show: String = "The Simpsons") =
+    LibraryStatus(
+      thumbs = ThumbsTask(
+        state = TASK_RUNNING,
+        progress = ScanProgressRef(done = done, total = total, show = show),
+      ),
+    )
+
+  @Test
+  fun `a fila de quadros tem a mesma forma de progresso da varredura`() {
+    assertEquals("312 de 1840 — The Simpsons", thumbsProgressText(thumbsRunning()))
+    assertEquals(16, thumbsProgressPercent(thumbsRunning()))
+  }
+
+  @Test
+  fun `fila parada nao tem progresso a mostrar`() {
+    assertNull(thumbsProgressText(idle()))
+    assertNull(thumbsProgressPercent(idle()))
+    // Nem uma fila que ja terminou, mas deixou a ultima contagem para tras.
+    val done = LibraryStatus(
+      thumbs = ThumbsTask(progress = ScanProgressRef(done = 9, total = 9)),
+    )
+    assertNull(thumbsProgressPercent(done))
+  }
+
+  @Test
+  fun `fila recem-disparada avisa que esta preparando`() {
+    val status = LibraryStatus(thumbs = ThumbsTask(state = TASK_RUNNING))
+    assertEquals("Preparando as miniaturas…", thumbsProgressText(status))
+    assertNull(thumbsProgressPercent(status))
+  }
+
+  // O cartao unico de progresso
+
+  @Test
+  fun `sem tarefa nenhuma o cartao nao existe`() {
+    assertNull(taskCard(idle()))
+  }
+
+  @Test
+  fun `o cartao mostra a fila de quadros quando so ela roda`() {
+    val card = taskCard(thumbsRunning())!!
+    assertEquals("312 de 1840 — The Simpsons", card.text)
+    assertEquals(16, card.percent)
+    assertEquals("16%", card.percentText)
+  }
+
+  @Test
+  fun `a varredura tem a frente da fila de quadros no cartao`() {
+    // A varredura dispara a fila no proprio fim, entao as duas rodam juntas por
+    // um instante. Quem muda o acervo e ela; o quadro que falta e cosmetico.
+    val both = thumbsRunning().copy(
+      scan = ScanTask(
+        state = TASK_RUNNING,
+        progress = ScanProgressRef(done = 5, total = 10, show = "Cowboy Bebop"),
+        startedAt = 1L,
+      ),
+    )
+    val card = taskCard(both)!!
+    assertEquals("5 de 10 — Cowboy Bebop", card.text)
+    assertEquals(50, card.percent)
+  }
+
+  @Test
+  fun `cartao sem total conhecido perde a barra, mas mantem o texto`() {
+    val card = taskCard(LibraryStatus(thumbs = ThumbsTask(state = TASK_RUNNING)))!!
+    assertEquals("Preparando as miniaturas…", card.text)
+    assertNull(card.percent)
+    assertNull(card.percentText)
+  }
+
   // Polling
 
   @Test
@@ -442,5 +678,12 @@ class SettingsTest {
     // O remux roda sozinho por horas e nao tem nada desenhado na tela: manter o
     // loop vivo por causa dele seria bater na API a tarde inteira de graca.
     assertFalse(libraryBusy(LibraryStatus(remux = RemuxTask(state = TASK_RUNNING))))
+  }
+
+  @Test
+  fun `a fila de quadros tambem mantem a tela perguntando`() {
+    // Ela desenha progresso no mesmo cartao: parar de perguntar deixaria a barra
+    // congelada no numero em que estava, e ela e a tarefa mais demorada das tres.
+    assertTrue(libraryBusy(thumbsRunning()))
   }
 }

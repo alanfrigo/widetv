@@ -104,7 +104,7 @@ These preferences are saved on the server, not in the browser's
 `localStorage`: the whole household shares one password and the same screens,
 so picking "Portuguese audio" on the living-room TV has to hold on the tablet
 too. Settings that also exist in `.env` (`SMART_GROUPING`, `AUTO_REMUX`,
-`RESCAN_TIME`) use the environment value as their default — saving in the
+`AUTO_THUMBS`, `RESCAN_TIME`) use the environment value as their default — saving in the
 panel overrides it, and clearing a preference falls back to whatever `.env`
 says.
 
@@ -239,6 +239,7 @@ npm run build && npm start
 | `AUTO_SCAN` | Indexes on its own when the index is empty. Only the exact string `false` turns it off |
 | `RESCAN_TIME` | Daily library rescan at this LOCAL time (`HH:MM`, default `04:00`): adds new shows/episodes and removes deleted ones. `off` disables |
 | `AUTO_REMUX` | Converts MKV/Dolby episodes to browser-safe MP4 in the background (byte copy, no transcode). Copies live in `DATA_DIR/remux` and take roughly the size of the MKVs themselves. Only the exact string `false` turns it off |
+| `AUTO_THUMBS` | Grabs one frame per episode in the background, for the episode list and the catalog rails (no metadata provider has per-episode images for a home library). One ffmpeg per file, one at a time, yielding to the remux. JPEGs live in `DATA_DIR/thumbs`, around 30 KB each. Only the exact string `false` turns it off |
 | `SMART_GROUPING` | Merges same-series release folders (e.g. `Show.S01...` + `Show.S02...`) into one channel — see [Smart grouping](#smart-grouping). On by default; only the exact string `false` turns it off. The settings panel can override this at runtime; clearing that override falls back to this value |
 | `TMDB_API_KEY` | Optional. Puts TMDB first in the cover chain, with pt-BR synopses. Without it, TVMaze and iTunes are used |
 | `PORT` | HTTP port, default 8080 |

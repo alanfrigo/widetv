@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Placeholder listrado das capas e dos cards (redesign-spec.md §1, N = 12 px do
+  desenho, ou seja periodo de 24 px = 18 dp).
+
+  Por que bitmap e nao <shape>: o desenho pede
+  `repeating-linear-gradient(115deg, ...)`, e o `GradientDrawable` do Android
+  nao repete nem aceita angulo fora dos multiplos de 45 - isso nunca foi
+  liberado, em nenhuma API. Um gradiente diagonal simples le como "sem imagem",
+  mas nao e o desenho. O ladrilho resolve os dois problemas de uma vez.
+
+  O ladrilho e gerado com as faixas perpendiculares a (2, 1), ou seja 116.57
+  graus no lugar dos 115 do desenho. A diferenca de 1.6 grau e invisivel, e em
+  troca o padrao fecha exato nas duas bordas (largura = metade do periodo em
+  unidades de `2x + y`, altura = o periodo inteiro): sem isso a repeticao
+  mostraria a costura em cada emenda do ladrilho.
+-->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:antialias="true"
+    android:filter="true"
+    android:src="@drawable/stripes_tile"
+    android:tileMode="repeat" />

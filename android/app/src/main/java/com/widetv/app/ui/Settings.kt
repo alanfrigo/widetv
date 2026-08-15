@@ -32,11 +32,13 @@ enum class SettingsField {
   SUBTITLES_AUTO,
   RESCAN_TIME,
   AUTO_REMUX,
+  AUTO_THUMBS,
   SMART_GROUPING,
   SCAN_INCREMENTAL,
   SCAN_FULL,
   REFRESH_METADATA,
   REFRESH_METADATA_RESET,
+  GENERATE_THUMBS,
   TMDB_STATUS,
 }
 
@@ -56,30 +58,88 @@ enum class SettingsKind {
   INFO,
 }
 
-data class SettingsRow(val field: SettingsField, val kind: SettingsKind)
+/**
+ * Em qual das duas listas da tela a linha e desenhada.
+ *
+ * SO renderizacao: o cursor continua sendo UM so, percorrendo as duas na ordem
+ * de `ROWS`. Dois cursores dariam duas colunas disputando a seta para baixo, e a
+ * regra "cima e baixo escolhem a linha" pararia de valer no meio da tela.
+ */
+enum class SettingsGroup { PLAYBACK, LIBRARY }
+
+data class SettingsRow(
+  val field: SettingsField,
+  val kind: SettingsKind,
+  val group: SettingsGroup,
+  /**
+   * As setas MUDAM alguma coisa nesta linha.
+   *
+   * Toda linha de valor muda. Das acoes, so a geracao de quadros: nela ← →
+   * escolhem entre completar o que falta e refazer tudo. As varreduras e as
+   * rebuscas de capa nao tem valor nenhum para percorrer, e desenhar a seta
+   * esquerda nelas seria prometer um gesto que nao existe. Quem sabe se a seta
+   * faz algo e o reducer — a mesma regra do `set--stepper` do cliente web.
+   */
+  val stepper: Boolean = true,
+)
 
 /**
  * Ordem das linhas. Acoes de manutencao no fim: sao as caras.
+ *
+ * Os grupos sao CONTIGUOS de proposito — reproducao primeiro, biblioteca
+ * depois. E o que deixa o cursor unico atravessar as duas listas desenhadas sem
+ * saltar de uma para a outra e voltar.
  *
  * O estado do TMDB fica encostado nas duas linhas de capa porque e ali que ele
  * explica alguma coisa — rebuscar capa sem chave do provedor traz menos do que
  * quem apertou esperava, e a linha diz isso antes de o dedo chegar la.
  */
 private val ROWS: List<SettingsRow> = listOf(
-  SettingsRow(SettingsField.AUDIO_LANG, SettingsKind.CHOICE),
-  SettingsRow(SettingsField.SUBTITLE_LANG, SettingsKind.CHOICE),
-  SettingsRow(SettingsField.SUBTITLES_AUTO, SettingsKind.TOGGLE),
-  SettingsRow(SettingsField.SMART_GROUPING, SettingsKind.TOGGLE),
-  SettingsRow(SettingsField.AUTO_REMUX, SettingsKind.TOGGLE),
-  SettingsRow(SettingsField.RESCAN_TIME, SettingsKind.TIME),
-  SettingsRow(SettingsField.SCAN_INCREMENTAL, SettingsKind.ACTION),
-  SettingsRow(SettingsField.SCAN_FULL, SettingsKind.ACTION),
-  SettingsRow(SettingsField.TMDB_STATUS, SettingsKind.INFO),
-  SettingsRow(SettingsField.REFRESH_METADATA, SettingsKind.ACTION),
-  SettingsRow(SettingsField.REFRESH_METADATA_RESET, SettingsKind.ACTION),
+  SettingsRow(SettingsField.AUDIO_LANG, SettingsKind.CHOICE, SettingsGroup.PLAYBACK),
+  SettingsRow(SettingsField.SUBTITLE_LANG, SettingsKind.CHOICE, SettingsGroup.PLAYBACK),
+  SettingsRow(SettingsField.SUBTITLES_AUTO, SettingsKind.TOGGLE, SettingsGroup.PLAYBACK),
+  SettingsRow(SettingsField.SMART_GROUPING, SettingsKind.TOGGLE, SettingsGroup.LIBRARY),
+  SettingsRow(SettingsField.AUTO_REMUX, SettingsKind.TOGGLE, SettingsGroup.LIBRARY),
+  SettingsRow(SettingsField.AUTO_THUMBS, SettingsKind.TOGGLE, SettingsGroup.LIBRARY),
+  SettingsRow(SettingsField.RESCAN_TIME, SettingsKind.TIME, SettingsGroup.LIBRARY),
+  SettingsRow(
+    SettingsField.SCAN_INCREMENTAL,
+    SettingsKind.ACTION,
+    SettingsGroup.LIBRARY,
+    stepper = false,
+  ),
+  SettingsRow(SettingsField.SCAN_FULL, SettingsKind.ACTION, SettingsGroup.LIBRARY, stepper = false),
+  SettingsRow(SettingsField.TMDB_STATUS, SettingsKind.INFO, SettingsGroup.LIBRARY, stepper = false),
+  SettingsRow(
+    SettingsField.REFRESH_METADATA,
+    SettingsKind.ACTION,
+    SettingsGroup.LIBRARY,
+    stepper = false,
+  ),
+  SettingsRow(
+    SettingsField.REFRESH_METADATA_RESET,
+    SettingsKind.ACTION,
+    SettingsGroup.LIBRARY,
+    stepper = false,
+  ),
+  // Ultima porque e a mais cara de todas: um ffmpeg por episodio, com a fila
+  // andando de um em um para nao competir com o video que a TV esta streamando.
+  SettingsRow(SettingsField.GENERATE_THUMBS, SettingsKind.ACTION, SettingsGroup.LIBRARY),
 )
 
 fun settingsRows(): List<SettingsRow> = ROWS
+
+/** As linhas de uma lista da tela, na ordem em que o cursor as visita. */
+fun settingsRows(group: SettingsGroup): List<SettingsRow> = ROWS.filter { it.group == group }
+
+/**
+ * Posicao, no cursor unico, da primeira linha do grupo.
+ *
+ * E o que traduz o cursor global em posicao dentro de um dos dois
+ * `RecyclerView`: `cursor - settingsGroupStart(g)`. Funciona porque os grupos
+ * sao contiguos em `ROWS` — e ha teste para isso.
+ */
+fun settingsGroupStart(group: SettingsGroup): Int = ROWS.indexOfFirst { it.group == group }
 
 data class SettingsUiState(
   /** Indice em `settingsRows()`. Nunca aponta para uma linha `INFO`. */
@@ -91,6 +151,15 @@ data class SettingsUiState(
    */
   val busy: SettingsField? = null,
   val message: String? = null,
+  /**
+   * Modo da geracao de quadros, escolhido com as setas na propria linha da acao.
+   *
+   * Mora no estado da TELA e nao em `AppSettings` porque nao e preferencia
+   * gravada: e a diferenca entre completar o que falta (barato, e o que a fila
+   * ja faz sozinha) e refazer tudo, que e o que conserta quadro preto depois de
+   * o arquivo ser trocado.
+   */
+  val thumbsReset: Boolean = false,
 )
 
 sealed interface SettingsEvent {
@@ -120,6 +189,9 @@ sealed interface SettingsCommand {
   data class Scan(val mode: String) : SettingsCommand
 
   data class RefreshMetadata(val reset: Boolean) : SettingsCommand
+
+  /** @param reset refaz o quadro de quem ja tem, em vez de so completar. */
+  data class GenerateThumbs(val reset: Boolean) : SettingsCommand
 }
 
 data class SettingsResult(
@@ -170,7 +242,17 @@ fun reduceSettings(
     }
 
     SettingsKind.ACTION -> {
-      val command = if (event == SettingsEvent.Select) commandOf(row.field) else null
+      // Acao com modo: a seta escolhe o LADO (direita refaz tudo, esquerda so
+      // completa) sem gastar rede nenhuma; quem dispara continua sendo o OK.
+      // Duas linhas separadas, como as capas fazem, custariam mais uma parada do
+      // cursor numa lista que ja e a mais longa da tela.
+      if (row.field == SettingsField.GENERATE_THUMBS && event != SettingsEvent.Select) {
+        val reset = event == SettingsEvent.Right
+        val next = if (reset == state.thumbsReset) state else state.copy(thumbsReset = reset)
+        return SettingsResult(next)
+      }
+
+      val command = if (event == SettingsEvent.Select) commandOf(row.field, state) else null
       if (command == null) SettingsResult(state)
       else SettingsResult(state.copy(busy = row.field, message = null), command)
     }
@@ -197,17 +279,20 @@ private fun move(state: SettingsUiState, delta: Int): SettingsUiState {
 private fun fired(state: SettingsUiState, command: SettingsCommand): SettingsResult =
   SettingsResult(state.copy(message = null), command)
 
-private fun commandOf(field: SettingsField): SettingsCommand? = when (field) {
-  SettingsField.SCAN_INCREMENTAL -> SettingsCommand.Scan(SCAN_MODE_INCREMENTAL)
-  SettingsField.SCAN_FULL -> SettingsCommand.Scan(SCAN_MODE_FULL)
-  SettingsField.REFRESH_METADATA -> SettingsCommand.RefreshMetadata(reset = false)
-  SettingsField.REFRESH_METADATA_RESET -> SettingsCommand.RefreshMetadata(reset = true)
-  else -> null
-}
+private fun commandOf(field: SettingsField, state: SettingsUiState): SettingsCommand? =
+  when (field) {
+    SettingsField.SCAN_INCREMENTAL -> SettingsCommand.Scan(SCAN_MODE_INCREMENTAL)
+    SettingsField.SCAN_FULL -> SettingsCommand.Scan(SCAN_MODE_FULL)
+    SettingsField.REFRESH_METADATA -> SettingsCommand.RefreshMetadata(reset = false)
+    SettingsField.REFRESH_METADATA_RESET -> SettingsCommand.RefreshMetadata(reset = true)
+    SettingsField.GENERATE_THUMBS -> SettingsCommand.GenerateThumbs(state.thumbsReset)
+    else -> null
+  }
 
 private fun toggleOf(field: SettingsField, settings: AppSettings): Boolean = when (field) {
   SettingsField.SUBTITLES_AUTO -> settings.subtitlesAuto
   SettingsField.AUTO_REMUX -> settings.autoRemux
+  SettingsField.AUTO_THUMBS -> settings.autoThumbs
   SettingsField.SMART_GROUPING -> settings.smartGrouping
   else -> false
 }
@@ -232,6 +317,7 @@ fun applySettingsValue(
     SettingsField.RESCAN_TIME -> settings.copy(rescanTime = text)
     SettingsField.SUBTITLES_AUTO -> settings.copy(subtitlesAuto = flag)
     SettingsField.AUTO_REMUX -> settings.copy(autoRemux = flag)
+    SettingsField.AUTO_THUMBS -> settings.copy(autoThumbs = flag)
     SettingsField.SMART_GROUPING -> settings.copy(smartGrouping = flag)
     // As demais nao sao editaveis; nao ha o que aplicar.
     else -> settings
@@ -366,26 +452,63 @@ fun settingsRowLabel(field: SettingsField): String = when (field) {
   SettingsField.SUBTITLES_AUTO -> "Ligar legenda sozinha"
   SettingsField.SMART_GROUPING -> "Agrupar temporadas da mesma série"
   SettingsField.AUTO_REMUX -> "Converter arquivos em segundo plano"
+  SettingsField.AUTO_THUMBS -> "Tirar miniaturas em segundo plano"
   SettingsField.RESCAN_TIME -> "Varredura diária"
   SettingsField.SCAN_INCREMENTAL -> "Procurar arquivos novos"
   SettingsField.SCAN_FULL -> "Reanalisar a biblioteca inteira"
   SettingsField.TMDB_STATUS -> "Provedor de capas"
   SettingsField.REFRESH_METADATA -> "Buscar capas e sinopses que faltam"
   SettingsField.REFRESH_METADATA_RESET -> "Refazer todas as capas e sinopses"
+  SettingsField.GENERATE_THUMBS -> "Gerar miniaturas"
 }
 
-/** Valor mostrado a direita da linha. */
-fun settingsRowValue(field: SettingsField, settings: AppSettings): String = when (field) {
+/**
+ * Dica sob o rotulo. Diz o que a linha FAZ, nao o que ela e — quem chega ate
+ * aqui ja leu o nome.
+ */
+fun settingsRowHint(field: SettingsField): String = when (field) {
+  SettingsField.AUDIO_LANG -> "A dublagem escolhida sozinha quando o arquivo tem mais de uma."
+  SettingsField.SUBTITLE_LANG -> "A legenda escolhida sozinha. Desativadas é o estado de fábrica."
+  SettingsField.SUBTITLES_AUTO -> "Liga a legenda mesmo quando o áudio já está no idioma preferido."
+  SettingsField.SMART_GROUPING -> "Junta pastas de release da mesma série num canal só."
+  SettingsField.AUTO_REMUX -> "Converte o que a TV não toca, sem ninguém pedir."
+  SettingsField.AUTO_THUMBS -> "Tira um quadro de cada episódio novo no fim da varredura."
+  SettingsField.RESCAN_TIME -> "Hora local em que o servidor procura arquivos novos sozinho."
+  SettingsField.SCAN_INCREMENTAL -> "Procura só o que mudou desde a última varredura."
+  SettingsField.SCAN_FULL -> "Reanalisa tudo, ignorando o cache. Demora."
+  SettingsField.TMDB_STATUS -> "Sem chave, as capas vêm de provedores com menos acervo."
+  SettingsField.REFRESH_METADATA -> "Busca só o que ainda não tem capa nem sinopse."
+  SettingsField.REFRESH_METADATA_RESET -> "Apaga o que está gravado e busca de novo. Conserta capa errada."
+  SettingsField.GENERATE_THUMBS -> "← → escolhem entre completar o que falta e refazer tudo."
+}
+
+/**
+ * Valor mostrado a direita da linha.
+ *
+ * @param thumbsReset o modo escolhido na linha de gerar miniaturas. E o unico
+ *   valor da tela que NAO vem do servidor — ele mora no estado da tela —, e por
+ *   isso entra como parametro solto em vez de sair do `AppSettings`.
+ */
+fun settingsRowValue(
+  field: SettingsField,
+  settings: AppSettings,
+  thumbsReset: Boolean = false,
+): String = when (field) {
   SettingsField.AUDIO_LANG -> languageValue(settings.audioLang, "Padrão do arquivo")
   SettingsField.SUBTITLE_LANG -> languageValue(settings.subtitleLang, "Desativadas")
   SettingsField.SUBTITLES_AUTO,
   SettingsField.AUTO_REMUX,
+  SettingsField.AUTO_THUMBS,
   SettingsField.SMART_GROUPING,
   -> if (toggleOf(field, settings)) "Ligado" else "Desligado"
 
   SettingsField.RESCAN_TIME -> settings.rescanTime ?: "Desligada"
   SettingsField.TMDB_STATUS ->
     if (settings.tmdbConfigured) "TMDB configurado" else "Sem chave do TMDB"
+
+  // O valor desta acao e o MODO, e nao "Iniciar": e o que a seta muda, e sem ele
+  // escrito na tela ninguem sabe qual das duas coisas o OK vai fazer.
+  SettingsField.GENERATE_THUMBS -> if (thumbsReset) "Refazer tudo" else "Só o que falta"
 
   SettingsField.SCAN_INCREMENTAL,
   SettingsField.SCAN_FULL,
@@ -408,7 +531,12 @@ private fun languageValue(lang: String?, none: String): String =
  * dele manteria o loop vivo a tarde inteira sem mudar um pixel.
  */
 fun libraryBusy(status: LibraryStatus): Boolean =
-  status.scan.state == TASK_RUNNING || status.metadata.state == TASK_RUNNING
+  status.scan.state == TASK_RUNNING ||
+    status.metadata.state == TASK_RUNNING ||
+    // A fila de quadros entra: ela desenha progresso no mesmo cartao da
+    // varredura, e num acervo grande e a mais demorada das tres — parar de
+    // perguntar deixaria a barra congelada no numero em que ela estava.
+    status.thumbs.state == TASK_RUNNING
 
 /**
  * Progresso da varredura: "1240 de 14320 — The Simpsons".
@@ -436,6 +564,62 @@ fun scanProgressPercent(status: LibraryStatus): Int? {
   val progress = status.scan.progress ?: return null
   if (status.scan.state != TASK_RUNNING || progress.total <= 0) return null
   return (progress.done * 100 / progress.total).coerceIn(0, 100)
+}
+
+/** Percentual escrito no canto do cartao de varredura: "42%". */
+fun scanPercentText(status: LibraryStatus): String? = percentLabel(scanProgressPercent(status))
+
+private fun percentLabel(percent: Int?): String? = percent?.let { "$it%" }
+
+/**
+ * Progresso da fila de quadros: "312 de 1840 — The Simpsons".
+ *
+ * Mesma forma da varredura porque o `ScanProgressRef` e o mesmo — e a mesma
+ * pergunta ("quanto falta e o que esta sendo feito agora"), so que com um
+ * ffmpeg no lugar do probe.
+ *
+ * @return null quando a fila nao esta rodando.
+ */
+fun thumbsProgressText(status: LibraryStatus): String? {
+  if (status.thumbs.state != TASK_RUNNING) return null
+
+  // Fila recem-disparada: ela ainda esta contando quantos episodios estao sem
+  // quadro, e uma barra vazia sem legenda parece tela travada.
+  val progress = status.thumbs.progress ?: return "Preparando as miniaturas…"
+
+  val head = "${progress.done} de ${progress.total}"
+  return if (progress.show.isBlank()) head else "$head — ${progress.show}"
+}
+
+/** @return 0..100, ou null quando nao ha o que medir — a barra some. */
+fun thumbsProgressPercent(status: LibraryStatus): Int? {
+  val progress = status.thumbs.progress ?: return null
+  if (status.thumbs.state != TASK_RUNNING || progress.total <= 0) return null
+  return (progress.done * 100 / progress.total).coerceIn(0, 100)
+}
+
+/**
+ * O cartao de progresso da tela, ja decidido.
+ *
+ * Ha UM cartao no layout e podem existir duas tarefas medindo ao mesmo tempo (a
+ * varredura dispara a fila de quadros no proprio fim). A varredura tem a frente
+ * porque ela e a que muda o acervo: o quadro que falta e cosmetico, o episodio
+ * que ainda nao foi indexado nao esta na tela de jeito nenhum.
+ */
+data class TaskCard(
+  val text: String,
+  /** 0..100 para a barra determinada; null quando nao ha total conhecido. */
+  val percent: Int? = null,
+) {
+  /** "42%" no canto do cartao; null quando a barra tambem sumiu. */
+  val percentText: String? get() = percentLabel(percent)
+}
+
+/** @return null quando nao ha tarefa nenhuma com progresso na tela. */
+fun taskCard(status: LibraryStatus): TaskCard? {
+  scanProgressText(status)?.let { return TaskCard(it, scanProgressPercent(status)) }
+  thumbsProgressText(status)?.let { return TaskCard(it, thumbsProgressPercent(status)) }
+  return null
 }
 
 /**

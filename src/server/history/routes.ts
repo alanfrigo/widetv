@@ -4,6 +4,8 @@ import type { SaveProgressRequest, WatchProgress } from '@shared/api-types';
 
 import type { WatchHistoryEntry, WatchHistoryRow } from '../library/index-store';
 
+import { listResume, RESUME_LIMIT, type ResumeSource } from './resume';
+
 /**
  * Historico de onde o usuario parou.
  *
@@ -13,9 +15,7 @@ import type { WatchHistoryEntry, WatchHistoryRow } from '../library/index-store'
  */
 
 /** Fonte estreita: so o que as rotas precisam do Store. */
-export interface HistorySource {
-  /** null quando o episodio nao existe no indice. */
-  hasEpisode(episodeId: string): boolean;
+export interface HistorySource extends ResumeSource {
   getWatchHistory(episodeId: string): WatchHistoryRow | null;
   upsertWatchHistory(row: WatchHistoryRow): void;
   deleteWatchHistory(episodeId: string): void;
@@ -60,6 +60,13 @@ export function registerHistoryRoutes(app: FastifyInstance, deps: HistoryRoutesD
     return deps.source.listWatchHistory(LIST_LIMIT).map(toProgress);
   });
 
+  app.get('/api/history/resume', async (_request, reply) => {
+    // Mesmo motivo do historico cru: a posicao muda a cada segundo assistido, e
+    // uma faixa cacheada mandaria o usuario de volta para onde ele ja passou.
+    reply.header('cache-control', 'no-store');
+    return listResume(deps.source, RESUME_LIMIT);
+  });
+
   // POST alem de PUT porque `navigator.sendBeacon` - o unico jeito confiavel de
   // gravar na saida da pagina - so fala POST.
   app.route({
@@ -75,7 +82,7 @@ export function registerHistoryRoutes(app: FastifyInstance, deps: HistoryRoutesD
 
       // Episodio fora do indice: 404 em vez de gravar lixo. Acontece de verdade
       // num rescan que removeu o arquivo com alguem assistindo.
-      if (!deps.source.hasEpisode(id)) {
+      if (deps.source.getEpisode(id) === null) {
         return reply.code(404).send({ error: 'episodio desconhecido' });
       }
 

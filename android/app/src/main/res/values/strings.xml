@@ -2,6 +2,19 @@
 <resources>
     <string name="app_name">WideTV</string>
 
+    <!-- Glifos / separadores reaproveitados em vários layouts -->
+    <string name="wordmark_wide">wide</string>
+    <string name="wordmark_tv">tv</string>
+    <string name="action_back">←  Voltar</string>
+    <string name="dot_separator">·</string>
+    <string name="glyph_play">▶</string>
+    <string name="glyph_close">✕</string>
+    <string name="glyph_fullscreen">⤢</string>
+    <string name="glyph_volume">♪</string>
+    <string name="glyph_search">○</string>
+    <string name="glyph_arrow_left">←</string>
+    <string name="glyph_arrow_right">→</string>
+
     <!-- Acesso -->
     <string name="gate_wordmark">WIDETV</string>
     <string name="gate_subtitle">Seu acervo, na sua TV.</string>
@@ -9,46 +22,81 @@
     <string name="gate_server_hint">endereco ou IP</string>
     <string name="gate_password_label">Senha</string>
     <string name="gate_password_hint">senha de acesso</string>
-    <string name="gate_enter">ENTRAR</string>
+    <string name="gate_enter">Entrar</string>
     <string name="gate_error">Senha incorreta.</string>
     <string name="gate_offline">Servidor fora do ar.</string>
     <string name="gate_no_server">Informe o endereco do servidor.</string>
 
-    <!-- Catalogo -->
+    <!-- Topbar / catálogo -->
     <string name="home_title">Acervo</string>
     <string name="home_loading">Carregando acervo…</string>
     <string name="home_empty">Nenhuma serie no acervo.</string>
     <string name="no_channels">Nenhuma serie no acervo.</string>
     <string name="no_signal">Sem sinal.</string>
+    <string name="nav_home">Início</string>
+    <string name="nav_live">Ao vivo</string>
+    <string name="nav_shelf">Séries</string>
+    <string name="search_hint">Buscar no acervo</string>
+    <string name="home_logout">Sair</string>
+
+    <!-- Hero do catálogo -->
+    <string name="hero_play">▶  Entrar no canal</string>
+    <string name="hero_episodes">Ver episódios</string>
+    <string name="hero_first">Do início</string>
+
+    <!-- Seções do catálogo -->
+    <string name="row_live_title">No ar agora</string>
+    <string name="row_resume_title">Continuar assistindo</string>
+    <string name="row_resume_aside">do histórico do servidor</string>
+    <string name="row_shelf_title">Todo o acervo</string>
+    <string name="row_shelf_aside">A → Z</string>
+    <string name="ghost_wide">frame do episódio</string>
 
     <!-- Serie -->
-    <string name="series_live">ASSISTIR AO VIVO</string>
-    <string name="series_start">DO INICIO</string>
+    <string name="series_live">Entrar no canal</string>
+    <string name="series_start">Do início</string>
     <string name="series_episodes">Episodios</string>
     <string name="series_loading">Carregando episodios…</string>
     <string name="series_empty">Nenhum episodio.</string>
 
     <!-- Painel de trilhas -->
-    <string name="tracks_title">Trilhas</string>
-    <string name="tracks_audio">AUDIO</string>
-    <string name="tracks_subtitles">LEGENDAS</string>
+    <string name="tracks_title">Áudio e legendas</string>
+    <string name="tracks_audio">Áudio</string>
+    <string name="tracks_subtitles">Legendas</string>
+    <string name="tracks_subs_in_episode">Legendas neste episódio</string>
     <string name="tracks_off">Desativadas</string>
     <string name="tracks_hint">OK aplica   VOLTAR fecha</string>
+    <string name="tracks_open">CC  Áudio e legendas</string>
+    <string name="track_remember">Lembrar este idioma</string>
+    <string name="panel_note">A escolha vale para toda a casa: fica gravada no servidor, não no navegador. ↑ ↓ escolhem · Enter confirma · Esc fecha.</string>
     <!-- Trilha sem `title` e sem idioma marcado no container. -->
     <string name="tracks_unnamed">Faixa %1$d</string>
     <string name="tracks_forced">%1$s (forcada)</string>
 
+    <!-- Player -->
+    <string name="player_live">ao vivo</string>
+    <string name="player_upnext">A seguir</string>
+    <string name="player_seek_back">−10</string>
+    <string name="player_seek_fwd">+10</string>
+    <string name="player_hint_vod">Espaço pausar · ← → 10 s · S áudio e legendas · M mudo · Esc voltar</string>
+    <string name="player_hint_live">↑ ↓ trocar de canal · S áudio e legendas · M mudo · Esc voltar</string>
+
     <!-- Configuracoes. Rotulo e valor de cada linha vem de `ui/Settings.kt`. -->
-    <string name="settings_open">CONFIGURAÇÕES</string>
+    <string name="settings_open">Configurações</string>
     <string name="settings_title">Configurações</string>
+    <string name="settings_group_playback">Reprodução</string>
     <string name="settings_library">Biblioteca</string>
     <string name="settings_loading">Carregando configurações…</string>
     <string name="settings_busy">Aguarde…</string>
     <string name="settings_started">Iniciado.</string>
     <string name="settings_already_running">Já está rodando.</string>
     <string name="settings_save_failed">Não foi possível salvar. O valor anterior voltou.</string>
-    <string name="settings_hint">↑ ↓ escolhe a linha   ← → muda o valor   OK aplica   VOLTAR fecha</string>
+    <string name="settings_hint">Valem para a casa toda — ficam gravadas no servidor. ↑ ↓ escolhem a linha · ← → mudam o valor · Enter confirma · Esc volta.</string>
+    <string name="scan_title">Varredura em andamento</string>
 
     <!-- Descricoes de acessibilidade -->
     <string name="cd_poster">Capa da serie</string>
+    <string name="cd_backdrop">Arte do canal</string>
+    <string name="cd_card_art">Arte do card</string>
+    <string name="cd_episode_thumb">Miniatura do episódio</string>
 </resources>

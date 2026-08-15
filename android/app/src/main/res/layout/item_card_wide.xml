@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Card 16:9 das faixas "No ar agora" e "Continuar assistindo".
+
+  A altura da arte sai da largura: `WideFrame` forca 9/16 no proprio `onMeasure`.
+  Altura em `dp` fixo mentiria assim que `card_wide_width` mudasse de valor, e
+  ele muda: a largura do card vem da resolucao da TV.
+
+  O item inteiro e o que recebe o foco; a moldura de acento vive no `foreground`
+  da arte, que copia o estado do pai (`duplicateParentState`). A escala 1.03 e a
+  elevacao sao animadas no ViewHolder.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/card"
+    android:layout_width="@dimen/card_wide_width"
+    android:layout_height="wrap_content"
+    android:layout_marginEnd="@dimen/rail_gap"
+    android:focusable="true"
+    android:orientation="vertical">
+
+    <com.widetv.app.ui.WideFrame
+        android:id="@+id/card_art"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/stripes"
+        android:duplicateParentState="true"
+        android:foreground="@drawable/card_frame">
+
+        <ImageView
+            android:id="@+id/card_img"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/cd_card_art"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+
+        <!-- Rotulo do placeholder listrado. Some assim que a arte chega. -->
+        <TextView
+            android:id="@+id/card_ghost"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:letterSpacing="0.12"
+            android:text="@string/ghost_wide"
+            android:textAllCaps="true"
+            android:textColor="@color/ghost"
+            android:textSize="@dimen/text_tag" />
+
+        <TextView
+            android:id="@+id/card_chan"
+            android:layout_width="wrap_content"
+            android:layout_height="18dp"
+            android:layout_gravity="top|start"
+            android:layout_margin="8dp"
+            android:background="@drawable/badge_dark"
+            android:gravity="center"
+            android:letterSpacing="0.08"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:textColor="@color/text"
+            android:textSize="@dimen/text_micro"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/card_live"
+            android:layout_width="wrap_content"
+            android:layout_height="18dp"
+            android:layout_gravity="top|end"
+            android:layout_margin="8dp"
+            android:background="@drawable/badge_live"
+            android:gravity="center"
+            android:letterSpacing="0.12"
+            android:paddingStart="7dp"
+            android:paddingEnd="7dp"
+            android:text="@string/player_live"
+            android:textAllCaps="true"
+            android:textColor="@color/live_ink"
+            android:textSize="@dimen/text_tag"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <!-- Botao de play so na faixa "Continuar assistindo". -->
+        <TextView
+            android:id="@+id/card_play"
+            android:layout_width="39dp"
+            android:layout_height="39dp"
+            android:layout_gravity="center"
+            android:background="@drawable/play_circle_dark"
+            android:gravity="center"
+            android:text="@string/glyph_play"
+            android:textColor="@color/text"
+            android:textSize="@dimen/text_card"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/card_left"
+            android:layout_width="wrap_content"
+            android:layout_height="17dp"
+            android:layout_gravity="bottom|end"
+            android:layout_marginEnd="8dp"
+            android:layout_marginBottom="9dp"
+            android:background="@drawable/badge_dark"
+            android:gravity="center"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:textColor="@color/text"
+            android:textSize="@dimen/text_tag"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <!--
+          `minHeight`/`maxHeight` iguais a altura: sem isso o ProgressBar impoe
+          a altura minima do tema e a barra fica gorda demais.
+        -->
+        <ProgressBar
+            android:id="@+id/card_bar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:layout_gravity="bottom"
+            android:indeterminate="false"
+            android:max="1000"
+            android:maxHeight="3dp"
+            android:minHeight="3dp"
+            android:progressDrawable="@drawable/progress_track" />
+    </com.widetv.app.ui.WideFrame>
+
+    <TextView
+        android:id="@+id/card_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:ellipsize="end"
+        android:letterSpacing="-0.01"
+        android:maxLines="1"
+        android:textColor="@color/text"
+        android:textSize="@dimen/text_card"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/card_sub"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/muted"
+        android:textSize="@dimen/text_meta" />
+
+    <TextView
+        android:id="@+id/card_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/accent"
+        android:textSize="@dimen/text_micro"
+        android:textStyle="bold"
+        android:visibility="gone" />
+</LinearLayout>
