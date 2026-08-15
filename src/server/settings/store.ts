@@ -150,6 +150,17 @@ function readLang(raw: string | undefined): string | null {
   return canonicalLang(raw);
 }
 
+/**
+ * Agrupamento efetivo para quem roda FORA do servidor (o scan.js do container).
+ *
+ * O CLI nao monta o servico inteiro, mas nao pode ignorar a escolha do painel:
+ * um scan manual que agrupasse diferente do rescan da madrugada reescreveria
+ * metade do indice num criterio e metade no outro, a cada rodada.
+ */
+export function effectiveSmartGrouping(store: SettingsStore, envDefault: boolean): boolean {
+  return readBoolean(store.getSetting(KEY.smartGrouping) ?? undefined, envDefault);
+}
+
 export function createSettingsService(
   store: SettingsStore,
   defaults: SettingsDefaults,

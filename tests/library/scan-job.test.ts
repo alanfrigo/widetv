@@ -205,6 +205,35 @@ describe('runScan', () => {
     expect(store.listShows()).toHaveLength(0);
   });
 
+  test('canal existente sobrevive a uma rodada em que todos os seus arquivos falharam', async () => {
+    // O caso real e uma ACL errada no NAS: os arquivos continuam la, mas a
+    // leitura falha. Podar aqui apagaria o canal e o renumeraria quando a
+    // permissao voltasse - um erro passageiro nao pode custar o numero do canal.
+    const primeiro = await makeEpisode('ThunderCats', 'ep 01.mp4');
+    const segundo = await makeEpisode('ThunderCats', 'ep 02.mp4');
+    await runScan({ root, store, probe: fakeProbe().probe });
+    const canal = store.listShows()[0]!.channelNumber;
+
+    // mtime novo derruba o cache; o probe que sempre falha simula a leitura
+    // negada em todos os arquivos da serie.
+    const futuro = new Date(Date.now() + 60_000);
+    await utimes(primeiro, futuro, futuro);
+    await utimes(segundo, futuro, futuro);
+    const report = await runScan({
+      root,
+      store,
+      probe: () => Promise.reject(new Error('EACCES: permission denied')),
+    });
+
+    expect(report.removedShows).toBe(0);
+    expect(report.failed).toHaveLength(2);
+    const shows = store.listShows();
+    expect(shows).toHaveLength(1);
+    expect(shows[0]!.channelNumber).toBe(canal);
+    // Os episodios ja indexados ficam como estavam ate uma rodada limpa.
+    expect(store.listEpisodes(shows[0]!.id)).toHaveLength(2);
+  });
+
   test('reporta progresso durante o scan', async () => {
     await makeEpisode('ThunderCats', 'ep 01.mp4');
     await makeEpisode('He-Man', 'ep 01.mp4');

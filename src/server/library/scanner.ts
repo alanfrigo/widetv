@@ -334,6 +334,15 @@ async function assertDirectory(root: string): Promise<void> {
     stats = await fs.stat(root);
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
+    // Permissao negada NAO e "nao encontrada": dizer o nome errado do problema
+    // manda o operador conferir o caminho quando o defeito e a ACL do dataset.
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      throw new Error(
+        `Sem permissao para ler a raiz da biblioteca: ${root} (${reason})`,
+        { cause },
+      );
+    }
     throw new Error(
       `Raiz da biblioteca nao encontrada: ${root} (${reason})`,
       { cause },

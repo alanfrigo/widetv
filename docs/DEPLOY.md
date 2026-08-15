@@ -168,28 +168,27 @@ nao reindexa nada. Para desligar a indexacao automatica e comandar na mao, veja
 
 ## 5. TrueNAS SCALE
 
-O painel de Apps do SCALE nao faz `build` - ele so roda imagem pronta. Duas
-saidas:
+O painel de Apps do SCALE nao faz `build` - ele so roda imagem pronta. A
+imagem ja existe, publica e multi-arch (amd64 e arm64), publicada pelo CI a
+cada push:
 
-**A) Construir na propria NAS (mais simples).** Por SSH:
+```bash
+docker pull ghcr.io/alanfrigo/widetv:latest
+```
+
+E o caminho normal: nada para construir, nada para transferir. Construir na mao
+so faz sentido com codigo modificado localmente - nesse caso, por SSH na NAS:
 
 ```bash
 cd /mnt/tank/apps/widetv        # clone do projeto aqui
 docker compose build              # gera widetv:latest na NAS
 ```
 
-**B) Construir na sua maquina e transferir:**
-
-```bash
-docker compose build
-docker save widetv:latest | ssh truenas 'docker load'
-```
-
-Se a NAS for arm64 e voce estiver num Mac Apple Silicon, isso ja bate. Vindo de
-um PC x86, force o alvo: `docker compose build --builder default` nao resolve -
-use `docker buildx build --platform linux/arm64 -t widetv:latest --load .`.
-O `better-sqlite3` e um binario nativo: imagem da arquitetura errada quebra no
-primeiro acesso ao banco.
+Construindo em outra maquina e transferindo (`docker save | ssh truenas
+'docker load'`), cuidado com a arquitetura: o `better-sqlite3` e um binario
+nativo, e imagem de arquitetura errada quebra no primeiro acesso ao banco. De
+um Mac Apple Silicon para NAS x86, force
+`docker buildx build --platform linux/amd64 -t widetv:latest --load .`.
 
 ### Datasets
 
@@ -207,11 +206,48 @@ nomeado, o dataset precisa ser **do uid 1000**, senao o SQLite nao abre:
 chown -R 1000:1000 /mnt/tank/apps/widetv-data
 ```
 
+### Dar leitura ao uid 1000 (a pegadinha classica)
+
+O erro mais comum do deploy inteiro e este: a biblioteca foi criada por outro
+usuario (o do SMB, o `apps` de uid 568, root) e o uid 1000 nao le nada. O
+sintoma e o servidor subir saudavel e o scan falhar com `EACCES` - o log do
+container diz isso com todas as letras, inclusive no boot.
+
+Como liberar, dependendo do tipo de ACL do dataset (**Datasets → Permissions**):
+
+- **Dataset POSIX (Unix permissions)**, por SSH:
+
+  ```bash
+  chmod -R o+rX /mnt/tank/midia/desenhos
+  ```
+
+  `o+rX` da leitura para todo mundo e execucao so em diretorio; nao mexe em
+  dono nem em escrita.
+
+- **Dataset com NFSv4 ACL** (padrao de dataset SMB): na UI, **Edit ACL → Add
+  Item**, `Who: User`, usuario `1000` (digite o numero mesmo que nao exista
+  usuario com esse uid na NAS), permissao **Read**, e marque **Apply
+  permissions recursively** ao salvar.
+
+Teste rapido, por SSH na NAS, antes de subir a app:
+
+```bash
+sudo -u '#1000' ls /mnt/tank/midia/desenhos | head
+```
+
+Listou as pastas das series? O scan vai funcionar. `Permission denied`? A app
+vai falhar do mesmo jeito - ajuste a ACL primeiro.
+
+Arquivo novo chegando por SMB herda a ACL do dataset, entao a liberacao
+recursiva feita uma vez continua valendo para as proximas temporadas.
+
 ### Instalar como Custom App
 
 1. **Apps → Discover Apps → Custom App → Install via YAML**.
 2. Cole o conteudo do `docker-compose.yml` com dois ajustes:
-   - tire o bloco `build:` (a NAS usa a imagem ja construida);
+   - troque o bloco `build:` + `image: widetv:latest` por
+     `image: ghcr.io/alanfrigo/widetv:latest` (ou mantenha `widetv:latest` se
+     construiu na NAS);
    - troque `${LIBRARY_ROOT}` pelo caminho real do dataset.
 3. As variaveis de ambiente: prefira os campos da UI, onde o valor vai
    **literal** (sem aspas, sem `$$`). Se preferir deixa-las inline no YAML,
@@ -224,7 +260,7 @@ YAML minimo para a UI, ja sem `build`:
 ```yaml
 services:
   widetv:
-    image: widetv:latest
+    image: ghcr.io/alanfrigo/widetv:latest
     restart: unless-stopped
     init: true
     environment:
@@ -364,6 +400,16 @@ docker compose exec widetv node dist/server/remux.js /media/biblioteca
 
 **Atualizar**
 
+Rodando a imagem do GHCR (o caso do TrueNAS):
+
+```bash
+docker pull ghcr.io/alanfrigo/widetv:latest
+```
+
+e reinicie a app pela UI (ou o botao de update dela, quando aparecer).
+
+Rodando build local:
+
 ```bash
 git pull
 docker compose build
@@ -394,6 +440,7 @@ tambem o `SESSION_SECRET`.
 | `SQLITE_CANTOPEN` | `/data` sem permissao para o uid 1000 |
 | `nao consegui criar o diretorio de dados /app/data` | `DATA_DIR` chegou em branco e virou caminho relativo. A UI do TrueNAS manda campo vazio como string vazia: ponha `/data` explicitamente |
 | `sem permissao de escrita em ...` | `DATA_DIR` aponta para fora do volume, ou o volume nao pertence ao uid 1000 |
+| `scan falhou: EACCES` / `sem permissao para ler LIBRARY_ROOT` | biblioteca sem leitura para o uid 1000 - secao "Dar leitura ao uid 1000" |
 | Sobe, loga, mas nenhum canal aparece | indexacao ainda rodando. `docker compose logs -f widetv \| grep scan` |
 | `scan terminou sem nenhum canal` | `LIBRARY_ROOT` errado dentro do container, ou volume montado vazio. A raiz e a pasta que contem **uma pasta por desenho** |
 | Canais renumerados do nada | volume de dados perdido ou recriado |

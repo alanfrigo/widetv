@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { ensureDataDir } from '../data-dir';
 import { openStore } from '../library/index-store';
 import { runScan } from '../library/scan-job';
+import { effectiveSmartGrouping } from '../settings/store';
 
 /**
  * Indexacao do acervo.
@@ -34,10 +35,19 @@ async function main(): Promise<void> {
   ensureDataDir(dataDir);
   const store = openStore(join(dataDir, 'library.sqlite'));
 
+  // Mesmo criterio do servidor: escolha do painel quando existe, senao o
+  // SMART_GROUPING do ambiente. Um scan manual com criterio proprio reagruparia
+  // o acervo de um jeito que o rescan da madrugada desfaria na rodada seguinte.
+  const smartGrouping = effectiveSmartGrouping(
+    store,
+    process.env.SMART_GROUPING?.trim().toLowerCase() !== 'false',
+  );
+
   let ultimoAviso = 0;
   const report = await runScan({
     root,
     store,
+    smartGrouping,
     onProgress: ({ done, total, show }) => {
       // Progresso vai para stderr para nao sujar um stdout redirecionado.
       const agora = Date.now();

@@ -74,7 +74,7 @@ interface FakeScan {
   /** Empurra um progresso da rodada em voo. */
   progresso(done: number, total: number, show: string): void;
   terminar(overrides?: Partial<ScanReport>): Promise<void>;
-  falhar(motivo: string): Promise<void>;
+  falhar(motivo: string, code?: string): Promise<void>;
 }
 
 function makeScan(): FakeScan {
@@ -98,8 +98,11 @@ function makeScan(): FakeScan {
       resolver?.(scanReport(overrides));
       await flush();
     },
-    async falhar(motivo) {
-      rejeitar?.(new Error(motivo));
+    async falhar(motivo, code) {
+      const error = new Error(motivo);
+      // Mesmo formato dos erros de fs: um Error com `code` pendurado.
+      if (code !== undefined) (error as NodeJS.ErrnoException).code = code;
+      rejeitar?.(error);
       await flush();
     },
   };
@@ -266,6 +269,7 @@ interface Harness {
   thumbs: FakeThumbs;
   ordem: string[];
   store: Store;
+  logs: string[];
 }
 
 let harness: Harness;
@@ -280,6 +284,7 @@ function montar(overrides: Partial<AppSettings> = {}): Harness {
   const remuxes: RemuxJobOptions[] = [];
   const thumbs = makeThumbs(ordem);
   const store = openStore(':memory:');
+  const logs: string[] = [];
 
   const controller = createLibraryController({
     store,
@@ -287,7 +292,9 @@ function montar(overrides: Partial<AppSettings> = {}): Harness {
     libraryRoot: '/lib',
     dataDir: '/data',
     settings: settings.service,
-    log: () => undefined,
+    log: (message) => {
+      logs.push(message);
+    },
     scan: scan.scan,
     remux: (options) => {
       ordem.push('remux');
@@ -299,7 +306,7 @@ function montar(overrides: Partial<AppSettings> = {}): Harness {
     startTimer: timer.start,
   });
 
-  return { controller, scan, enricher, settings, timer, remuxes, thumbs, ordem, store };
+  return { controller, scan, enricher, settings, timer, remuxes, thumbs, ordem, store, logs };
 }
 
 beforeEach(() => {
@@ -399,6 +406,23 @@ describe('status', () => {
     expect(harness.controller.status().scan.state).toBe('idle');
     // Falha nao encadeia capa nem remux: nao ha indice novo a enriquecer.
     expect(harness.ordem).toEqual([]);
+  });
+
+  test('EACCES no scan ganha a dica de permissao do NAS no log', async () => {
+    // O caso classico do deploy em NAS: dataset da biblioteca sem leitura para
+    // o uid do container. O EACCES cru nao diz isso; a dica diz.
+    harness.controller.startScan('incremental');
+    await harness.scan.falhar('EACCES: permission denied, scandir /lib', 'EACCES');
+
+    expect(harness.logs.some((line) => line.includes('Permissao negada'))).toBe(true);
+    expect(harness.logs.some((line) => line.includes('ACL'))).toBe(true);
+  });
+
+  test('falha sem codigo de permissao NAO ganha a dica', async () => {
+    harness.controller.startScan('incremental');
+    await harness.scan.falhar('NAS sumiu');
+
+    expect(harness.logs.some((line) => line.includes('Permissao negada'))).toBe(false);
   });
 
   test('estado de metadata e remux reflete a rodada em voo', async () => {

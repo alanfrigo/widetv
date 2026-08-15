@@ -4,6 +4,7 @@ import { openStore } from '../../src/server/library/index-store';
 import {
   canonicalLang,
   createSettingsService,
+  effectiveSmartGrouping,
   SettingsError,
   type SettingsDefaults,
   type SettingsStore,
@@ -38,6 +39,22 @@ function service(seed: Record<string, string> = {}, defaults: SettingsDefaults =
   const store = fakeStore(seed);
   return { store, settings: createSettingsService(store, defaults) };
 }
+
+describe('effectiveSmartGrouping (o atalho do CLI)', () => {
+  test('sem linha no banco, vale o default do ambiente', () => {
+    expect(effectiveSmartGrouping(fakeStore(), true)).toBe(true);
+    expect(effectiveSmartGrouping(fakeStore(), false)).toBe(false);
+  });
+
+  test('a escolha do painel vence o ambiente', () => {
+    expect(effectiveSmartGrouping(fakeStore({ smart_grouping: 'false' }), true)).toBe(false);
+    expect(effectiveSmartGrouping(fakeStore({ smart_grouping: 'true' }), false)).toBe(true);
+  });
+
+  test('linha ilegivel cai no default, igual ao servico', () => {
+    expect(effectiveSmartGrouping(fakeStore({ smart_grouping: 'talvez' }), true)).toBe(true);
+  });
+});
 
 describe('valores efetivos', () => {
   test('sem linha nenhuma, tudo vem do .env', () => {

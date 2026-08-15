@@ -8,6 +8,7 @@ import { registerAuthGuard, registerAuthRoutes } from './auth/routes';
 import { registerChannelRoutes } from './channels/routes';
 import { loadConfig } from './config';
 import { ensureDataDir } from './data-dir';
+import { libraryRootWarning } from './library-root';
 import { registerHistoryRoutes } from './history/routes';
 import { openStore } from './library/index-store';
 import { registerLibraryRoutes } from './library/routes';
@@ -51,6 +52,14 @@ async function main(): Promise<void> {
     // 100 sozinho). 2048 cobre pasta + temporada + arquivo com folga.
     maxParamLength: 2048,
   });
+
+  // Aviso, nao erro: a checagem de verdade e o scan. Mas o scan e assincrono
+  // (ou nem roda, com AUTO_SCAN=false), e o operador olha o log logo depois do
+  // deploy - e agora que um dataset ilegivel precisa aparecer.
+  const avisoBiblioteca = libraryRootWarning(config.libraryRoot);
+  if (avisoBiblioteca !== null) {
+    app.log.warn(avisoBiblioteca);
+  }
 
   // Preferencias do usuario. O `.env` entra so como DEFAULT: gravar no painel
   // sobrepoe, apagar volta ao ambiente.

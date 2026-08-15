@@ -122,6 +122,10 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
 
   const failed: ScanFailure[] = [];
   const keptSlugs: string[] = [];
+  // Series cujos arquivos falharam TODOS nesta rodada (permissao, I/O). Elas
+  // nao viram canal novo, mas tambem nao podem ser podadas: prune aqui
+  // transformaria uma ACL errada no NAS em canal apagado e renumerado.
+  const protectedSlugs: string[] = [];
   let probed = 0;
   let cached = 0;
   let removedEpisodes = 0;
@@ -167,8 +171,13 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
     }
 
     // Serie sem nenhum arquivo legivel nao vira canal: um canal vazio quebra o
-    // relogio da grade.
-    if (usable.length === 0) continue;
+    // relogio da grade. Mas o scanner SO chega aqui com episodio em disco,
+    // entao usable vazio significa falha de leitura, nao pasta removida - o
+    // canal que ja existe no indice fica como esta ate uma rodada limpa.
+    if (usable.length === 0) {
+      protectedSlugs.push(show.slug);
+      continue;
+    }
 
     const row = store.upsertShow({
       slug: show.slug,
@@ -186,7 +195,7 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
     episodes += rows.length;
   }
 
-  const removedShows = store.pruneShows(keptSlugs);
+  const removedShows = store.pruneShows([...keptSlugs, ...protectedSlugs]);
 
   return {
     shows: keptSlugs.length,

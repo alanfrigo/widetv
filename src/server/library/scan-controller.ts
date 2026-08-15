@@ -83,6 +83,28 @@ function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Permissao negada em qualquer ponto da cadeia (o scanner embrulha o erro
+ * original em `cause`). No NAS esse e O defeito classico de deploy - dataset
+ * com ACL que nao inclui o uid do container - e o EACCES cru nao diz isso.
+ */
+function isPermissionDenied(error: unknown): boolean {
+  for (let atual = error; atual instanceof Error; atual = atual.cause) {
+    const code = (atual as NodeJS.ErrnoException).code;
+    if (code === 'EACCES' || code === 'EPERM') return true;
+  }
+  return false;
+}
+
+function permissionHint(error: unknown): string {
+  if (!isPermissionDenied(error)) return '';
+  const uid = process.getuid?.();
+  return (
+    ` Permissao negada: a biblioteca precisa de LEITURA para o usuario do container` +
+    `${uid === undefined ? '' : ` (uid ${uid})`}. No TrueNAS, ajuste a ACL do dataset.`
+  );
+}
+
 export function createLibraryController(deps: LibraryControllerDeps): LibraryController {
   const now = deps.now ?? Date.now;
   const scan = deps.scan ?? runScan;
@@ -309,7 +331,10 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
       finishedAt: now(),
       error: motivo,
     };
-    log(`${origem} falhou: ${motivo}. Rode manualmente: ${scanCommand(deps.libraryRoot)}`);
+    log(
+      `${origem} falhou: ${motivo}.${permissionHint(error)} ` +
+        `Rode manualmente: ${scanCommand(deps.libraryRoot)}`,
+    );
   }
 
   /** Trava unica dos tres gatilhos. Nunca lanca; nunca espera. */
