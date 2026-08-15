@@ -772,3 +772,15 @@ PUT|POST /api/history/:id        ->  204   corpo: { positionMs, durationMs }
   de 95%; grava a cada 10 s, na pausa, no fim (apaga), ao sair do player e no
   `visibilitychange` para hidden. A lista de episodios pinta uma barra fina de
   progresso por episodio comecado.
+
+## 12. Rescan diario
+
+`RESCAN_TIME` (HH:MM local, default 04:00, `off` desliga) agenda um
+`runScan` completo por dia dentro do proprio servidor
+(`library/rescan-timer.ts`) - o container nao tem cron. O scan ja e
+incremental (cache de probe por mtime/size) e ja faz o prune de episodios e
+series removidos; depois dele disparam o enricher (capas de series novas) e o
+remux. Uma trava compartilhada com o scan de bootstrap impede duas varreduras
+simultaneas; erro no rescan e logado e o dia seguinte tenta de novo. Reagenda
+DEPOIS de terminar: acervo que leva horas empurra o proximo disparo em vez de
+acumular.

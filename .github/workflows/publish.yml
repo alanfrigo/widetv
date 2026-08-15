@@ -76,6 +76,11 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Attestation de proveniencia
+        # O GitHub nao aceita attestation em repositorio PRIVADO de usuario
+        # ("Feature not available for user-owned private repositories") e o
+        # passo derruba o job DEPOIS da imagem ja publicada - o run fica
+        # vermelho a toa. Se o repositorio virar publico, o passo volta sozinho.
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@v2
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}

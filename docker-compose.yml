@@ -31,6 +31,9 @@ services:
       # se preferir controlar o scan na mao com:
       #   docker compose exec widetv node dist/server/scan.js /media/biblioteca
       AUTO_SCAN: "true"
+      # Rescan diario no horario LOCAL (a TZ abaixo manda): adiciona series e
+      # episodios novos e remove os que sairam do disco. "off" desliga.
+      RESCAN_TIME: "04:00"
       # Converte MKV/Dolby para MP4 em segundo plano (copia de bytes, sem
       # transcode). As copias ficam no volume de DATA_DIR e ocupam mais ou
       # menos o tamanho dos proprios MKV; "false" desliga.

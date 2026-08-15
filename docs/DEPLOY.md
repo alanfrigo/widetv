@@ -349,6 +349,12 @@ Rodar de novo e barato, so o que mudou de `mtime` ou tamanho volta para o
 `ffprobe`. Series novas ganham numero de canal no fim da lista; as existentes
 nao se mexem. Para desligar o automatico, ponha `AUTO_SCAN=false`.
 
+Alem do scan de indice vazio, o servidor faz um **rescan diario** no horario de
+`RESCAN_TIME` (padrao 04:00, hora LOCAL do container - a `TZ` do compose
+manda): series e episodios novos entram, os apagados saem, e capas e remux
+rodam em seguida. `RESCAN_TIME=off` desliga; o comando manual acima continua
+valendo a qualquer hora.
+
 O remux (MKV/Dolby para MP4, veja `AUTO_REMUX` no `.env.example`) roda sozinho
 depois do scan e em todo boot. Para rodar na mao:
 

@@ -172,6 +172,7 @@ npm run build && npm start
 | `LIBRARY_ROOT` | Root folder of the library |
 | `DATA_DIR` | SQLite index, covers and subtitle cache. Must be writable. Do not leave it blank: blank falls back to a relative path, which inside the container is `/app/data`, with no volume and no write permission |
 | `AUTO_SCAN` | Indexes on its own when the index is empty. Only the exact string `false` turns it off |
+| `RESCAN_TIME` | Daily library rescan at this LOCAL time (`HH:MM`, default `04:00`): adds new shows/episodes and removes deleted ones. `off` disables |
 | `AUTO_REMUX` | Converts MKV/Dolby episodes to browser-safe MP4 in the background (byte copy, no transcode). Copies live in `DATA_DIR/remux` and take roughly the size of the MKVs themselves. Only the exact string `false` turns it off |
 | `TMDB_API_KEY` | Optional. Puts TMDB first in the cover chain, with pt-BR synopses. Without it, TVMaze and iTunes are used |
 | `PORT` | HTTP port, default 8080 |

@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 
 import { isValidPasswordHash } from './auth/password';
+import type { RescanTime } from './library/rescan-timer';
 
 /**
  * Leitura e validacao das variaveis de ambiente.
@@ -31,6 +32,11 @@ export interface AppConfig {
    * espaco em DATA_DIR, entao da para desligar.
    */
   autoRemux: boolean;
+  /**
+   * Horario LOCAL do rescan diario da biblioteca (adiciona e remove episodios
+   * sozinho). `null` quando desligado (RESCAN_TIME=off).
+   */
+  rescanTime: RescanTime | null;
   /**
    * Chave do TMDB, opcional. `null` quando ausente: a busca de capa cai nos
    * provedores sem chave (TVMaze, iTunes) e o servidor sobe do mesmo jeito.
@@ -64,6 +70,31 @@ function parsePort(raw: string | undefined): number {
     throw new ConfigError(`PORT precisa estar entre 1 e 65535, recebeu ${port}.`);
   }
   return port;
+}
+
+/** Mesmo valor do .env.example: madrugada, depois do horario tipico de download. */
+const DEFAULT_RESCAN_TIME = '04:00';
+
+/**
+ * `HH:MM` local, `off`/`false` desliga, vazio cai no default. Formato torto e
+ * erro de boot, nao um default silencioso: um horario ignorado so seria
+ * descoberto quando a serie nova nunca aparecesse.
+ */
+function parseRescanTime(raw: string | undefined): RescanTime | null {
+  const value = raw?.trim() || DEFAULT_RESCAN_TIME;
+  const lowered = value.toLowerCase();
+  if (lowered === 'off' || lowered === 'false') return null;
+
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value);
+  if (match?.[1] === undefined || match[2] === undefined) {
+    throw new ConfigError(`RESCAN_TIME precisa ser HH:MM (ou "off"), recebeu "${value}".`);
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) {
+    throw new ConfigError(`RESCAN_TIME fora do relogio: "${value}".`);
+  }
+  return { hour, minute };
 }
 
 function parseEpoch(raw: string | undefined): number {
@@ -108,6 +139,7 @@ export function loadConfig(env: Env): AppConfig {
     autoScan: env.AUTO_SCAN?.trim().toLowerCase() !== 'false',
     // Mesma regra do AUTO_SCAN: so "false" desliga.
     autoRemux: env.AUTO_REMUX?.trim().toLowerCase() !== 'false',
+    rescanTime: parseRescanTime(env.RESCAN_TIME),
     // Variavel em branco (a UI do TrueNAS manda assim) conta como ausente: uma
     // chave vazia so renderia 401 em toda busca de capa.
     tmdbApiKey: env.TMDB_API_KEY?.trim() || null,

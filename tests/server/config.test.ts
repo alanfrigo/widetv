@@ -46,6 +46,22 @@ describe('loadConfig', () => {
     expect(loadConfig(env({ AUTO_REMUX: '0' })).autoRemux).toBe(true);
   });
 
+  test('rescanTime: default 04:00, HH:MM local, off/false desliga', () => {
+    expect(loadConfig(env()).rescanTime).toEqual({ hour: 4, minute: 0 });
+    expect(loadConfig(env({ RESCAN_TIME: '3:30' })).rescanTime).toEqual({ hour: 3, minute: 30 });
+    expect(loadConfig(env({ RESCAN_TIME: '23:59' })).rescanTime).toEqual({ hour: 23, minute: 59 });
+    expect(loadConfig(env({ RESCAN_TIME: 'off' })).rescanTime).toBeNull();
+    expect(loadConfig(env({ RESCAN_TIME: 'false' })).rescanTime).toBeNull();
+    // Vazio (UI de NAS manda assim) conta como ausente e cai no default.
+    expect(loadConfig(env({ RESCAN_TIME: '' })).rescanTime).toEqual({ hour: 4, minute: 0 });
+  });
+
+  test('rescanTime torto e erro de boot, nao default silencioso', () => {
+    for (const value of ['4h', '25:00', '04:60', 'madrugada', '4:0']) {
+      expect(() => loadConfig(env({ RESCAN_TIME: value }))).toThrow(/RESCAN_TIME/);
+    }
+  });
+
   test('DATA_DIR vazio nao vira caminho relativo silencioso', () => {
     // Uma UI que manda a variavel em branco (TrueNAS faz isso) derrubava o
     // dataDir para ./data, ou seja /app/data dentro do container: diretorio do

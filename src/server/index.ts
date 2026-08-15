@@ -11,6 +11,7 @@ import { ensureDataDir } from './data-dir';
 import { registerHistoryRoutes } from './history/routes';
 import { openStore, type Store } from './library/index-store';
 import { runRemux } from './library/remux-job';
+import { startDailyRescan } from './library/rescan-timer';
 import { runScan } from './library/scan-job';
 import { createVariantQueue } from './library/variant-queue';
 import { createEnricher, type Enricher } from './metadata/service';
@@ -93,15 +94,22 @@ function createRemuxTrigger(
   };
 }
 
+/** Trava de scan: bootstrap e rescan noturno nunca varrem o disco em dobro. */
+interface ScanLock {
+  running: boolean;
+}
+
 function bootstrapScan(
   app: FastifyInstance,
   store: Store,
   libraryRoot: string,
   enricher: Enricher,
+  lock: ScanLock,
   onScanDone?: () => void,
 ): void {
   app.log.info(`indice vazio, indexando ${libraryRoot} em segundo plano`);
 
+  lock.running = true;
   let ultimoLog = 0;
   void runScan({
     root: libraryRoot,
@@ -140,6 +148,9 @@ function bootstrapScan(
         `scan falhou: ${error instanceof Error ? error.message : String(error)}. ` +
           `Rode manualmente: ${scanCommand(libraryRoot)}`,
       );
+    })
+    .finally(() => {
+      lock.running = false;
     });
 }
 
@@ -173,11 +184,13 @@ async function main(): Promise<void> {
     ? createRemuxTrigger(app, store, config.libraryRoot, config.dataDir)
     : undefined;
 
+  const scanLock: ScanLock = { running: false };
+
   // Indice existente mas sem nenhuma serie conta como vazio: e o estado de um
   // scan que nunca rodou e o de um scan interrompido no comeco.
   if (store.listShows().length === 0) {
     if (config.autoScan) {
-      bootstrapScan(app, store, config.libraryRoot, enricher, triggerRemux);
+      bootstrapScan(app, store, config.libraryRoot, enricher, scanLock, triggerRemux);
     } else {
       app.log.warn(
         `indice vazio em ${dbPath} e AUTO_SCAN=false. Rode: ${scanCommand(config.libraryRoot)}`,
@@ -188,6 +201,40 @@ async function main(): Promise<void> {
     // (deploy da feature, rodada interrompida). Quando esta tudo pronto, ela so
     // percorre o indice e volta - barata o bastante para rodar sempre.
     triggerRemux?.();
+  }
+
+  // Rescan diario da madrugada: adiciona o que chegou no NAS e remove o que
+  // saiu (o prune do scan-job cuida dos dois), depois busca capa das series
+  // novas e remuxa o que precisar. Rodar de novo e barato: so arquivo com
+  // mtime/tamanho novos passa pelo ffprobe.
+  if (config.rescanTime !== null) {
+    startDailyRescan({
+      time: config.rescanTime,
+      log: (message) => {
+        app.log.info(message);
+      },
+      run: async () => {
+        if (scanLock.running) {
+          // Bootstrap gigante ainda no ar: amanha tem outra madrugada.
+          app.log.warn('rescan pulado: outro scan ja esta em andamento');
+          return;
+        }
+        scanLock.running = true;
+        try {
+          const report = await runScan({ root: config.libraryRoot, store });
+          app.log.info(
+            `rescan concluido: ${report.shows} canais, ${report.episodes} episodios, ` +
+              `${report.probed} analisados (${report.cached} do cache), ` +
+              `${report.removedShows} canais e ${report.removedEpisodes} episodios removidos` +
+              (report.failed.length > 0 ? `, ${report.failed.length} falharam` : ''),
+          );
+          enricher.trigger();
+          triggerRemux?.();
+        } finally {
+          scanLock.running = false;
+        }
+      },
+    });
   }
 
   await app.register(cookie);
