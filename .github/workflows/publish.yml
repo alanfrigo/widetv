@@ -4,7 +4,7 @@ name: Publish image
 # O build local depende da maquina de quem roda; este nao.
 on:
   push:
-    branches: [main]
+    branches: [master]
     tags: ['v*']
   workflow_dispatch:
 
