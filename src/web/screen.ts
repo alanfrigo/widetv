@@ -1,7 +1,7 @@
 /**
  * Maquina de telas do app.
  *
- * Quatro telas e uma regra so: quem manda no que aparece e este reducer, nunca
+ * Cinco telas e uma regra so: quem manda no que aparece e este reducer, nunca
  * um `hidden = false` solto no meio de um handler. O `main.ts` chama
  * `reduceScreen`, guarda o resultado e desenha - se a transicao nao existe aqui,
  * ela nao acontece na tela.
@@ -20,12 +20,15 @@ export type Screen =
   | { name: 'login' }
   | { name: 'home' }
   | { name: 'series'; channel: number }
-  | { name: 'player'; channel: number; source: WatchSource };
+  | { name: 'player'; channel: number; source: WatchSource }
+  /** Manutencao da biblioteca e preferencias da casa. Irma da home, nao filha. */
+  | { name: 'settings' };
 
 export type ScreenEvent =
   | { type: 'authenticated' }
   | { type: 'unauthorized' }
   | { type: 'openSeries'; channel: number }
+  | { type: 'openSettings' }
   | { type: 'watch'; source: WatchSource }
   /** Zapear: mesma tela, outro canal. So faz sentido no ao vivo. */
   | { type: 'tuneTo'; channel: number }
@@ -54,6 +57,11 @@ export function reduceScreen(screen: Screen, event: ScreenEvent): Screen {
       // Sem sessao nao ha catalogo para abrir.
       return isAuthenticated(screen) ? { name: 'series', channel: event.channel } : screen;
 
+    case 'openSettings':
+      // Toda linha da tela de configuracoes bate numa rota autenticada: abri-la
+      // sem sessao so renderia 401 em cada seta.
+      return isAuthenticated(screen) ? { name: 'settings' } : screen;
+
     case 'watch': {
       // So a tela da serie tem os dois botoes; disparar `watch` de qualquer
       // outro lugar significaria tocar sem saber o que.
@@ -74,6 +82,7 @@ export function reduceScreen(screen: Screen, event: ScreenEvent): Screen {
         case 'player':
           return { name: 'series', channel: screen.channel };
         case 'series':
+        case 'settings':
           return { name: 'home' };
         // Home e a raiz, e login/booting nao tem para onde voltar.
         default:

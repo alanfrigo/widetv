@@ -57,6 +57,17 @@ const FILES = [
   "natural/Ursinhos/Ursinhos ep10.mp4",
   "natural/Ursinhos/Ursinhos ep2.mp4",
   "outside/Fora Ep 99.mp4",
+  // Prefixo em comum, series diferentes: nunca podem virar um canal so.
+  "prefixo/The.Office.UK.S01.720p.WEBRip/The.Office.UK.S01E01.mkv",
+  "prefixo/The.Office.US.S03.720p.WEBRip/The.Office.US.S03E01.mkv",
+  "prefixo/The.Office.US.S04.720p.WEBRip/The.Office.US.S04E01.mkv",
+  // Acervo de release: a mesma serie espalhada em uma pasta por temporada, com
+  // o cabecalho de release inteiro no nome. Sem agrupar, viram quatro canais.
+  "release/Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/Rick.and.Morty.S01E01.mkv",
+  "release/Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/Rick.and.Morty.S01E02.mkv",
+  "release/Rick.and.Morty.S02.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/Rick.and.Morty.S02E01.mkv",
+  "release/Rick.and.Morty.S03.2160p.NF.WEB-DL.DDP5.1.x265-DUAL-SiGLA/sem numeracao.mkv",
+  "release/The.Simpsons.S37.1080p.DSNP.WEB-DL.DDP5.1.H.264-DUAL/The.Simpsons.S37E01.mkv",
   "seasonfolders/Serie/S01/a.mp4",
   "seasonfolders/Serie/Season 3/c.mp4",
   "seasonfolders/Serie/T02/b.mp4",

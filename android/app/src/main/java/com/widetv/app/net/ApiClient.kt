@@ -3,6 +3,7 @@ package com.widetv.app.net
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
@@ -125,6 +126,71 @@ class ApiClient(private val store: Store) {
   /** Catalogo do canal, na ordem da grade. null quando o canal nao existe (404). */
   suspend fun episodes(channelNumber: Int): List<EpisodeRef>? = withContext(Dispatchers.IO) {
     getBodyOrNull(url(Routes.episodes(channelNumber)))?.let { json.decodeFromString<List<EpisodeRef>>(it) }
+  }
+
+  suspend fun settings(): AppSettings = withContext(Dispatchers.IO) {
+    json.decodeFromString(getBody(url(Routes.SETTINGS)))
+  }
+
+  /**
+   * @param patch corpo montado em `SettingsPatch`, com UMA chave: campo ausente
+   *   significa "nao mexe", e mandar o objeto inteiro sobrescreveria escolha que
+   *   outra tela acabou de fazer.
+   * @return o `AppSettings` inteiro ja com a mudanca — e o que a tela adota como
+   *   novo estado, em vez de confiar no palpite que ela pintou antes.
+   */
+  suspend fun patchSettings(patch: JsonObject): AppSettings = withContext(Dispatchers.IO) {
+    val target = url(Routes.SETTINGS)
+    val body = json.encodeToString(JsonObject.serializer(), patch).toRequestBody(JSON_MEDIA_TYPE)
+    http.newCall(Request.Builder().url(target).patch(body).build()).execute().use { response ->
+      if (response.code == 401) throw UnauthorizedException()
+      if (!response.isSuccessful) throw IOException("$target respondeu ${response.code}")
+      json.decodeFromString<AppSettings>(
+        response.body?.string() ?: throw IOException("$target sem corpo"),
+      )
+    }
+  }
+
+  suspend fun libraryStatus(): LibraryStatus = withContext(Dispatchers.IO) {
+    json.decodeFromString(getBody(url(Routes.LIBRARY_STATUS)))
+  }
+
+  /** @param mode `SCAN_MODE_INCREMENTAL` ou `SCAN_MODE_FULL`. */
+  suspend fun startScan(mode: String): TaskAccepted = withContext(Dispatchers.IO) {
+    postTask(
+      url(Routes.LIBRARY_SCAN),
+      json.encodeToString(ScanRequest.serializer(), ScanRequest(mode)),
+    )
+  }
+
+  /** @param reset apaga a metadata gravada antes de buscar — conserta capa errada. */
+  suspend fun refreshMetadata(reset: Boolean): TaskAccepted = withContext(Dispatchers.IO) {
+    postTask(
+      url(Routes.LIBRARY_METADATA),
+      json.encodeToString(MetadataRefreshRequest.serializer(), MetadataRefreshRequest(reset)),
+    )
+  }
+
+  /**
+   * Dispara uma tarefa de fundo.
+   *
+   * 202 e 409 NAO sao erro: os dois trazem `TaskAccepted` no corpo e viram uma
+   * linha na tela ("iniciado" / "ja esta rodando"). Tratar 409 como excecao
+   * transformaria uma resposta perfeitamente util em pilha de erro, e quem
+   * apertou OK duas vezes veria "servidor fora do ar". So o resto do nao-2xx
+   * (400 de modo invalido, 500) e falha de verdade.
+   */
+  private fun postTask(target: HttpUrl, body: String): TaskAccepted {
+    val request = Request.Builder().url(target).post(body.toRequestBody(JSON_MEDIA_TYPE)).build()
+    http.newCall(request).execute().use { response ->
+      if (response.code == 401) throw UnauthorizedException()
+      if (!response.isSuccessful && response.code != 409) {
+        throw IOException("$target respondeu ${response.code}")
+      }
+      return json.decodeFromString(
+        response.body?.string() ?: throw IOException("$target sem corpo"),
+      )
+    }
   }
 
   /** null quando o recurso nao existe (404). */

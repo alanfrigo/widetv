@@ -38,6 +38,13 @@ export interface AppConfig {
    */
   rescanTime: RescanTime | null;
   /**
+   * Junta pastas de release da mesma serie num canal so (`...S01...` e
+   * `...S02...` viram uma serie com duas temporadas). Desligar volta a regra
+   * literal de uma pasta = um canal, que e o que salva quem organiza o acervo
+   * de um jeito que o agrupamento nao entende.
+   */
+  smartGrouping: boolean;
+  /**
    * Chave do TMDB, opcional. `null` quando ausente: a busca de capa cai nos
    * provedores sem chave (TVMaze, iTunes) e o servidor sobe do mesmo jeito.
    */
@@ -75,26 +82,55 @@ function parsePort(raw: string | undefined): number {
 /** Mesmo valor do .env.example: madrugada, depois do horario tipico de download. */
 const DEFAULT_RESCAN_TIME = '04:00';
 
+/** `HH:MM` do relogio; devolve `undefined` para qualquer coisa fora dele. */
+function parseClock(value: string): RescanTime | undefined {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value);
+  if (match?.[1] === undefined || match[2] === undefined) return undefined;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) return undefined;
+  return { hour, minute };
+}
+
 /**
  * `HH:MM` local, `off`/`false` desliga, vazio cai no default. Formato torto e
  * erro de boot, nao um default silencioso: um horario ignorado so seria
  * descoberto quando a serie nova nunca aparecesse.
  */
-function parseRescanTime(raw: string | undefined): RescanTime | null {
+export function parseRescanTimeEnv(raw: string | undefined): RescanTime | null {
   const value = raw?.trim() || DEFAULT_RESCAN_TIME;
   const lowered = value.toLowerCase();
   if (lowered === 'off' || lowered === 'false') return null;
 
-  const match = /^(\d{1,2}):(\d{2})$/.exec(value);
-  if (match?.[1] === undefined || match[2] === undefined) {
-    throw new ConfigError(`RESCAN_TIME precisa ser HH:MM (ou "off"), recebeu "${value}".`);
+  const time = parseClock(value);
+  if (time === undefined) {
+    // Duas mensagens diferentes de proposito: "nao e HH:MM" e "e HH:MM mas nao
+    // existe no relogio" sao erros de digitacao diferentes.
+    throw new ConfigError(
+      /^\d{1,2}:\d{2}$/.test(value)
+        ? `RESCAN_TIME fora do relogio: "${value}".`
+        : `RESCAN_TIME precisa ser HH:MM (ou "off"), recebeu "${value}".`,
+    );
   }
-  const hour = Number(match[1]);
-  const minute = Number(match[2]);
-  if (hour > 23 || minute > 59) {
-    throw new ConfigError(`RESCAN_TIME fora do relogio: "${value}".`);
-  }
-  return { hour, minute };
+  return time;
+}
+
+/**
+ * Mesmo horario, mas vindo do PAINEL: `'HH:MM'`, `'off'` ou `null` (desliga), e
+ * `undefined` quando o valor nao serve.
+ *
+ * A diferenca para `parseRescanTimeEnv` e o que acontece com valor torto, e ela
+ * e proposital: `.env` torto e erro de BOOT (o operador precisa descobrir antes
+ * de o servidor subir), painel torto e 400 (nao da para derrubar um servidor
+ * que ja esta no ar porque alguem digitou "25:00" na TV da sala). Texto vazio
+ * conta como desligar: e o que sobra de um campo de horario apagado na tela.
+ */
+export function parseRescanTimeInput(raw: string | null): RescanTime | null | undefined {
+  if (raw === null) return null;
+  const value = raw.trim();
+  const lowered = value.toLowerCase();
+  if (value === '' || lowered === 'off' || lowered === 'false') return null;
+  return parseClock(value);
 }
 
 function parseEpoch(raw: string | undefined): number {
@@ -139,7 +175,10 @@ export function loadConfig(env: Env): AppConfig {
     autoScan: env.AUTO_SCAN?.trim().toLowerCase() !== 'false',
     // Mesma regra do AUTO_SCAN: so "false" desliga.
     autoRemux: env.AUTO_REMUX?.trim().toLowerCase() !== 'false',
-    rescanTime: parseRescanTime(env.RESCAN_TIME),
+    rescanTime: parseRescanTimeEnv(env.RESCAN_TIME),
+    // Mesma regra do AUTO_SCAN: so "false" desliga. Ligado por padrao porque o
+    // acervo tipico vem de release em pasta por temporada.
+    smartGrouping: env.SMART_GROUPING?.trim().toLowerCase() !== 'false',
     // Variavel em branco (a UI do TrueNAS manda assim) conta como ausente: uma
     // chave vazia so renderia 401 em toda busca de capa.
     tmdbApiKey: env.TMDB_API_KEY?.trim() || null,

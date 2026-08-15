@@ -747,7 +747,7 @@ describe('metadata da serie (schema 3)', () => {
     const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
       version: number;
     };
-    expect(versao.version).toBe(6);
+    expect(versao.version).toBe(7);
     conferencia.close();
 
     rmSync(base, { recursive: true, force: true });
@@ -896,5 +896,110 @@ describe('historico de onde parou (schema 6)', () => {
     store.pruneEpisodes(showId, []);
     expect(store.listWatchHistory(10)).toEqual([]);
     store.close();
+  });
+});
+
+describe('preferencias (schema 7)', () => {
+  it('chave nunca escrita devolve null, nao string vazia', () => {
+    const store = openStore(':memory:');
+    expect(store.getSetting('audio_lang')).toBeNull();
+    expect(store.listSettings()).toEqual({});
+    store.close();
+  });
+
+  it('roundtrip com upsert sobrescrevendo o valor anterior', () => {
+    const store = openStore(':memory:');
+    store.setSetting('audio_lang', 'por');
+    store.setSetting('audio_lang', 'eng');
+
+    expect(store.getSetting('audio_lang')).toBe('eng');
+    expect(store.listSettings()).toEqual({ audio_lang: 'eng' });
+    store.close();
+  });
+
+  it('delete apaga so a chave pedida: e o que devolve a preferencia ao .env', () => {
+    const store = openStore(':memory:');
+    store.setSetting('audio_lang', 'por');
+    store.setSetting('auto_remux', 'false');
+
+    store.deleteSetting('audio_lang');
+
+    expect(store.getSetting('audio_lang')).toBeNull();
+    expect(store.listSettings()).toEqual({ auto_remux: 'false' });
+    // Apagar chave inexistente e no-op, nao erro.
+    expect(() => store.deleteSetting('nunca-existiu')).not.toThrow();
+    store.close();
+  });
+
+  it('nao e apagada junto com o indice: prune de serie nao encosta nela', () => {
+    // E o motivo de a tabela ser separada de `meta`: o que o usuario escolheu
+    // no painel nao pode sumir num reset do indexador.
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    store.setSetting('subtitle_lang', 'off');
+
+    store.pruneEpisodes(showId, []);
+    store.pruneShows([]);
+
+    expect(store.getSetting('subtitle_lang')).toBe('off');
+    store.close();
+  });
+
+  it('sobrevive a fechar e reabrir o banco', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-settings-'));
+    const dbPath = join(base, 'library.db');
+
+    const first = openStore(dbPath);
+    first.setSetting('rescan_time', '02:15');
+    first.close();
+
+    const second = openStore(dbPath);
+    expect(second.getSetting('rescan_time')).toBe('02:15');
+    second.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('indice na versao 6 e migrado para a 7 sem perder dado', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v6-'));
+    const dbPath = join(base, 'library.db');
+
+    // Um banco na versao 6: tem tudo, menos `settings`.
+    const seis = openStore(dbPath);
+    const showId = makeShow(seis, 'serie');
+    seis.upsertEpisodes(showId, [makeEpisode()]);
+    seis.upsertWatchHistory({
+      episodeId: 'serie/ep01.mp4',
+      positionMs: 600_000,
+      durationMs: 1_320_000,
+      updatedAt: 42,
+    });
+    seis.close();
+
+    const raw = new Database(dbPath);
+    raw.exec('DROP TABLE settings; UPDATE schema_version SET version = 6');
+    raw.close();
+
+    const store = openStore(dbPath);
+
+    // Migrou sem tocar no que ja existia...
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie']);
+    expect(store.getEpisode('serie/ep01.mp4')?.title).toBe('ep01');
+    expect(store.getWatchHistory('serie/ep01.mp4')?.positionMs).toBe(600_000);
+    // ...e a tabela nova existe e responde.
+    expect(store.listSettings()).toEqual({});
+    store.setSetting('audio_lang', 'por');
+    expect(store.getSetting('audio_lang')).toBe('por');
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(7);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
   });
 });

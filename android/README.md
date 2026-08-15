@@ -9,7 +9,7 @@ descrita em `docs/CONTRACTS.md`.
 O navegador da TV funciona, mas exige teclado para a senha toda vez que a sessao
 vence, nao entende D-pad e nao guarda o canal. O app resolve os tres.
 
-Sem Leanback e sem Compose: Views com ViewBinding, uma Activity so, quatro telas
+Sem Leanback e sem Compose: Views com ViewBinding, uma Activity so, cinco telas
 trocadas por visibilidade. O acervo cabe numa grade e o player numa tecla — nao
 ha o que uma biblioteca de navegacao resolveria aqui.
 
@@ -22,6 +22,7 @@ ha o que uma biblioteca de navegacao resolveria aqui.
 | Serie | capa grande, sinopse, ASSISTIR AO VIVO / DO INICIO e o catalogo de episodios |
 | Player | tela cheia, sem controles desenhados; OSD curto na troca de episodio |
 | Trilhas | painel lateral de audio e legenda, aberto com OK durante a reproducao |
+| Configuracoes | idioma de audio e legenda, agrupamento de temporadas, remux automatico, horario da varredura diaria; e os botoes de manutencao — procurar arquivos novos, reanalisar tudo, rebuscar capas e sinopses (completando o que falta ou refazendo tudo). Ao lado, o progresso da varredura enquanto ela roda: `1240 de 14320 — The Simpsons` |
 
 O nucleo veio pronto do cliente web, que ja era codigo puro e testado, e ganhou
 os reducers das telas novas:
@@ -32,8 +33,9 @@ os reducers das telas novas:
 | `tuner/Tuner.kt` | teclas em "va para o canal N" (porte de `src/web/tuner.ts`) |
 | `ui/Osd.kt` | linha da pilula e selo de resolucao |
 | `ui/Catalog.kt` | texto do acervo e da serie; reducao da capa |
-| `ui/Nav.kt` | para onde cada tecla leva entre as quatro telas |
+| `ui/Nav.kt` | para onde cada tecla leva entre as cinco telas |
 | `ui/TrackPanel.kt` | cursor e marcacao do painel de audio/legenda |
+| `ui/Settings.kt` | cursor e valor de cada linha das configuracoes, e o texto do estado da biblioteca (porte de `src/web/settings.ts`) |
 | `net/Models.kt` | contrato HTTP (espelho de `src/shared/api-types.ts`) |
 
 Todos sao funcoes puras e todos tem teste JVM. Nao ha teste instrumentado: o que
@@ -60,21 +62,74 @@ fechar, VOLTAR fecha. O volume fica com as teclas de volume do proprio aparelho.
 Segurar a seta nao sintoniza canal por canal — move um alvo no OSD e so sintoniza
 quando a mao solta. Sem isso, atravessar 460 canais viraria centenas de requests.
 
+### Configuracoes
+
+Chega-se la pelo botao CONFIGURACOES no cabecalho do acervo: uma seta para
+**cima** a partir da primeira fileira de capas. E de proposito o caminho mais
+chato possivel — o foco nasce num card e desce dali, entao quem so quer assistir
+nunca esbarra no botao, e quem quer configurar precisa de uma tecla so. O MENU do
+player continua abrindo o painel de trilhas: sequestra-lo trocaria uma coisa que
+se usa toda noite por uma que se usa uma vez por mes.
+
+| Tecla | Efeito |
+| --- | --- |
+| ↑ / ↓ | escolhe a LINHA. A linha do provedor de capas e pulada: ela so informa |
+| ← / → | muda o VALOR da linha: idioma anterior/proximo, horario -30/+30 min, desliga/liga |
+| OK | em acao dispara; em chave alterna; em idioma e horario avanca um valor |
+| VOLTAR | volta ao acervo |
+
+O cursor e do reducer, e nao do foco do Android — mesma razao do painel de
+trilhas: com foco nativo, as setas laterais seriam disputadas com o RecyclerView.
+
+Enquanto uma varredura ou uma busca de capas roda, a tela pergunta o estado de
+2 em 2 segundos. O loop morre quando as duas param, ao sair da tela e no
+`onStop`: um polling vivo com a tela fechada bate na API para sempre.
+
 ## Audio e legenda
 
 O ExoPlayer le MKV com varios audios (E-AC-3) e legendas SubRip embutidas
-nativamente; o servidor nao participa da escolha. O painel lista os grupos de
-`player.currentTracks` e a selecao acontece em duas camadas:
+nativamente: **a decodificacao e a escolha da faixa nao passam pelo servidor**.
+O painel lista os grupos de `player.currentTracks` e a selecao acontece em duas
+camadas:
 
 - **agora**: `TrackSelectionOverride` no grupo escolhido, que resolve o caso de
   duas faixas dividirem a mesma tag de idioma;
-- **daqui em diante**: `setPreferredAudioLanguage` / `setPreferredTextLanguage`,
-  gravados no `Store`. O override morre junto com o episodio (ele aponta para um
-  `TrackGroup` concreto); o idioma atravessa a maratona e os reinicios do app.
+- **daqui em diante**: `setPreferredAudioLanguage` / `setPreferredTextLanguage`.
+  O override morre junto com o episodio (ele aponta para um `TrackGroup`
+  concreto); o idioma atravessa a maratona e os reinicios do app.
+
+O que mudou e de quem e a PREFERENCIA de idioma: ela mora no servidor
+(`AppSettings.audioLang` / `subtitleLang`), porque a casa toda usa a mesma senha
+e escolher "audio em portugues" na TV da sala tem que valer no tablet. O `Store`
+virou CACHE dela: e o que faz o primeiro episodio abrir com a trilha certa antes
+de `GET /api/settings` responder, e o que segura a escolha com a rota fora do ar
+— por isso uma falha ali nunca segura a entrada no acervo. Escolher no painel
+continua valendo na hora e ainda manda um PATCH sem esperar resposta: falhar
+nele nao pode atrapalhar quem esta assistindo.
 
 Legenda desligada e `setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)`, e e o estado
 de fabrica: numa TV de sala, legenda que aparece sem ninguem ter pedido incomoda
-mais do que legenda que falta.
+mais do que legenda que falta. A semantica bate com a do contrato — `subtitleLang:
+null` e "desativadas" nos dois lados —, e e por isso que o cache do `Store` pode
+ser semeado com o valor do servidor sem traducao nenhuma.
+
+`subtitlesAuto` da para editar aqui porque a preferencia e da casa, mas quem a
+obedece hoje e o cliente web: no app, legenda so aparece quando ha idioma
+preferido gravado.
+
+## Agrupamento e o "ultimo canal"
+
+O servidor junta pastas de release da mesma serie num canal so
+(`Rick.and.Morty.S01...` + `S02...` viram "Rick and Morty"). O app so mostra o
+que o servidor manda, entao isso chegou de graca — mas ligar ou desligar essa
+chave **renumera o acervo** na varredura seguinte.
+
+O numero do ultimo canal ao vivo fica no `Store`, e `readLastChannel` so o
+devolve quando ele ainda existe na lista atual; sumindo, devolve null e o foco
+pousa no primeiro card. O que nao da para detectar daqui e o numero que
+sobreviveu apontando para OUTRA serie: depois de um agrupamento, a primeira
+abertura pode pousar o foco na serie errada. E um foco, nao uma reproducao — o
+preco de guardar o numero, que e o que o contrato promete estavel entre rescans.
 
 ## Capas
 

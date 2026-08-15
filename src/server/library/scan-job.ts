@@ -44,6 +44,14 @@ export interface ScanJobOptions {
   probe?: (filePath: string) => Promise<ProbeResult>;
   concurrency?: number;
   onProgress?: (progress: ScanProgress) => void;
+  /** Repassado ao scanner: junta pastas de release da mesma serie. Default: true. */
+  smartGrouping?: boolean;
+  /**
+   * false ignora o probe cacheado por (mtime, tamanho) e reabre TODO arquivo.
+   * E o modo "scan completo" do painel: quando o indice esta torto, o cache e
+   * justamente o que estava errado. Default: true.
+   */
+  useCache?: boolean;
 }
 
 interface Measured {
@@ -102,8 +110,9 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
   const { root, store } = options;
   const probe = options.probe ?? probeFile;
   const concurrency = options.concurrency ?? Math.max(2, cpus().length);
+  const useCache = options.useCache ?? true;
 
-  const shows = await scanLibrary(root);
+  const shows = await scanLibrary(root, { smartGrouping: options.smartGrouping ?? true });
   const total = shows.reduce((sum, show) => sum + show.episodes.length, 0);
 
   const failed: ScanFailure[] = [];
@@ -120,7 +129,11 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
         const info = await stat(episode.absolutePath);
 
         // O par (mtime, tamanho) e o que decide se vale reabrir o arquivo.
-        const hit = store.getCachedProbe(episode.relativePath, info.mtimeMs, info.size);
+        // `useCache: false` nem pergunta ao indice: e o scan completo, que
+        // existe justamente para desconfiar do que esta gravado.
+        const hit = useCache
+          ? store.getCachedProbe(episode.relativePath, info.mtimeMs, info.size)
+          : null;
         const result = hit ?? (await probe(episode.absolutePath));
 
         return {

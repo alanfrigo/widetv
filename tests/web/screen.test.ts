@@ -13,6 +13,7 @@ function run(start: Screen, events: ScreenEvent[]): Screen {
 
 const HOME: Screen = { name: 'home' };
 const SERIES: Screen = { name: 'series', channel: 7 };
+const SETTINGS: Screen = { name: 'settings' };
 const LIVE: Screen = { name: 'player', channel: 7, source: 'live' };
 const VOD: Screen = { name: 'player', channel: 7, source: 'vod' };
 
@@ -57,6 +58,20 @@ describe('caminho de ida', () => {
       name: 'booting',
     });
   });
+
+  test('o catalogo abre as configuracoes', () => {
+    expect(reduceScreen(HOME, { type: 'openSettings' })).toEqual(SETTINGS);
+  });
+
+  test('nao da para abrir configuracoes sem sessao', () => {
+    const login: Screen = { name: 'login' };
+    expect(reduceScreen(login, { type: 'openSettings' })).toBe(login);
+    expect(reduceScreen(initialScreen(), { type: 'openSettings' })).toEqual({ name: 'booting' });
+  });
+
+  test('assistir a partir das configuracoes nao toca nada', () => {
+    expect(reduceScreen(SETTINGS, { type: 'watch', source: 'live' })).toBe(SETTINGS);
+  });
 });
 
 describe('caminho de volta', () => {
@@ -67,6 +82,10 @@ describe('caminho de volta', () => {
 
   test('a serie volta para o catalogo', () => {
     expect(reduceScreen(SERIES, { type: 'back' })).toEqual(HOME);
+  });
+
+  test('as configuracoes voltam para o catalogo', () => {
+    expect(reduceScreen(SETTINGS, { type: 'back' })).toEqual(HOME);
   });
 
   test('o catalogo e a raiz: voltar dali nao sai do app', () => {
@@ -118,7 +137,7 @@ describe('zapear', () => {
 
 describe('sessao que expira', () => {
   test('cai no login de qualquer tela', () => {
-    for (const screen of [HOME, SERIES, LIVE, VOD, initialScreen()]) {
+    for (const screen of [HOME, SERIES, SETTINGS, LIVE, VOD, initialScreen()]) {
       expect(reduceScreen(screen, { type: 'unauthorized' })).toEqual({ name: 'login' });
     }
   });
@@ -126,5 +145,6 @@ describe('sessao que expira', () => {
   test('sessao confirmada de novo nao arranca o usuario do que ele assiste', () => {
     expect(reduceScreen(VOD, { type: 'authenticated' })).toBe(VOD);
     expect(reduceScreen(SERIES, { type: 'authenticated' })).toBe(SERIES);
+    expect(reduceScreen(SETTINGS, { type: 'authenticated' })).toBe(SETTINGS);
   });
 });

@@ -784,3 +784,125 @@ remux. Uma trava compartilhada com o scan de bootstrap impede duas varreduras
 simultaneas; erro no rescan e logado e o dia seguinte tenta de novo. Reagenda
 DEPOIS de terminar: acervo que leva horas empurra o proximo disparo em vez de
 acumular.
+
+## 13. Configuracoes e manutencao da biblioteca
+
+Rotas atras do guard de sessao. Contrato completo em `src/shared/api-types.ts`
+(`AppSettings`, `SettingsPatch`, `LibraryStatus`, `ScanSummary`,
+`MetadataSummary`, `ScanMode`, `ScanRequest`, `MetadataRefreshRequest`,
+`TaskAccepted`), rotas em `API.settings`, `API.libraryStatus`,
+`API.libraryScan`, `API.libraryMetadata`.
+
+### 13.1 Preferencias - `GET`/`PATCH /api/settings`
+
+```
+GET   /api/settings   ->  AppSettings                    cache-control: no-store
+PATCH /api/settings   ->  AppSettings   corpo: SettingsPatch
+```
+
+- `AppSettings` reune o que a tela de configuracoes controla: `audioLang`,
+  `subtitleLang`, `subtitlesAuto`, `rescanTime`, `autoRemux`, `smartGrouping`,
+  mais `tmdbConfigured` (so leitura - fato sobre o ambiente, nao preferencia).
+  Ficam gravadas no servidor, nao no `localStorage` do navegador: a casa toda
+  usa a mesma senha e as mesmas telas, e escolher audio em portugues na TV da
+  sala tem que valer no tablet tambem.
+- `rescanTime`, `autoRemux` e `smartGrouping` tambem existem no `.env`. O valor
+  do ambiente e o DEFAULT: gravar no painel sobrepoe, e uma linha ausente no
+  banco (nunca gravada, ou apagada) volta a usar o que estiver em `.env`.
+- **PATCH, nunca PUT.** Um PUT exigiria o objeto inteiro a cada chamada - e com
+  dois aparelhos (a TV da sala, o tablet) com a tela de configuracoes aberta ao
+  mesmo tempo, o segundo PUT reenviaria os valores que ele carregou ANTES da
+  mudanca do primeiro, apagando-a sem ninguem perceber. PATCH manda so o campo
+  que mudou: campo ausente no corpo fica exatamente como estava.
+- `SettingsPatch` e `Partial<Omit<AppSettings, 'tmdbConfigured'>>` -
+  `tmdbConfigured` e so leitura e um PATCH que tentar mudar esse campo o ignora
+  (nao e erro; o cliente mais simples e o que devolve o objeto que acabou de
+  receber).
+- `cache-control: no-store` no GET (e na resposta do PATCH): preferencia e
+  estado mutavel compartilhado por toda a casa, igual ao historico (secao 11) -
+  uma tela aberta consulta de novo a cada visita, nunca mostra escolha
+  requentada de outro aparelho.
+
+| Situacao | Status | Corpo |
+| --- | --- | --- |
+| GET | 200 | `AppSettings` |
+| PATCH, corpo valido | 200 | `AppSettings` ja atualizado |
+| PATCH, corpo nao e objeto, ou campo com tipo errado | 400 | `{ error }` |
+| PATCH, campo com valor invalido (ex. `rescanTime` fora do relogio) | 400 | `{ error }` |
+
+### 13.2 Estado das tarefas de fundo - `GET /api/library/status`
+
+```
+GET /api/library/status  ->  LibraryStatus     cache-control: no-store
+```
+
+- `LibraryStatus` traz o estado de scan, busca de metadata e remux, cada um com
+  `state: 'idle' | 'running'`. `scan` ainda carrega `progress` (done/total/show
+  sendo medida agora, `null` quando parado) e `startedAt`; `scan` e `metadata`
+  carregam `last` com o resumo (`ScanSummary`/`MetadataSummary`) da rodada mais
+  recente desde que o servidor subiu, `null` se nenhuma terminou ainda.
+- E o que a tela de configuracoes consulta em intervalo curto enquanto um scan
+  ou uma busca de metadata rodam: a operacao pode levar minutos e a tela
+  precisa mostrar que ha algo acontecendo, nao um retrato de 30 segundos atras.
+  `no-store` por isso - resposta cacheada aqui seria um "rodando" ou um
+  "parado" desatualizado bem no meio da unica tela que existe para acompanhar.
+
+| Situacao | Status | Corpo |
+| --- | --- | --- |
+| Sempre | 200 | `LibraryStatus` |
+
+### 13.3 Disparar varredura - `POST /api/library/scan`
+
+```
+POST /api/library/scan   corpo: ScanRequest ({ mode?: ScanMode })
+```
+
+- Responde **202** com `TaskAccepted` (`{ started: true }`) assim que ACEITA o
+  pedido - nao espera a varredura terminar. Com 14 mil arquivos, uma varredura
+  leva minutos de ffprobe; um request que esperasse o fim morreria no timeout
+  do proxy reverso bem antes disso. Quem chamou consulta o progresso em
+  `GET /api/library/status`.
+- Responde **409** com `TaskAccepted` (`{ started: false, reason }`) quando ja
+  ha uma varredura em andamento. Nao enfileira o pedido novo e nao cancela o
+  que ja roda.
+- Responde **400** quando `mode` vem no corpo e nao e `'incremental'` nem
+  `'full'`.
+- `mode: 'incremental'` (o default quando o campo vem ausente) reaproveita o
+  probe cacheado por `(mtime, size)` de cada arquivo - e o que o rescan noturno
+  (secao 12) faz: so arquivo novo ou mudado desde o ultimo scan passa pelo
+  ffprobe de novo. `mode: 'full'` ignora esse cache e reabre TODO arquivo com
+  ffprobe, mesmo que `mtime`/`size` nao tenham mudado - e o botao para quando o
+  indice ficou torto e o proprio cache seria a causa (ex.: um arquivo
+  substituido sem mudar de nome, com timestamp que por acaso bateu).
+
+| Situacao | Status | Corpo |
+| --- | --- | --- |
+| Aceito | 202 | `TaskAccepted` (`started: true`) |
+| Ja ha uma varredura rodando | 409 | `TaskAccepted` (`started: false`, `reason`) |
+| `mode` presente e diferente de `'incremental'`/`'full'` | 400 | `{ error }` |
+
+### 13.4 Rebuscar capa e sinopse - `POST /api/library/metadata`
+
+```
+POST /api/library/metadata   corpo: MetadataRefreshRequest ({ reset?: boolean })
+```
+
+- Mesma convencao 202/409 de `13.3`, mesmo formato de resposta (`TaskAccepted`).
+- **400** quando `reset` vem no corpo e nao e boolean.
+- Sem corpo, ou `reset` ausente/`false`: dispara so o que a secao 9.3 chama de
+  `enrichMissing` - tenta as series que ainda nao tem linha de metadata (nunca
+  buscadas, ou marcadas `not_found` ha mais de 7 dias). Series ja encontradas
+  nao sao tocadas.
+- `{ "reset": true }` apaga a metadata ja gravada (poster, ano, sinopse) antes
+  de buscar de novo, para TODAS as series. Existe porque a secao 9.2 e
+  categorica - "serie ja encontrada nunca e reconsultada" - e isso vira um
+  problema no dia em que o nome da serie muda (agrupamento inteligente
+  renomeando uma pasta de release, ou o dono renomeando a pasta na mao): a capa
+  antiga fica presa a um nome que nao existe mais, e sem `reset` ela nunca
+  seria buscada de novo.
+
+| Situacao | Status | Corpo |
+| --- | --- | --- |
+| Aceito | 202 | `TaskAccepted` (`started: true`) |
+| Ja ha uma busca de metadata rodando | 409 | `TaskAccepted` (`started: false`, `reason`) |
+| `reset` presente e nao boolean | 400 | `{ error }` |

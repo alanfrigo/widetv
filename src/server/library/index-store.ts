@@ -167,6 +167,18 @@ export interface Store {
   /** Historico com canal, do mais recente para o mais antigo. */
   listWatchHistory(limit: number): WatchHistoryEntry[];
 
+  /** Preferencia gravada pelo usuario; null quando a chave nunca foi escrita. */
+  getSetting(key: string): string | null;
+
+  /** Grava (ou regrava) a preferencia. O valor e sempre texto: quem interpreta e o servico. */
+  setSetting(key: string, value: string): void;
+
+  /** Apaga a chave, o que devolve a preferencia ao default do `.env`. */
+  deleteSetting(key: string): void;
+
+  /** Todas as preferencias de uma vez; e como o servico monta o objeto efetivo. */
+  listSettings(): Record<string, string>;
+
   close(): void;
 }
 
@@ -213,7 +225,7 @@ interface ShowMetadataRecord {
   not_found: number;
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const MIGRATIONS: readonly string[] = [
   // versao 1
@@ -324,6 +336,25 @@ const MIGRATIONS: readonly string[] = [
     episode_id TEXT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
     position_ms INTEGER NOT NULL,
     duration_ms INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
+  // versao 7: preferencias escolhidas pelo usuario no painel.
+  //
+  // Tabela propria em vez de reusar `meta`: `meta` guarda estado INTERNO do
+  // indexador (o contador de canais) e quem escreve nela e o scan. Isto aqui e
+  // escrito pela pessoa, de outra maquina, e nao pode ser apagado junto num
+  // eventual reset do indice - perder o contador de canais e chato, perder a
+  // escolha de audio e legenda da casa inteira e pior.
+  //
+  // `value` e sempre TEXTO, mesmo para booleano e horario: quem interpreta e o
+  // servico de settings, e uma linha ilegivel cai no default do `.env` sem
+  // impedir o servidor de subir. `updated_at` existe so para inspecao humana
+  // ("quando foi que isso mudou?"), nada no codigo decide por ele.
+  `
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
   `,
@@ -624,6 +655,17 @@ export function openStore(dbPath: string): Store {
      LIMIT ?`,
   );
 
+  const selectSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
+  const insertSetting = db.prepare(
+    `INSERT INTO settings (key, value, updated_at)
+     VALUES (@key, @value, @updatedAt)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`,
+  );
+  const deleteSettingStmt = db.prepare('DELETE FROM settings WHERE key = ?');
+  const selectSettings = db.prepare('SELECT key, value FROM settings');
+
   const selectShowMetadata = db.prepare('SELECT * FROM show_metadata WHERE show_id = ?');
   const insertShowMetadata = db.prepare(
     `INSERT INTO show_metadata (show_id, poster_file, year, overview, source, fetched_at, not_found)
@@ -856,6 +898,28 @@ export function openStore(dbPath: string): Store {
         updatedAt: record.updated_at,
         channelNumber: record.channel_number,
       }));
+    },
+
+    getSetting(key): string | null {
+      const record = selectSetting.get(key) as { value: string } | undefined;
+      return record === undefined ? null : record.value;
+    },
+
+    setSetting(key, value): void {
+      insertSetting.run({ key, value, updatedAt: Date.now() });
+    },
+
+    deleteSetting(key): void {
+      deleteSettingStmt.run(key);
+    },
+
+    listSettings(): Record<string, string> {
+      const records = selectSettings.all() as { key: string; value: string }[];
+      const out: Record<string, string> = {};
+      for (const record of records) {
+        out[record.key] = record.value;
+      }
+      return out;
     },
 
     close(): void {

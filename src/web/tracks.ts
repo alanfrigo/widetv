@@ -1,4 +1,4 @@
-import type { AudioTrackRef, SubtitleTrackRef } from '@shared/api-types';
+import type { AppSettings, AudioTrackRef, SubtitleTrackRef } from '@shared/api-types';
 
 import type { StorageLike } from './last-channel';
 
@@ -339,6 +339,15 @@ export function pickPreferredAudio(
 
 /* --- preferencia guardada ------------------------------------------------- */
 
+/**
+ * A preferencia de idioma mora no SERVIDOR (`AppSettings`): a casa toda usa a
+ * mesma senha, e escolher "audio em portugues" na TV da sala tem que valer no
+ * tablet. O `localStorage` continua aqui como CACHE: e ele que faz o primeiro
+ * episodio abrir com a legenda certa antes de o `GET /api/settings` responder,
+ * e e ele que segura a preferencia quando a rota falha.
+ *
+ * `applyServerPreferences` semeia esse cache com o que o servidor mandou.
+ */
 export const SUBTITLE_LANG_KEY = 'widetv:subtitle-lang';
 export const AUDIO_LANG_KEY = 'widetv:audio-lang';
 
@@ -350,7 +359,11 @@ export const AUDIO_LANG_KEY = 'widetv:audio-lang';
 export function readPreferredAudio(storage: StorageLike | null): string | null {
   if (storage === null) return null;
   try {
-    return normalizeLang(storage.getItem(AUDIO_LANG_KEY));
+    const raw = storage.getItem(AUDIO_LANG_KEY);
+    // `OFF` aqui e "o servidor diz que nao ha preferencia", gravado por
+    // `applyServerPreferences`: sem esta linha viraria um idioma chamado 'off'.
+    if (raw === null || raw === OFF) return null;
+    return normalizeLang(raw);
   } catch {
     return null;
   }
@@ -392,5 +405,26 @@ export function writePreferredSubtitle(storage: StorageLike | null, lang: string
     storage.setItem(SUBTITLE_LANG_KEY, normalizeLang(lang) ?? OFF);
   } catch {
     // Sem memoria de idioma o painel continua funcionando na sessao atual.
+  }
+}
+
+/**
+ * Semeia o cache local com o que o servidor mandou.
+ *
+ * Grava ate quando o servidor diz "sem preferencia": um `null` que nao apagasse
+ * o valor antigo deixaria o cache mentindo para sempre depois de alguem
+ * desligar a legenda na tela de configuracoes de outro aparelho.
+ */
+export function applyServerPreferences(
+  storage: StorageLike | null,
+  settings: Pick<AppSettings, 'audioLang' | 'subtitleLang'>,
+): void {
+  if (storage === null) return;
+  try {
+    storage.setItem(AUDIO_LANG_KEY, normalizeLang(settings.audioLang) ?? OFF);
+    storage.setItem(SUBTITLE_LANG_KEY, normalizeLang(settings.subtitleLang) ?? OFF);
+  } catch {
+    // Armazenamento bloqueado: a preferencia vale na sessao atual do mesmo
+    // jeito, porque quem manda nela e o servidor.
   }
 }

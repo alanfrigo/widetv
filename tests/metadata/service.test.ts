@@ -325,6 +325,26 @@ describe('createEnricher', () => {
     expect(tentativas).toBe(2);
   });
 
+  test('last e null ate a primeira rodada terminar, depois guarda o resumo', async () => {
+    // E daqui que o painel tira "a ultima busca de capa achou N": o controlador
+    // nao acompanha a rodada que a rota de canais disparou sozinha.
+    const store = makeStore([show(1, 'ThunderCats'), show(2, 'He-Man')]);
+    const enricher = createEnricher(store, dataDir, {
+      now: () => AGORA,
+      lookup: () => Promise.resolve(found(null)),
+    });
+
+    expect(enricher.last).toBeNull();
+
+    await enricher.run();
+    expect(enricher.last).toMatchObject({ considered: 2, found: 2, notFound: 0, failed: 0 });
+
+    // Rodada seguinte sem nada a fazer: o resumo acompanha, nao congela no
+    // melhor resultado.
+    await enricher.run();
+    expect(enricher.last?.considered).toBe(0);
+  });
+
   test('trigger nao propaga erro para quem chamou', async () => {
     const store = makeStore([show(1, 'ThunderCats')]);
     const enricher = createEnricher(store, dataDir, {

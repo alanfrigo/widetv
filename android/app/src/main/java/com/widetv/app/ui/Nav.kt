@@ -1,7 +1,7 @@
 package com.widetv.app.ui
 
 /**
- * Navegacao entre as quatro telas do app.
+ * Navegacao entre as cinco telas do app.
  *
  * Reducer puro, no espirito do `Tuner.kt`: aqui mora so a regra de para onde
  * cada evento leva. Quem pinta a tela, busca no servidor e move o foco e a
@@ -11,6 +11,10 @@ package com.widetv.app.ui
  * A pilha e rasa de proposito: ACERVO → SERIE → PLAYER, e VOLTAR desce um
  * degrau. Nao ha historico a guardar porque nao ha caminho alternativo para
  * chegar a nenhuma das telas.
+ *
+ * As configuracoes ficam FORA dessa pilha: penduradas no acervo, com um degrau
+ * so. Quem entra la nao esta a caminho de assistir nada, e empilhar a tela por
+ * cima da serie ou do player daria um VOLTAR que ninguem consegue prever.
  */
 
 enum class ScreenId {
@@ -25,6 +29,9 @@ enum class ScreenId {
 
   /** Reproducao, ao vivo ou sob demanda. */
   PLAYER,
+
+  /** Preferencias e manutencao da biblioteca. Pendurada no acervo. */
+  SETTINGS,
 }
 
 data class NavState(
@@ -47,6 +54,8 @@ sealed interface NavEvent {
   data class OpenSeries(val channelNumber: Int) : NavEvent
 
   data class OpenPlayer(val channelNumber: Int) : NavEvent
+
+  data object OpenSettings : NavEvent
 
   /** Zapeou ao vivo dentro do player. */
   data class LiveTuned(val channelNumber: Int) : NavEvent
@@ -77,6 +86,12 @@ fun reduceNav(state: NavState, event: NavEvent): NavResult = when (event) {
     if (state.screen == ScreenId.SERIES) NavResult(NavState(ScreenId.PLAYER, event.channelNumber))
     else NavResult(state)
 
+  // Sem sessao nao ha configuracoes: elas moram no servidor, e a tela abriria
+  // vazia so para dizer que nao conseguiu ler nada.
+  NavEvent.OpenSettings ->
+    if (state.screen == ScreenId.GATE) NavResult(state)
+    else NavResult(NavState(ScreenId.SETTINGS))
+
   is NavEvent.LiveTuned ->
     if (state.screen == ScreenId.PLAYER) NavResult(state.copy(channelNumber = event.channelNumber))
     else NavResult(state)
@@ -87,5 +102,6 @@ fun reduceNav(state: NavState, event: NavEvent): NavResult = when (event) {
     ScreenId.HOME -> NavResult(state, exit = true)
     ScreenId.SERIES -> NavResult(NavState(ScreenId.HOME))
     ScreenId.PLAYER -> NavResult(NavState(ScreenId.SERIES, state.channelNumber))
+    ScreenId.SETTINGS -> NavResult(NavState(ScreenId.HOME))
   }
 }

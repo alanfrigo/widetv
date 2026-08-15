@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { ConfigError, loadConfig } from '../../src/server/config';
+import {
+  ConfigError,
+  loadConfig,
+  parseRescanTimeEnv,
+  parseRescanTimeInput,
+} from '../../src/server/config';
 
 function env(over: Record<string, string | undefined> = {}) {
   return {
@@ -60,6 +65,14 @@ describe('loadConfig', () => {
     for (const value of ['4h', '25:00', '04:60', 'madrugada', '4:0']) {
       expect(() => loadConfig(env({ RESCAN_TIME: value }))).toThrow(/RESCAN_TIME/);
     }
+  });
+
+  test('smartGrouping segue a regra do autoScan: ligado por padrao, so "false" desliga', () => {
+    expect(loadConfig(env()).smartGrouping).toBe(true);
+    expect(loadConfig(env({ SMART_GROUPING: undefined })).smartGrouping).toBe(true);
+    expect(loadConfig(env({ SMART_GROUPING: 'false' })).smartGrouping).toBe(false);
+    expect(loadConfig(env({ SMART_GROUPING: 'FALSE' })).smartGrouping).toBe(false);
+    expect(loadConfig(env({ SMART_GROUPING: '0' })).smartGrouping).toBe(true);
   });
 
   test('DATA_DIR vazio nao vira caminho relativo silencioso', () => {
@@ -162,5 +175,40 @@ describe('loadConfig', () => {
       expect(message).toContain('CHANNEL_EPOCH');
       expect(message).not.toContain(secret);
     }
+  });
+});
+
+describe('parseRescanTimeEnv x parseRescanTimeInput', () => {
+  test('os dois leem o mesmo horario', () => {
+    expect(parseRescanTimeEnv('23:59')).toEqual({ hour: 23, minute: 59 });
+    expect(parseRescanTimeInput('23:59')).toEqual({ hour: 23, minute: 59 });
+    expect(parseRescanTimeEnv('3:30')).toEqual({ hour: 3, minute: 30 });
+    expect(parseRescanTimeInput('3:30')).toEqual({ hour: 3, minute: 30 });
+  });
+
+  test('e desligam do mesmo jeito', () => {
+    expect(parseRescanTimeEnv('off')).toBeNull();
+    expect(parseRescanTimeEnv('FALSE')).toBeNull();
+    expect(parseRescanTimeInput('off')).toBeNull();
+    expect(parseRescanTimeInput('FALSE')).toBeNull();
+    // Do painel, "desligado" chega como null; campo apagado tambem desliga.
+    expect(parseRescanTimeInput(null)).toBeNull();
+    expect(parseRescanTimeInput('  ')).toBeNull();
+  });
+
+  test('valor torto: o .env derruba o boot, o painel so recusa', () => {
+    // A diferenca e o ponto de existirem duas funcoes. Ambiente torto precisa
+    // ser descoberto antes de o servidor subir; painel torto vira 400, porque
+    // ninguem pode derrubar um servidor no ar digitando "25:00" na TV.
+    for (const valor of ['4h', '25:00', '04:60', 'madrugada', '4:0']) {
+      expect(() => parseRescanTimeEnv(valor)).toThrow(ConfigError);
+      expect(parseRescanTimeInput(valor)).toBeUndefined();
+    }
+  });
+
+  test('so o .env tem default: vazio la vira 04:00, aqui vira desligado', () => {
+    expect(parseRescanTimeEnv(undefined)).toEqual({ hour: 4, minute: 0 });
+    expect(parseRescanTimeEnv('')).toEqual({ hour: 4, minute: 0 });
+    expect(parseRescanTimeInput('')).toBeNull();
   });
 });

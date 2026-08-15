@@ -1,3 +1,5 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { scanLibrary } from '../../src/server/library/scanner.js';
@@ -159,24 +161,37 @@ describe('scanLibrary', () => {
   });
 
   describe('mistura dos dois schemas na mesma serie', () => {
-    it('poe os arquivos soltos antes das pastas de temporada', async () => {
+    it('ordena por temporada e joga o que nao tem numero para o fim', async () => {
       const shows = await scanLibrary(fixture('mixed'));
 
       const show = shows[0]!;
       expect(show.name).toBe('He-Man');
+      expect(show.episodes.map((e) => e.relativePath)).toEqual([
+        'He-Man/Temporada 2/He-Man S02E01.mp4',
+        'He-Man/Temporada 10/He-Man S10E01.mp4',
+        'He-Man/He-Man Especial.mp4',
+      ]);
+      expect(show.episodes.map((e) => e.orderIndex)).toEqual([0, 1, 2]);
+    });
+
+    it('ordena Temporada 2 antes de Temporada 10 (numero, nao texto)', async () => {
+      const shows = await scanLibrary(fixture('mixed'));
+
+      const seasons = shows[0]!.episodes.map((e) => e.season);
+      expect(seasons).toEqual([2, 10, null]);
+    });
+
+    it('sem agrupamento, a ordem e a da caminhada: soltos antes das temporadas', async () => {
+      const shows = await scanLibrary(fixture('mixed'), { smartGrouping: false });
+
+      const show = shows[0]!;
       expect(show.episodes.map((e) => e.relativePath)).toEqual([
         'He-Man/He-Man Especial.mp4',
         'He-Man/Temporada 2/He-Man S02E01.mp4',
         'He-Man/Temporada 10/He-Man S10E01.mp4',
       ]);
       expect(show.episodes.map((e) => e.orderIndex)).toEqual([0, 1, 2]);
-    });
-
-    it('ordena Temporada 2 antes de Temporada 10 (natural sort de pastas)', async () => {
-      const shows = await scanLibrary(fixture('mixed'));
-
-      const seasons = shows[0]!.episodes.map((e) => e.season);
-      expect(seasons).toEqual([null, 2, 10]);
+      expect(show.episodes.map((e) => e.season)).toEqual([null, 2, 10]);
     });
   });
 
@@ -314,6 +329,103 @@ describe('scanLibrary', () => {
       const shows = await scanLibrary(fixture('empty-show'));
 
       expect(shows.map((s) => s.name)).toEqual(['Com Video']);
+    });
+  });
+
+  describe('agrupamento de pastas de release', () => {
+    it('funde S01, S02 e S03 num show so, com o titulo limpo', async () => {
+      const shows = await scanLibrary(fixture('release'));
+
+      expect(shows.map((s) => s.name)).toEqual(['Rick and Morty', 'The Simpsons']);
+      const rick = shows[0]!;
+      expect(rick.slug).toBe('rick-and-morty');
+      expect(rick.episodes).toHaveLength(4);
+    });
+
+    it('a temporada da pasta de release vale para os episodios dela', async () => {
+      const shows = await scanLibrary(fixture('release'));
+
+      const rick = shows[0]!;
+      expect(rick.episodes.map((e) => [e.season, e.episode])).toEqual([
+        [1, 1],
+        [1, 2],
+        [2, 1],
+        // Arquivo sem numeracao nenhuma: a temporada veio so da pasta.
+        [3, null],
+      ]);
+    });
+
+    it('reatribui orderIndex continuo depois de unir as pastas', async () => {
+      const shows = await scanLibrary(fixture('release'));
+
+      expect(shows[0]!.episodes.map((e) => e.orderIndex)).toEqual([0, 1, 2, 3]);
+      expect(shows[1]!.episodes.map((e) => e.orderIndex)).toEqual([0]);
+    });
+
+    it('aponta para a primeira pasta do grupo em ordem natural', async () => {
+      const shows = await scanLibrary(fixture('release'));
+
+      expect(shows[0]!.absolutePath).toBe(
+        path.join(
+          fixture('release'),
+          'Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA',
+        ),
+      );
+    });
+
+    it('nao funde series diferentes que compartilham prefixo', async () => {
+      const shows = await scanLibrary(fixture('prefixo'));
+
+      expect(shows.map((s) => s.name)).toEqual(['The Office UK', 'The Office US']);
+      expect(shows.map((s) => s.episodes.length)).toEqual([1, 2]);
+    });
+
+    it('nao funde nomes que so colidem no slug, sem sinal de release', async () => {
+      // "Acao" e "Ação" viram a mesma chave ASCII; sao series diferentes.
+      const shows = await scanLibrary(fixture('slug'));
+
+      expect(shows).toHaveLength(3);
+    });
+
+    it('smartGrouping false volta ao comportamento de uma pasta por serie', async () => {
+      const shows = await scanLibrary(fixture('release'), { smartGrouping: false });
+
+      expect(shows.map((s) => s.name)).toEqual([
+        'Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA',
+        'Rick.and.Morty.S02.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA',
+        'Rick.and.Morty.S03.2160p.NF.WEB-DL.DDP5.1.x265-DUAL-SiGLA',
+        'The.Simpsons.S37.1080p.DSNP.WEB-DL.DDP5.1.H.264-DUAL',
+      ]);
+      // Sem agrupamento a pasta de release nao empresta temporada nenhuma.
+      expect(shows[2]!.episodes[0]!.season).toBeNull();
+    });
+
+    it('duas execucoes sobre a mesma arvore devolvem exatamente o mesmo resultado', async () => {
+      const primeira = await scanLibrary(fixture('release'));
+      const segunda = await scanLibrary(fixture('release'));
+
+      expect(segunda).toEqual(primeira);
+    });
+
+    it('adicionar uma pasta nova nao renomeia o slug de quem ja existia', async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'widetv-grouping-'));
+      const criar = async (folder: string, file: string): Promise<void> => {
+        await mkdir(path.join(root, folder), { recursive: true });
+        await writeFile(path.join(root, folder, file), '');
+      };
+
+      await criar('Rick.and.Morty.S01.1080p.WEB-DL-SiGLA', 'Rick.and.Morty.S01E01.mkv');
+      const antes = await scanLibrary(root);
+
+      await criar('Rick.and.Morty.S02.1080p.WEB-DL-SiGLA', 'Rick.and.Morty.S02E01.mkv');
+      await criar('Chaves.1a.Temporada.1972.DVDRip', 'Chaves 01.mkv');
+      const depois = await scanLibrary(root);
+
+      expect(antes.map((s) => s.slug)).toEqual(['rick-and-morty']);
+      expect(depois.map((s) => s.slug)).toEqual(['chaves', 'rick-and-morty']);
+      expect(depois.find((s) => s.name === 'Rick and Morty')!.episodes).toHaveLength(2);
+
+      await rm(root, { recursive: true, force: true });
     });
   });
 

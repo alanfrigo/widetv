@@ -30,7 +30,14 @@ export interface MetadataReader {
   getShowMetadata(showId: number): ShowMetadataRow | null;
 }
 
-/** Fonte estreita: este modulo so precisa das series e da tabela de metadata. */
+/**
+ * Fonte estreita: este modulo so precisa das series e da tabela de metadata.
+ *
+ * Nao ha "apagar metadata" aqui de proposito. O reset do painel ("buscar tudo
+ * de novo") e feito por quem orquestra, regravando as linhas com `fetchedAt: 0`
+ * e `notFound: true` - o TTL vence na hora e a rodada seguinte reconsulta.
+ * Um DELETE novo no Store so serviria a este caso e custaria mais uma migracao.
+ */
 export interface MetadataStore extends MetadataReader {
   upsertShowMetadata(row: ShowMetadataRow): void;
 }
@@ -265,6 +272,8 @@ export interface Enricher {
   /** Dispara sem esperar e sem propagar erro. E o que a rota de canais usa. */
   trigger(): void;
   readonly running: boolean;
+  /** Resumo da ultima rodada terminada; null antes da primeira. */
+  readonly last: EnrichReport | null;
 }
 
 /**
@@ -282,11 +291,19 @@ export function createEnricher(
 ): Enricher {
   const inFlight = new Set<number>();
   let current: Promise<EnrichReport> | null = null;
+  let last: EnrichReport | null = null;
 
   function run(): Promise<EnrichReport> {
-    current ??= runEnrich(store, dataDir, options, inFlight).finally(() => {
-      current = null;
-    });
+    current ??= runEnrich(store, dataDir, options, inFlight)
+      .then((report) => {
+        // Guardado ANTES de soltar a trava: quem consultar `last` no instante
+        // em que `running` virou false ja enxerga a rodada que acabou.
+        last = report;
+        return report;
+      })
+      .finally(() => {
+        current = null;
+      });
     return current;
   }
 
@@ -299,6 +316,9 @@ export function createEnricher(
     },
     get running(): boolean {
       return current !== null;
+    },
+    get last(): EnrichReport | null {
+      return last;
     },
   };
 }

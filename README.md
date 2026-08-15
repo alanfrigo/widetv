@@ -85,6 +85,40 @@ interface ChannelSummary {
 The contract lives in `src/shared/api-types.ts` and is mirrored in
 `android/app/src/main/java/com/retrotv/app/net/Models.kt`.
 
+## Settings screen
+
+The web app has a settings screen, navigable entirely by remote control (arrow
+keys / D-pad, no mouse or keyboard required), where the household can:
+
+- Trigger a library rescan, either `incremental` (reuses the probe cached by
+  each file's modified time and size — the same thing the daily rescan does)
+  or `full` (reopens every file, for when the index itself looks wrong).
+- Re-fetch cover art and synopsis, optionally wiping what is already stored
+  first.
+- Set audio and subtitle language preferences, and whether subtitles turn on
+  automatically.
+- Toggle smart grouping (see below) and automatic remux, and set the daily
+  rescan time.
+
+These preferences are saved on the server, not in the browser's
+`localStorage`: the whole household shares one password and the same screens,
+so picking "Portuguese audio" on the living-room TV has to hold on the tablet
+too. Settings that also exist in `.env` (`SMART_GROUPING`, `AUTO_REMUX`,
+`RESCAN_TIME`) use the environment value as their default — saving in the
+panel overrides it, and clearing a preference falls back to whatever `.env`
+says.
+
+| Route | Returns |
+| --- | --- |
+| `GET /api/settings` | `AppSettings` |
+| `PATCH /api/settings` | `AppSettings`; body is a partial `SettingsPatch` — never a full replace, so two devices editing at once cannot erase each other's change |
+| `GET /api/library/status` | `LibraryStatus` — scan/metadata/remux state, polled while a task runs |
+| `POST /api/library/scan` | 202 once the scan is accepted, not once it finishes (14k files take minutes); 409 if one is already running |
+| `POST /api/library/metadata` | 202 once the re-fetch is accepted, 409 if one is already running |
+
+Full request/response shapes and status codes are in
+[docs/CONTRACTS.md](docs/CONTRACTS.md).
+
 ## Library layout
 
 Both shapes are understood, and a single series may mix them:
@@ -111,6 +145,37 @@ than being invented.
 
 Hidden files, `@eaDir`, `.AppleDouble` and `#recycle` are skipped. A series
 whose files all fail to probe does not become a channel.
+
+## Smart grouping
+
+Release folders usually name each season on its own, for example:
+
+```
+Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/
+Rick.and.Morty.S02.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/
+```
+
+**Before**, without grouping: each folder is its own channel, so this becomes
+two channels, both named after the release —
+`Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA` and
+`Rick.and.Morty.S02.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA` — instead of one
+show.
+
+**After**, with `SMART_GROUPING` on (the default): folders belonging to the
+same series are merged into a single channel, "Rick and Morty", carrying both
+seasons. This applies to any series that follows the same per-season release
+naming, not just this example.
+
+If your library is already one folder per show, grouping has nothing to do —
+set `SMART_GROUPING=false` and skip it.
+
+**Turning grouping on for a library that is already indexed renames shows and
+renumbers channels.** A channel's number is assigned once, the first time its
+slug shows up, and the slug is derived from the show's name. When grouping
+collapses two release folders into one differently-named series, that series
+gets a new slug and a new channel number; the old numbers are not reused. If
+anyone in the household has a channel number memorized, they will need to
+relearn it after grouping is turned on.
 
 ## Codecs
 
@@ -174,6 +239,7 @@ npm run build && npm start
 | `AUTO_SCAN` | Indexes on its own when the index is empty. Only the exact string `false` turns it off |
 | `RESCAN_TIME` | Daily library rescan at this LOCAL time (`HH:MM`, default `04:00`): adds new shows/episodes and removes deleted ones. `off` disables |
 | `AUTO_REMUX` | Converts MKV/Dolby episodes to browser-safe MP4 in the background (byte copy, no transcode). Copies live in `DATA_DIR/remux` and take roughly the size of the MKVs themselves. Only the exact string `false` turns it off |
+| `SMART_GROUPING` | Merges same-series release folders (e.g. `Show.S01...` + `Show.S02...`) into one channel — see [Smart grouping](#smart-grouping). On by default; only the exact string `false` turns it off. The settings panel can override this at runtime; clearing that override falls back to this value |
 | `TMDB_API_KEY` | Optional. Puts TMDB first in the cover chain, with pt-BR synopses. Without it, TVMaze and iTunes are used |
 | `PORT` | HTTP port, default 8080 |
 | `CHANNEL_EPOCH` | Instant zero of the live schedule. Changing it moves every channel at once |

@@ -2,15 +2,20 @@ import { describe, expect, test } from 'vitest';
 import type { AudioTrackRef, SubtitleTrackRef } from '../../src/shared/api-types';
 import type { StorageLike } from '../../src/web/last-channel';
 import {
+  AUDIO_LANG_KEY,
   SUBTITLE_LANG_KEY,
+  applyServerPreferences,
   audioLabel,
   initialTracks,
   languageName,
   normalizeLang,
+  pickPreferredAudio,
   pickPreferredSubtitle,
+  readPreferredAudio,
   readPreferredSubtitle,
   reduceTracks,
   subtitleLabel,
+  writePreferredAudio,
   writePreferredSubtitle,
   type TracksContext,
   type TracksEvent,
@@ -312,5 +317,50 @@ describe('memoria da preferencia', () => {
     };
     expect(readPreferredSubtitle(hostile)).toBeNull();
     expect(() => writePreferredSubtitle(hostile, 'por')).not.toThrow();
+  });
+
+  test('a escolha do painel continua indo para o cache', () => {
+    const storage = fakeStorage();
+    writePreferredAudio(storage, 'pt-BR');
+    expect(storage.data[AUDIO_LANG_KEY]).toBe('por');
+    expect(readPreferredAudio(storage)).toBe('por');
+  });
+
+  describe('cache semeado pelo servidor', () => {
+    test('o que o servidor manda vira o cache local', () => {
+      const storage = fakeStorage();
+      applyServerPreferences(storage, { audioLang: 'por', subtitleLang: 'eng' });
+
+      expect(readPreferredAudio(storage)).toBe('por');
+      expect(readPreferredSubtitle(storage)).toBe('eng');
+      // E o cache e quem escolhe a faixa no primeiro episodio da sessao.
+      expect(pickPreferredAudio([aud({ index: 0, lang: 'eng' }), aud({ index: 1, lang: 'por' })], readPreferredAudio(storage))).toBe(1);
+    });
+
+    test('"sem preferencia" apaga o valor antigo em vez de deixar o cache mentindo', () => {
+      const storage = fakeStorage({ [AUDIO_LANG_KEY]: 'por', [SUBTITLE_LANG_KEY]: 'por' });
+      applyServerPreferences(storage, { audioLang: null, subtitleLang: null });
+
+      expect(readPreferredAudio(storage)).toBeNull();
+      expect(readPreferredSubtitle(storage)).toBeNull();
+    });
+
+    test('o sentinela de "desligado" nao vira um idioma chamado off', () => {
+      const storage = fakeStorage({ [AUDIO_LANG_KEY]: 'off' });
+      expect(readPreferredAudio(storage)).toBeNull();
+    });
+
+    test('o codigo e normalizado antes de virar cache', () => {
+      const storage = fakeStorage();
+      applyServerPreferences(storage, { audioLang: 'pt-BR', subtitleLang: 'PT' });
+      expect(storage.data[AUDIO_LANG_KEY]).toBe('por');
+      expect(storage.data[SUBTITLE_LANG_KEY]).toBe('por');
+    });
+
+    test('sem armazenamento a preferencia do servidor nao derruba nada', () => {
+      expect(() =>
+        applyServerPreferences(null, { audioLang: 'por', subtitleLang: null }),
+      ).not.toThrow();
+    });
   });
 });

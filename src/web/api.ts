@@ -1,8 +1,13 @@
 import {
   API,
+  type AppSettings,
   type ChannelSummary,
   type EpisodeRef,
+  type LibraryStatus,
   type NowPlaying,
+  type ScanMode,
+  type SettingsPatch,
+  type TaskAccepted,
   type WatchProgress,
 } from '@shared/api-types';
 
@@ -117,6 +122,64 @@ export function saveProgress(episodeId: string, positionMs: number, durationMs: 
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ positionMs, durationMs }),
   }).catch(() => undefined);
+}
+
+/* --- configuracoes e manutencao ------------------------------------------- */
+
+export async function fetchSettings(): Promise<AppSettings> {
+  return getJson<AppSettings>(API.settings);
+}
+
+/**
+ * Grava um campo so (ou alguns) e devolve o estado inteiro que passou a valer.
+ * O servidor e quem responde o valor final: ele normaliza codigo de idioma e
+ * horario, e a tela mostra o que ficou gravado, nao o que foi pedido.
+ */
+export async function patchSettings(patch: SettingsPatch): Promise<AppSettings> {
+  const response = await fetch(API.settings, {
+    method: 'PATCH',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+
+  if (response.status === 401) throw new UnauthorizedError();
+  if (!response.ok) throw new Error(`${API.settings} respondeu ${response.status}`);
+  return (await response.json()) as AppSettings;
+}
+
+export async function fetchLibraryStatus(): Promise<LibraryStatus> {
+  return getJson<LibraryStatus>(API.libraryStatus);
+}
+
+/**
+ * Dispara uma tarefa de fundo.
+ *
+ * 409 nao e erro: "ja esta rodando" e informacao para a tela mostrar, e o corpo
+ * traz o motivo em `reason`. Tratar como falha faria a tela dizer que o servidor
+ * quebrou quando na verdade o scan que o usuario quer ja esta em andamento.
+ */
+async function startTask(url: string, body: unknown): Promise<TaskAccepted> {
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 401) throw new UnauthorizedError();
+  if (!response.ok && response.status !== 409) {
+    throw new Error(`${url} respondeu ${response.status}`);
+  }
+  return (await response.json()) as TaskAccepted;
+}
+
+export async function startScan(mode: ScanMode): Promise<TaskAccepted> {
+  return startTask(API.libraryScan, { mode });
+}
+
+export async function refreshMetadata(reset: boolean): Promise<TaskAccepted> {
+  return startTask(API.libraryMetadata, { reset });
 }
 
 export async function login(password: string): Promise<boolean> {

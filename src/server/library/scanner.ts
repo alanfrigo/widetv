@@ -3,6 +3,14 @@ import type { Dirent } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import {
+  ORDINAL_WORDS,
+  deaccent,
+  groupingKey,
+  parseFolderTitle,
+  type ParsedFolderTitle,
+} from './title-parser.js';
+
 export interface ScannedEpisode {
   absolutePath: string;
   /** Caminho relativo a raiz, com separador '/'. Id estavel do arquivo. */
@@ -18,10 +26,14 @@ export interface ScannedEpisode {
 }
 
 export interface ScannedShow {
-  /** Id estavel derivado do nome da pasta (kebab-case, ASCII). */
+  /** Id estavel derivado do nome (kebab-case, ASCII). */
   slug: string;
-  /** Nome da pasta, como esta em disco. */
+  /**
+   * Nome de exibicao. Com `smartGrouping`, e o titulo limpo do grupo; sem ele,
+   * o nome da pasta como esta em disco.
+   */
   name: string;
+  /** Pasta da serie; com agrupamento, a primeira do grupo em ordem natural. */
   absolutePath: string;
   episodes: ScannedEpisode[];
 }
@@ -29,6 +41,10 @@ export interface ScannedShow {
 export interface ScanOptions {
   /** Extensoes aceitas, minusculas, com ponto. Default: ['.mp4', '.mkv', '.webm', '.m4v'] */
   extensions?: string[];
+  /**
+   * Junta pastas de release da mesma serie num show so. Default: true.
+   */
+  smartGrouping?: boolean;
 }
 
 const DEFAULT_EXTENSIONS = ['.mp4', '.mkv', '.webm', '.m4v'];
@@ -93,29 +109,7 @@ const SEASON_WORD_FIRST = /^(?:temporadas?|seasons?|temp|s|t)[\s._-]*(\d{1,3})(?
  */
 const SEASON_NUMBER_FIRST = /^(\d{1,3})\s*[aoº°ªst]{0,2}[\s._-]*(?:temporadas?|seasons?)\b/i;
 
-/**
- * Ordinais escritos por extenso. Raros, mas `Terceira Temporada Incompleta`
- * existe no acervo e sem isso a serie inteira perde a numeracao.
- */
-const ORDINAL_WORDS: Record<string, number> = {
-  primeira: 1,
-  segunda: 2,
-  terceira: 3,
-  quarta: 4,
-  quinta: 5,
-  sexta: 6,
-  setima: 7,
-  oitava: 8,
-  nona: 9,
-  decima: 10,
-};
-
 const SEASON_ORDINAL_WORD = /^([a-zà-ú]+)\s+(?:temporadas?|seasons?)\b/i;
-
-/** Remove acento para casar `setima` com `sétima`. */
-function deaccent(value: string): string {
-  return value.normalize('NFD').replace(/[̀-ͯ]/g, '');
-}
 
 /** Numero da temporada quando a pasta e de temporada; senao null. */
 function parseSeasonFolder(folderName: string): number | null {
@@ -350,24 +344,40 @@ async function assertDirectory(root: string): Promise<void> {
   }
 }
 
+/** Pasta de primeiro nivel que rendeu episodio, antes do agrupamento. */
+interface ShowFolder {
+  /** Nome cru da pasta, como esta em disco. */
+  name: string;
+  absolutePath: string;
+  parsed: ParsedFolderTitle;
+  episodes: ScannedEpisode[];
+}
+
 export async function scanLibrary(
   root: string,
   options?: ScanOptions,
 ): Promise<ScannedShow[]> {
   const extensions = options?.extensions ?? DEFAULT_EXTENSIONS;
+  const smartGrouping = options?.smartGrouping ?? true;
   await assertDirectory(root);
   const rootReal = await fs.realpath(root);
   const entries = (await fs.readdir(root, { withFileTypes: true })).filter(
     (entry) => !isIgnoredName(entry.name),
   );
+  // Ordena ANTES de percorrer: o representante do grupo (caminho e desempate de
+  // titulo) sai da primeira pasta em ordem natural, e isso nao pode depender da
+  // ordem em que o filesystem devolveu as entradas.
+  entries.sort((a, b) => compareNatural(a.name, b.name));
+
   const scanned = await mapWithConcurrency(
     entries,
     SHOW_CONCURRENCY,
-    async (entry): Promise<ScannedShow | null> => {
+    async (entry): Promise<ShowFolder | null> => {
       const showPath = path.join(root, entry.name);
       const info = await resolveEntry(entry, showPath, rootReal, rootReal);
       if (info?.kind !== 'directory') return null;
 
+      const parsed = parseFolderTitle(entry.name);
       const episodes: ScannedEpisode[] = [];
       await collectEpisodes(
         {
@@ -375,7 +385,10 @@ export async function scanLibrary(
           rootReal,
           dir: showPath,
           dirReal: info.real,
-          season: null,
+          // `Serie.S02.1080p...` carrega a temporada no proprio nome da pasta e
+          // vale como base, igual a uma subpasta `Temporada 2`. Fora do
+          // agrupamento isso fica null: o modo antigo nao pode mudar sozinho.
+          season: smartGrouping ? parsed.season : null,
           extensions,
           ancestors: [rootReal, info.real],
         },
@@ -384,18 +397,122 @@ export async function scanLibrary(
       // Serie sem nenhum episodio valido nao vira canal.
       if (episodes.length === 0) return null;
 
-      return {
-        slug: slugify(entry.name),
-        name: entry.name,
-        absolutePath: showPath,
-        episodes,
-      };
+      return { name: entry.name, absolutePath: showPath, parsed, episodes };
     },
   );
 
-  const shows = scanned.filter((show): show is ScannedShow => show !== null);
+  const folders = scanned.filter((folder): folder is ShowFolder => folder !== null);
+  const shows = smartGrouping ? groupFolders(folders) : folders.map(toRawShow);
   shows.sort((a, b) => compareNatural(a.name, b.name));
   return disambiguateSlugs(shows);
+}
+
+/** Modo antigo: uma pasta e uma serie, e a ordem da grade e a da caminhada. */
+function toRawShow(folder: ShowFolder): ScannedShow {
+  return {
+    slug: slugify(folder.name),
+    name: folder.name,
+    absolutePath: folder.absolutePath,
+    episodes: folder.episodes,
+  };
+}
+
+/**
+ * Junta as pastas do mesmo grupo num show so.
+ *
+ * Reordenar os episodios depois da uniao nao e cosmetico: a grade ao vivo e o
+ * catalogo leem `orderIndex`, e a ordem em que as pastas foram lidas nao tem
+ * relacao nenhuma com a ordem das temporadas - sem isso a S02 estrearia antes
+ * da S01 dependendo do filesystem.
+ */
+function groupFolders(folders: readonly ShowFolder[]): ScannedShow[] {
+  const shows: ScannedShow[] = [];
+  for (const group of buildGroups(folders)) {
+    const first = group[0];
+    if (first === undefined) continue;
+
+    const name = pickTitle(group, first);
+    const episodes = group.flatMap((folder) => folder.episodes);
+    episodes.sort(compareEpisodes);
+    shows.push({
+      slug: slugify(name),
+      name,
+      absolutePath: first.absolutePath,
+      episodes: episodes.map((episode, index) => ({ ...episode, orderIndex: index })),
+    });
+  }
+  return shows;
+}
+
+/**
+ * Regra conservadora contra fusao falsa.
+ *
+ * Pastas so entram no mesmo grupo quando a chave bate E pelo menos uma delas
+ * tem `isRelease` - ou seja, houve token de release/temporada/grupo removido,
+ * que e o unico sinal confiavel de que aquele nome e um pedaco de uma serie
+ * maior. Sem nenhum sinal desses, so funde quem tem titulo IDENTICO depois da
+ * limpeza ("Tom.e.Jerry" com "Tom e Jerry"), porque a chave e um slug ASCII e
+ * colapsa coisas que sao series diferentes de verdade ("Acao" e "Ação").
+ *
+ * "The Office (US)" e "The Office (UK)" nunca se encontram: sufixo diferente ja
+ * gera chave diferente, antes de qualquer decisao de fusao.
+ */
+function buildGroups(folders: readonly ShowFolder[]): ShowFolder[][] {
+  const byKey = new Map<string, ShowFolder[]>();
+  for (const folder of folders) {
+    push(byKey, groupingKey(folder.parsed), folder);
+  }
+
+  const groups: ShowFolder[][] = [];
+  for (const bucket of byKey.values()) {
+    if (bucket.some((folder) => folder.parsed.isRelease)) {
+      groups.push(bucket);
+      continue;
+    }
+    const byTitle = new Map<string, ShowFolder[]>();
+    for (const folder of bucket) {
+      push(byTitle, folder.parsed.title.normalize('NFC'), folder);
+    }
+    groups.push(...byTitle.values());
+  }
+  return groups;
+}
+
+function push(index: Map<string, ShowFolder[]>, key: string, folder: ShowFolder): void {
+  const bucket = index.get(key);
+  if (bucket === undefined) index.set(key, [folder]);
+  else bucket.push(folder);
+}
+
+/**
+ * Titulo mais rico do grupo: quem tem ano primeiro, depois o mais longo. Empate
+ * fica com o primeiro em ordem natural, que e como a lista chegou aqui - o nome
+ * do canal nao pode depender de quem o disco leu antes.
+ */
+function pickTitle(group: readonly ShowFolder[], first: ShowFolder): string {
+  let best = first.parsed;
+  for (const folder of group) {
+    const candidate = folder.parsed;
+    const richer =
+      (candidate.year !== null) !== (best.year !== null)
+        ? candidate.year !== null
+        : candidate.title.length > best.title.length;
+    if (richer) best = candidate;
+  }
+  return best.title;
+}
+
+/** Temporada, depois episodio, e o que nao tem numero nenhum vai para o fim. */
+function compareEpisodes(a: ScannedEpisode, b: ScannedEpisode): number {
+  const seasonA = a.season ?? Number.POSITIVE_INFINITY;
+  const seasonB = b.season ?? Number.POSITIVE_INFINITY;
+  if (seasonA !== seasonB) return seasonA - seasonB;
+
+  const episodeA = a.episode ?? Number.POSITIVE_INFINITY;
+  const episodeB = b.episode ?? Number.POSITIVE_INFINITY;
+  if (episodeA !== episodeB) return episodeA - episodeB;
+
+  return compareNatural(a.relativePath, b.relativePath);
 }
 
 /**

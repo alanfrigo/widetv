@@ -13,6 +13,17 @@ export interface RescanTime {
 }
 
 /**
+ * `HH:MM` com zero a esquerda, que e como o horario viaja no contrato HTTP e
+ * como um campo `<input type="time">` espera receber: "4:0" nao e horario para
+ * ninguem, nem para o navegador.
+ */
+export function formatRescanTime(time: RescanTime): string {
+  const hour = String(time.hour).padStart(2, '0');
+  const minute = String(time.minute).padStart(2, '0');
+  return `${hour}:${minute}`;
+}
+
+/**
  * Quanto falta ate a proxima ocorrencia do horario, em ms.
  *
  * Calculado em data local com `setHours`: numa virada de horario de verao o

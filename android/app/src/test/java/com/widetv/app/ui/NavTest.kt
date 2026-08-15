@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Navegacao entre as quatro telas. Substitui o `MenuTest` do app antigo, cujo
+ * Navegacao entre as cinco telas. Substitui o `MenuTest` do app antigo, cujo
  * menu de canais e episodios virou o acervo e a tela de serie.
  */
 class NavTest {
@@ -16,6 +16,7 @@ class NavTest {
   private val home = NavState(ScreenId.HOME)
   private val series = NavState(ScreenId.SERIES, 7)
   private val player = NavState(ScreenId.PLAYER, 7)
+  private val settings = NavState(ScreenId.SETTINGS)
 
   // Entrada e saida da sessao
 
@@ -54,6 +55,27 @@ class NavTest {
   fun `o player so abre a partir da serie`() {
     assertEquals(ScreenId.PLAYER, reduceNav(series, NavEvent.OpenPlayer(7)).state.screen)
     assertEquals(home, reduceNav(home, NavEvent.OpenPlayer(7)).state)
+  }
+
+  // Configuracoes
+
+  @Test
+  fun `o acervo abre as configuracoes e esquece o canal`() {
+    val result = reduceNav(home, NavEvent.OpenSettings)
+    assertEquals(ScreenId.SETTINGS, result.state.screen)
+    assertNull(result.state.channelNumber)
+  }
+
+  @Test
+  fun `o portao nao abre configuracao nenhuma`() {
+    assertEquals(gate, reduceNav(gate, NavEvent.OpenSettings).state)
+  }
+
+  @Test
+  fun `voltar das configuracoes cai no acervo`() {
+    val result = reduceNav(settings, NavEvent.Back)
+    assertEquals(ScreenId.HOME, result.state.screen)
+    assertFalse(result.exit)
   }
 
   // Zap ao vivo

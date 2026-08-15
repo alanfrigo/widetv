@@ -14,6 +14,8 @@
  *    explicito, e nao `T | null`.
  */
 
+import { cleanSearchTerm } from '../library/title-parser.js';
+
 export type ProviderName = 'tmdb' | 'tvmaze' | 'itunes';
 
 export interface ShowMetadata {
@@ -63,12 +65,14 @@ function request(url: string, options: ProviderOptions | undefined): Promise<Res
  * Tira o sufixo de ano entre parenteses ("Batman (1992)", "Cowboy Bebop
  * (1998-1999)"): o acervo usa isso para separar remakes, os provedores nao
  * entendem e devolvem zero resultado.
+ *
+ * O trabalho pesado mora no parser da biblioteca, que tambem sabe desmontar
+ * nome de release. Uma pasta que escape do agrupamento do scanner chega aqui
+ * como `Serie.S01.1080p.WEB-DL.x264-GRUPO`, e mandar isso para o TVMaze e o
+ * mesmo que nao procurar nada.
  */
 export function cleanShowName(raw: string): string {
-  return raw
-    .replace(/\s*\((?:19|20)\d{2}(?:\s*[-–/]\s*(?:(?:19|20)\d{2}|presente|present))?\)\s*$/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return cleanSearchTerm(raw);
 }
 
 const ENTITIES: Record<string, string> = {

@@ -1,4 +1,13 @@
-import { API, type ChannelSummary, type EpisodeRef, type WatchProgress } from '@shared/api-types';
+import {
+  API,
+  type AppSettings,
+  type ChannelSummary,
+  type EpisodeRef,
+  type LibraryStatus,
+  type SettingsPatch,
+  type TaskAccepted,
+  type WatchProgress,
+} from '@shared/api-types';
 
 import './app.css';
 
@@ -7,11 +16,16 @@ import {
   fetchChannels,
   fetchEpisodes,
   fetchHistory,
+  fetchLibraryStatus,
+  fetchSettings,
   hasSession,
   login,
   logout,
+  patchSettings,
   probeVariant,
+  refreshMetadata,
   saveProgress,
+  startScan,
 } from './api';
 import {
   formatChannelMeta,
@@ -27,8 +41,26 @@ import { ChannelPlayer } from './player';
 import { initialScreen, reduceScreen, type Screen, type ScreenEvent } from './screen';
 import { progressRatio, resumeStartMs } from './resume';
 import {
+  audioLanguageOptions,
+  initialSettings,
+  metadataSummaryText,
+  reduceSettings,
+  scanProgressRatio,
+  scanProgressText,
+  scanSummaryText,
+  settingsRowHint,
+  settingsRowTitle,
+  settingsRows,
+  settingsValueText,
+  type SettingsCommand,
+  type SettingsEvent,
+  type SettingsUiState,
+} from './settings';
+import {
+  applyServerPreferences,
   audioLabel,
   initialTracks,
+  normalizeLang,
   pickPreferredAudio,
   pickPreferredSubtitle,
   readPreferredAudio,
@@ -48,8 +80,9 @@ import { VodPlayer } from './vod-player';
  * Cola entre teclado, mouse, DOM e players.
  *
  * As decisoes moram nos reducers puros - `screen.ts` (que tela), `nav.ts` (onde
- * esta o foco), `tracks.ts` (o painel de trilhas), `vod.ts` (o que vem depois do
- * episodio) e `sync.ts` (a perseguicao da grade). Este arquivo so descobre o
+ * esta o foco), `tracks.ts` (o painel de trilhas), `settings.ts` (a tela de
+ * configuracoes), `vod.ts` (o que vem depois do episodio) e `sync.ts` (a
+ * perseguicao da grade). Este arquivo so descobre o
  * evento, entrega ao reducer e desenha o resultado. Quando bater a duvida de
  * onde por uma regra nova: se ela da para escrever sem `document`, ela nao mora
  * aqui.
@@ -73,6 +106,7 @@ function need<T extends Element>(id: string): T {
 const dom = {
   topbar: need<HTMLElement>('topbar'),
   logout: need<HTMLButtonElement>('logout'),
+  openSettings: need<HTMLButtonElement>('open-settings'),
 
   login: need<HTMLElement>('screen-login'),
   loginForm: need<HTMLFormElement>('login-form'),
@@ -94,6 +128,16 @@ const dom = {
   watchLive: need<HTMLButtonElement>('watch-live'),
   watchFirst: need<HTMLButtonElement>('watch-first'),
   episodeList: need<HTMLOListElement>('episode-list'),
+
+  settings: need<HTMLElement>('screen-settings'),
+  settingsList: need<HTMLUListElement>('settings-list'),
+  settingsMessage: need<HTMLParagraphElement>('settings-message'),
+  settingsProgress: need<HTMLDivElement>('settings-progress'),
+  settingsProgressFill: need<HTMLDivElement>('settings-progress-fill'),
+  settingsScanText: need<HTMLParagraphElement>('settings-scan-text'),
+  settingsScanSummary: need<HTMLParagraphElement>('settings-scan-summary'),
+  settingsMetadataSummary: need<HTMLParagraphElement>('settings-metadata-summary'),
+  settingsTmdb: need<HTMLParagraphElement>('settings-tmdb'),
 
   player: need<HTMLElement>('screen-player'),
   videoA: need<HTMLVideoElement>('video-a'),
@@ -143,8 +187,19 @@ let tracks: TracksState = initialTracks();
 let vod: VodSession | null = null;
 /** Episodio a tocar quando a tela do player abrir com `source: 'vod'`. */
 let vodIntent = 0;
+// Cache local primeiro: o player abre com a preferencia certa antes de o
+// `GET /api/settings` responder. O servidor corrige assim que chega.
 let preferredSubtitle = readPreferredSubtitle(storage);
 let preferredAudio = readPreferredAudio(storage);
+
+/** Preferencias do servidor. null enquanto a rota nao respondeu nesta sessao. */
+let settings: AppSettings | null = null;
+let settingsUi: SettingsUiState = initialSettings();
+let library: LibraryStatus | null = null;
+let libraryTimer: number | null = null;
+let libraryFails = 0;
+/** Invalida a resposta de um PATCH antigo quando a seta anda de novo no meio. */
+let settingsPatch = 0;
 
 /** Onde o usuario parou, por episodio. Vem do servidor; atualizado localmente. */
 let history = new Map<string, WatchProgress>();
@@ -276,6 +331,9 @@ function go(event: ScreenEvent): void {
 }
 
 function onLeave(before: Screen, after: Screen): void {
+  // Intervalo vivo em tela fechada e vazamento: ele bateria na API para sempre.
+  if (before.name === 'settings' && after.name !== 'settings') stopLibraryPolling();
+
   if (before.name !== 'player' || after.name === 'player') return;
   // Sair do player e sempre parar de tocar: som de episodio continuando por
   // baixo do catalogo seria assombracao.
@@ -303,6 +361,10 @@ function onEnter(before: Screen, after: Screen): void {
       void openSeries(after.channel);
       return;
 
+    case 'settings':
+      void openSettings();
+      return;
+
     case 'player':
       writeLastChannel(storage, after.channel);
       // Foco preso num botao faria Espaco e Enter reclicarem o botao em vez de
@@ -321,8 +383,9 @@ function render(): void {
   dom.login.hidden = screen.name !== 'login';
   dom.home.hidden = screen.name !== 'home';
   dom.series.hidden = screen.name !== 'series';
+  dom.settings.hidden = screen.name !== 'settings';
   dom.player.hidden = screen.name !== 'player';
-  dom.topbar.hidden = screen.name !== 'home' && screen.name !== 'series';
+  dom.topbar.hidden = screen.name === 'login' || screen.name === 'booting' || screen.name === 'player';
   if (screen.name === 'player') renderOverlay();
 }
 
@@ -345,6 +408,10 @@ function homeMessage(title: string, text: string): void {
 }
 
 async function openHome(before: Screen): Promise<void> {
+  // Preferencias uma vez por sessao, sem segurar a grade: e o que faz o
+  // primeiro episodio abrir ja com o idioma escolhido na tela de configuracoes.
+  if (settings === null) void loadSettings();
+
   if (!channelsLoaded) {
     renderSkeleton();
     try {
@@ -553,7 +620,316 @@ async function refreshHistory(): Promise<void> {
   }
 }
 
-/* --- 4. player ------------------------------------------------------------ */
+/* --- 4. configuracoes ----------------------------------------------------- */
+
+/** De quanto em quanto tempo perguntar o estado enquanto uma tarefa roda. */
+const LIBRARY_POLL_MS = 2_000;
+/** Falhas seguidas antes de desistir do polling. */
+const LIBRARY_FAIL_LIMIT = 3;
+
+/** Novo `AppSettings` do servidor: ele manda no player e semeia o cache local. */
+function adoptSettings(next: AppSettings): void {
+  settings = next;
+  applyServerPreferences(storage, next);
+  // Do servidor direto, e nao de volta do cache: com armazenamento bloqueado
+  // pelo navegador a preferencia continua valendo nesta sessao.
+  preferredAudio = normalizeLang(next.audioLang);
+  preferredSubtitle = normalizeLang(next.subtitleLang);
+}
+
+/** Uma vez por sessao: e o que faz o player abrir com o idioma escolhido. */
+async function loadSettings(): Promise<void> {
+  try {
+    adoptSettings(await fetchSettings());
+  } catch {
+    // Rota fora do ar: valem as preferencias que ficaram no cache local.
+  }
+}
+
+function settingsRowNodes(): HTMLElement[] {
+  return Array.from(dom.settingsList.querySelectorAll<HTMLElement>('.setting'));
+}
+
+async function openSettings(): Promise<void> {
+  settingsUi = initialSettings();
+  renderSettings();
+
+  try {
+    const [next, status] = await Promise.all([fetchSettings(), fetchLibraryStatus()]);
+    adoptSettings(next);
+    library = status;
+  } catch (error) {
+    if (expiredSession(error)) return;
+    settingsUi = { ...settingsUi, message: 'Não foi possível falar com o servidor.' };
+    renderSettings();
+    return;
+  }
+
+  // Saiu da tela enquanto as duas rotas respondiam.
+  if (screen.name !== 'settings') return;
+  renderSettings();
+  focusRow(settingsRowNodes()[settingsUi.cursor]);
+  pollLibraryWhileBusy();
+}
+
+function renderSettings(): void {
+  const current = settings;
+  // Redesenhar troca os botoes por outros: sem isto, uma resposta que chega
+  // tarde apagaria o foco de quem esta navegando com o controle.
+  const focused =
+    document.activeElement instanceof HTMLElement &&
+    document.activeElement.classList.contains('setting');
+
+  clear(dom.settingsList);
+  if (current === null) {
+    // Sem `AppSettings` nao ha linha nenhuma para desenhar: elas mostram o valor
+    // do servidor, e inventar um default aqui seria mentir sobre o que vale.
+    const text =
+      settingsUi.message === null
+        ? 'Carregando configurações…'
+        : 'As configurações não puderam ser carregadas.';
+    dom.settingsList.append(el('li', 'settings__note', text));
+  }
+
+  if (current !== null) {
+    settingsRows().forEach((row, index) => {
+      const button = el('button', `setting setting--${row.kind}`);
+      button.type = 'button';
+      if (settingsUi.busy === row.field) button.classList.add('is-busy');
+      button.append(
+        el('span', 'setting__name', settingsRowTitle(row.field)),
+        el('span', 'setting__value', settingsValueText(row.field, current, settingsUi)),
+        el('span', 'setting__hint', settingsRowHint(row.field)),
+      );
+
+      // O foco do DOM E o cursor, como na grade e na lista de episodios.
+      button.addEventListener('focus', () => {
+        settingsUi = { ...settingsUi, cursor: index };
+      });
+      button.addEventListener('click', () => {
+        settingsUi = { ...settingsUi, cursor: index };
+        dispatchSettings({ type: 'select' });
+      });
+
+      const item = el('li');
+      item.append(button);
+      dom.settingsList.append(item);
+    });
+  }
+
+  dom.settingsMessage.textContent = settingsUi.message ?? '';
+  dom.settingsMessage.hidden = settingsUi.message === null;
+
+  renderLibraryStatus();
+  if (focused) focusRow(settingsRowNodes()[settingsUi.cursor]);
+}
+
+/** Linha principal do bloco de estado: o que o servidor esta fazendo agora. */
+function libraryStateText(status: LibraryStatus): string {
+  const progress = scanProgressText(status);
+  if (progress !== null) return progress;
+  if (status.metadata.state === 'running') return 'Buscando capas e sinopses…';
+  if (status.remux.state === 'running') return 'Convertendo arquivos em segundo plano…';
+  return 'Nenhuma tarefa em andamento.';
+}
+
+function renderLibraryStatus(): void {
+  const tmdb = settings?.tmdbConfigured;
+  dom.settingsTmdb.textContent =
+    tmdb === undefined
+      ? ''
+      : tmdb
+        ? 'TMDB configurado: as capas e as sinopses vêm do provedor.'
+        : 'Sem chave do TMDB no servidor: as capas ficam limitadas ao que a pasta já tem.';
+
+  const status = library;
+  if (status === null) {
+    dom.settingsProgress.hidden = true;
+    dom.settingsScanText.textContent = 'Consultando o servidor…';
+    dom.settingsScanSummary.hidden = true;
+    dom.settingsMetadataSummary.hidden = true;
+    return;
+  }
+
+  const ratio = scanProgressRatio(status);
+  dom.settingsProgress.hidden = ratio === null;
+  if (ratio !== null) dom.settingsProgressFill.style.width = `${(ratio * 100).toFixed(1)}%`;
+  dom.settingsScanText.textContent = libraryStateText(status);
+
+  const scan = scanSummaryText(status);
+  dom.settingsScanSummary.textContent = scan ?? '';
+  dom.settingsScanSummary.hidden = scan === null;
+
+  const metadata = metadataSummaryText(status);
+  dom.settingsMetadataSummary.textContent = metadata ?? '';
+  dom.settingsMetadataSummary.hidden = metadata === null;
+}
+
+function dispatchSettings(event: SettingsEvent): void {
+  const current = settings;
+  if (current === null) return;
+
+  const result = reduceSettings(settingsUi, event, {
+    settings: current,
+    // As duas linhas de idioma andam pela mesma lista de valores; o rotulo do
+    // `null` e que muda, e quem desenha resolve isso.
+    languages: audioLanguageOptions(),
+  });
+  settingsUi = result.state;
+  if (result.command !== null) runSettingsCommand(result.command);
+
+  renderSettings();
+  focusRow(settingsRowNodes()[settingsUi.cursor]);
+}
+
+function runSettingsCommand(command: Exclude<SettingsCommand, null>): void {
+  switch (command.type) {
+    case 'patch':
+      void savePreference(command.patch);
+      return;
+    case 'scan':
+      void runLibraryTask(
+        startScan(command.mode),
+        command.mode === 'full' ? 'Reanálise iniciada.' : 'Varredura iniciada.',
+      );
+      return;
+    case 'refreshMetadata':
+      void runLibraryTask(refreshMetadata(command.reset), 'Busca de capas iniciada.');
+      return;
+  }
+}
+
+/**
+ * PATCH de um campo so, otimista: a linha muda na hora e o servidor confirma.
+ * Quando ele recusa, o valor volta ao que era - uma tela que continua mostrando
+ * a escolha que nao foi gravada mente para quem esta olhando.
+ */
+async function savePreference(patch: SettingsPatch): Promise<void> {
+  const before = settings;
+  if (before === null) return;
+
+  const mine = ++settingsPatch;
+  adoptSettings({ ...before, ...patch });
+  renderSettings();
+
+  try {
+    const next = await patchSettings(patch);
+    // Resposta de um PATCH que outra seta ja atropelou: aplicar agora devolveria
+    // um valor velho para a tela.
+    if (mine !== settingsPatch) return;
+    adoptSettings(next);
+  } catch (error) {
+    if (expiredSession(error)) return;
+    if (mine !== settingsPatch) return;
+    adoptSettings(before);
+    settingsUi = { ...settingsUi, message: 'O servidor não aceitou a mudança.' };
+  }
+
+  if (screen.name === 'settings') renderSettings();
+}
+
+/**
+ * Grava a escolha feita no painel do player, sem segurar quem esta assistindo.
+ * Falhar aqui nao vira recado na tela: a trilha ja trocou, e o que se perde e
+ * so a memoria dela no proximo aparelho.
+ */
+function rememberPreference(patch: SettingsPatch): void {
+  void patchSettings(patch)
+    .then((next) => {
+      settings = next;
+    })
+    .catch(() => undefined);
+}
+
+/**
+ * Dispara uma tarefa de fundo e conta o que o servidor respondeu. 409 nao e
+ * falha: e "ja esta rodando", e a barra de progresso vai mostrar o resto.
+ */
+async function runLibraryTask(request: Promise<TaskAccepted>, started: string): Promise<void> {
+  try {
+    const result = await request;
+    settingsUi = {
+      ...settingsUi,
+      busy: null,
+      message: result.started ? started : (result.reason ?? 'Já está em andamento.'),
+    };
+  } catch (error) {
+    if (expiredSession(error)) return;
+    settingsUi = { ...settingsUi, busy: null, message: 'Não foi possível iniciar a tarefa.' };
+  }
+
+  if (screen.name !== 'settings') return;
+  renderSettings();
+  await refreshLibrary();
+}
+
+async function refreshLibrary(): Promise<void> {
+  try {
+    library = await fetchLibraryStatus();
+  } catch {
+    return;
+  }
+  if (screen.name !== 'settings') return;
+  renderLibraryStatus();
+  pollLibraryWhileBusy();
+}
+
+function libraryBusy(): boolean {
+  if (library === null) return false;
+  return library.scan.state === 'running' || library.metadata.state === 'running';
+}
+
+/**
+ * Liga o polling so enquanto ha tarefa rodando E a tela esta aberta. Chamado de
+ * novo a cada resposta, e por isso ele tambem e quem DESLIGA: quando o scan
+ * acaba, o proximo estado ja nao pede intervalo nenhum.
+ */
+function pollLibraryWhileBusy(): void {
+  if (screen.name !== 'settings' || !libraryBusy()) {
+    stopLibraryPolling();
+    return;
+  }
+  if (libraryTimer !== null) return;
+  libraryTimer = window.setInterval(() => void pollLibrary(), LIBRARY_POLL_MS);
+}
+
+function stopLibraryPolling(): void {
+  if (libraryTimer !== null) window.clearInterval(libraryTimer);
+  libraryTimer = null;
+  libraryFails = 0;
+}
+
+async function pollLibrary(): Promise<void> {
+  if (screen.name !== 'settings') {
+    stopLibraryPolling();
+    return;
+  }
+
+  try {
+    library = await fetchLibraryStatus();
+    libraryFails = 0;
+  } catch (error) {
+    if (expiredSession(error)) return;
+    // Uma falha isolada nao pode apagar o progresso da tela; teimar para sempre
+    // contra um servidor fora do ar tambem nao.
+    libraryFails += 1;
+    if (libraryFails >= LIBRARY_FAIL_LIMIT) {
+      stopLibraryPolling();
+      settingsUi = { ...settingsUi, message: 'Perdi contato com o servidor.' };
+      renderSettings();
+    }
+    return;
+  }
+
+  if (screen.name !== 'settings') {
+    stopLibraryPolling();
+    return;
+  }
+  renderLibraryStatus();
+  pollLibraryWhileBusy();
+}
+
+/* --- 5. player ------------------------------------------------------------ */
 
 function watchEpisode(index: number): void {
   vodIntent = index;
@@ -915,7 +1291,7 @@ function zap(delta: number): void {
   go({ type: 'tuneTo', channel: next.number });
 }
 
-/* --- 5. painel de trilhas ------------------------------------------------- */
+/* --- 6. painel de trilhas ------------------------------------------------- */
 
 function tracksContext(): TracksContext {
   const episode = currentEpisode();
@@ -940,18 +1316,23 @@ function dispatchTracks(event: TracksEvent): void {
       command.index === null
         ? null
         : (episode?.subtitleTracks.find((track) => track.index === command.index) ?? null);
-    preferredSubtitle = chosen?.lang ?? null;
+    preferredSubtitle = normalizeLang(chosen?.lang);
     writePreferredSubtitle(storage, preferredSubtitle);
+    // Desligar a legenda tambem e escolha: vale para a casa toda.
+    rememberPreference({ subtitleLang: preferredSubtitle });
     if (episode !== null) applySubtitle(currentVideo(), episode, command.index);
   }
   if (command !== null && command.type === 'audio') {
     const episode = currentEpisode();
     const chosen = episode?.audioTracks.find((track) => track.index === command.index);
-    if (chosen !== undefined) {
-      // Preferencia por IDIOMA, como a legenda: o indice 1 e outra dublagem em
-      // cada arquivo do acervo.
-      writePreferredAudio(storage, chosen.lang);
-      preferredAudio = readPreferredAudio(storage);
+    // Preferencia por IDIOMA, como a legenda: o indice 1 e outra dublagem em
+    // cada arquivo do acervo. Faixa sem tag nao vira preferencia - nao ha o que
+    // lembrar, e apagaria a escolha anterior.
+    const lang = normalizeLang(chosen?.lang);
+    if (lang !== null) {
+      preferredAudio = lang;
+      writePreferredAudio(storage, lang);
+      rememberPreference({ audioLang: lang });
     }
     void switchVodAudio(command.index, { announce: true });
   }
@@ -1082,7 +1463,11 @@ function applySubtitle(video: HTMLVideoElement, episode: EpisodeRef, index: numb
 }
 
 function applyPreferredSubtitle(episode: EpisodeRef): void {
-  const index = pickPreferredSubtitle(episode.subtitleTracks, preferredSubtitle);
+  // `subtitlesAuto` desligado: a legenda so aparece quando alguem escolhe no
+  // painel. Antes de as configuracoes chegarem vale ligar - e o que o app
+  // sempre fez, e a preferencia em cache ja diz qual idioma.
+  const auto = settings?.subtitlesAuto ?? true;
+  const index = auto ? pickPreferredSubtitle(episode.subtitleTracks, preferredSubtitle) : null;
   tracks = { ...tracks, subtitle: index };
   applySubtitle(currentVideo(), episode, index);
 }
@@ -1120,6 +1505,26 @@ function seriesKeys(event: KeyboardEvent): void {
   // Uma coluna: a tela da serie e uma lista, e ← → andam nela como ↑ ↓.
   seriesCursor = moveCursor(seriesCursor, key, rows.length, 1);
   focusRow(rows[seriesCursor]);
+}
+
+/**
+ * Enter nao aparece aqui de proposito: as linhas sao `<button>` de verdade, e o
+ * navegador ja transforma Enter em clique no que esta focado. Tratar a tecla
+ * tambem faria a acao disparar duas vezes.
+ */
+function settingsKeys(event: KeyboardEvent): void {
+  if (event.key === 'Escape' || event.key === 'Backspace') {
+    event.preventDefault();
+    go({ type: 'back' });
+    return;
+  }
+
+  const key = ARROWS[event.key];
+  if (key === undefined) return;
+  // Home e End nao tem sentido numa lista de nove linhas.
+  if (key === 'first' || key === 'last') return;
+  event.preventDefault();
+  dispatchSettings({ type: key });
 }
 
 function tracksKeys(event: KeyboardEvent): void {
@@ -1211,6 +1616,9 @@ window.addEventListener('keydown', (event) => {
     case 'series':
       seriesKeys(event);
       return;
+    case 'settings':
+      settingsKeys(event);
+      return;
     case 'player':
       poke();
       playerKeys(event);
@@ -1268,12 +1676,17 @@ dom.watchFirst.addEventListener('focus', () => {
   seriesCursor = 1;
 });
 
+dom.openSettings.addEventListener('click', () => go({ type: 'openSettings' }));
+
 dom.logout.addEventListener('click', () => {
   void (async () => {
     await logout();
     channelsLoaded = false;
     channels = [];
     episodeCache.clear();
+    // Outra senha pode ser outra casa: as preferencias vem de novo do servidor.
+    settings = null;
+    library = null;
     go({ type: 'unauthorized' });
   })();
 });

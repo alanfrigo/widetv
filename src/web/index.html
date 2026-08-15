@@ -9,14 +9,19 @@
   </head>
   <body>
     <!--
-      Quatro telas, uma visivel por vez. Quem decide qual e o reducer de
+      Cinco telas, uma visivel por vez. Quem decide qual e o reducer de
       `screen.ts`; aqui so existe a casca. Todo conteudo que vem da API (nome de
-      serie, sinopse, titulo de episodio) e escrito por `textContent` no
-      `main.ts`, nunca por markup montado com string.
+      serie, sinopse, titulo de episodio, estado da varredura) e escrito por
+      `textContent` no `main.ts`, nunca por markup montado com string.
     -->
     <header class="topbar" id="topbar" hidden>
       <p class="wordmark">wide<span class="wordmark__tv">tv</span></p>
-      <button class="button button--ghost topbar__logout" id="logout" type="button">Sair</button>
+      <div class="topbar__actions">
+        <button class="button button--ghost topbar__action" id="open-settings" type="button">
+          Configurações
+        </button>
+        <button class="button button--ghost topbar__action" id="logout" type="button">Sair</button>
+      </div>
     </header>
 
     <main class="app" id="app">
@@ -47,7 +52,8 @@
           <h2 class="empty__title" id="home-empty-title">Nenhuma série no acervo</h2>
           <p class="empty__text" id="home-empty-text">
             O servidor não encontrou nada para indexar. Confira se
-            <code>LIBRARY_ROOT</code> aponta para a pasta das séries e rode um novo scan.
+            <code>LIBRARY_ROOT</code> aponta para a pasta das séries e rode uma varredura em
+            <strong>Configurações</strong>.
           </p>
         </div>
       </section>
@@ -77,7 +83,33 @@
         </div>
       </section>
 
-      <!-- 4. Player -------------------------------------------------------- -->
+      <!-- 4. Configuracoes ------------------------------------------------- -->
+      <section class="screen screen--settings" id="screen-settings" hidden>
+        <div class="settings">
+          <h1 class="settings__title">Configurações</h1>
+          <p class="settings__hint">
+            ↑ ↓ escolhem a linha · ← → mudam o valor · Enter confirma · Esc volta
+          </p>
+
+          <!-- As linhas nascem no `main.ts`, a partir de `settingsRows()`. -->
+          <ul class="settings__list" id="settings-list"></ul>
+
+          <p class="settings__message" id="settings-message" role="status" hidden></p>
+
+          <section class="settings__status" id="settings-scan-status" aria-live="polite">
+            <h2 class="settings__legend">Biblioteca</h2>
+            <div class="settings__bar" id="settings-progress" hidden>
+              <div class="settings__bar-fill" id="settings-progress-fill"></div>
+            </div>
+            <p class="settings__state" id="settings-scan-text"></p>
+            <p class="settings__summary" id="settings-scan-summary" hidden></p>
+            <p class="settings__summary" id="settings-metadata-summary" hidden></p>
+            <p class="settings__note" id="settings-tmdb"></p>
+          </section>
+        </div>
+      </section>
+
+      <!-- 5. Player -------------------------------------------------------- -->
       <section class="screen screen--player" id="screen-player" hidden>
         <!--
           Dois elementos de video: enquanto um toca, o outro pre-carrega o

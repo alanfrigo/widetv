@@ -1,6 +1,11 @@
 package com.widetv.app.net
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Espelho de `src/shared/api-types.ts`.
@@ -96,6 +101,165 @@ data class NowPlaying(
   val next: EpisodeRef,
 )
 
+/* --- configuracoes -------------------------------------------------------- */
+
+/**
+ * Preferencias do servidor, editaveis na tela de configuracoes.
+ *
+ * Moram no servidor, e nao no `Store`, porque a casa toda usa a mesma senha e as
+ * mesmas telas: escolher "audio em portugues" na TV da sala tem que valer no
+ * tablet. O `Store` continua guardando as duas de idioma, mas como CACHE.
+ */
+@Serializable
+data class AppSettings(
+  /** Dublagem preferida, canonica em ISO 639-2/B. null = vale a faixa default. */
+  val audioLang: String? = null,
+  /** Legenda preferida, canonica. **null = legendas desativadas**. */
+  val subtitleLang: String? = null,
+  val subtitlesAuto: Boolean = false,
+  /** `HH:MM` LOCAL do rescan diario; null = desligado. */
+  val rescanTime: String? = null,
+  val autoRemux: Boolean = false,
+  /**
+   * Junta pastas de release da mesma serie num canal so. Default false de
+   * proposito: um servidor que nao manda o campo nao agrupa nada, e desenhar
+   * "Ligado" seria descrever um comportamento que aquele servidor nao tem.
+   */
+  val smartGrouping: Boolean = false,
+  /** So leitura: o servidor tem `TMDB_API_KEY`. Muda a qualidade das capas. */
+  val tmdbConfigured: Boolean = false,
+)
+
+/**
+ * Corpo do PATCH de `/api/settings`, montado como JSON explicito.
+ *
+ * NAO e um data class de campos opcionais, e a razao e o contrato: ele tem duas
+ * ausencias DIFERENTES. Chave fora do objeto significa "nao mexe neste campo";
+ * `subtitleLang: null` significa "desativa as legendas". Um data class com
+ * defaults null serializa as duas do mesmo jeito — ou omite ambas, ou manda
+ * null em ambas —, e a escolha de desligar a legenda viraria "nao mexe".
+ *
+ * Uma funcao por campo porque a tela sempre manda UMA linha por vez: o PATCH
+ * carrega so o que o dono acabou de mudar, entao nunca ha o que combinar.
+ */
+object SettingsPatch {
+  fun audioLang(value: String?): JsonObject = text("audioLang", value)
+
+  fun subtitleLang(value: String?): JsonObject = text("subtitleLang", value)
+
+  fun rescanTime(value: String?): JsonObject = text("rescanTime", value)
+
+  fun subtitlesAuto(value: Boolean): JsonObject = flag("subtitlesAuto", value)
+
+  fun autoRemux(value: Boolean): JsonObject = flag("autoRemux", value)
+
+  fun smartGrouping(value: Boolean): JsonObject = flag("smartGrouping", value)
+
+  private fun text(key: String, value: String?): JsonObject = buildJsonObject {
+    put(key, if (value == null) JsonNull else JsonPrimitive(value))
+  }
+
+  private fun flag(key: String, value: Boolean): JsonObject = buildJsonObject {
+    put(key, JsonPrimitive(value))
+  }
+}
+
+/* --- manutencao da biblioteca --------------------------------------------- */
+
+/**
+ * Valores de `LibraryTaskState`. String crua, e nao enum: um estado novo no
+ * servidor derrubaria a desserializacao do status inteiro, e o app perderia
+ * ate o progresso que sabia mostrar.
+ */
+const val TASK_IDLE = "idle"
+
+const val TASK_RUNNING = "running"
+
+/** Valores de `ScanMode`. */
+const val SCAN_MODE_INCREMENTAL = "incremental"
+
+const val SCAN_MODE_FULL = "full"
+
+@Serializable
+data class ScanProgressRef(
+  val done: Int = 0,
+  val total: Int = 0,
+  /** Serie sendo medida agora. */
+  val show: String = "",
+)
+
+/** Resultado da ultima varredura desta instancia do servidor. */
+@Serializable
+data class ScanSummary(
+  val shows: Int = 0,
+  val episodes: Int = 0,
+  val probed: Int = 0,
+  val cached: Int = 0,
+  val removedShows: Int = 0,
+  val removedEpisodes: Int = 0,
+  val failed: Int = 0,
+  val durationMs: Long = 0,
+  val finishedAt: Long = 0,
+  /** Mensagem quando a rodada morreu no meio; null quando terminou inteira. */
+  val error: String? = null,
+)
+
+@Serializable
+data class MetadataSummary(
+  val considered: Int = 0,
+  val found: Int = 0,
+  val posters: Int = 0,
+  val notFound: Int = 0,
+  val failed: Int = 0,
+  val finishedAt: Long = 0,
+)
+
+/**
+ * As tres tarefas de fundo sao objetos anonimos no TypeScript; aqui precisam de
+ * nome. Todo campo tem default para o status continuar legivel quando o
+ * servidor conhece so parte deles.
+ */
+@Serializable
+data class ScanTask(
+  val state: String = TASK_IDLE,
+  /** null quando parado ou antes do primeiro progresso. */
+  val progress: ScanProgressRef? = null,
+  val startedAt: Long? = null,
+  /** null quando nenhuma rodada terminou desde que o servidor subiu. */
+  val last: ScanSummary? = null,
+)
+
+@Serializable
+data class MetadataTask(
+  val state: String = TASK_IDLE,
+  val last: MetadataSummary? = null,
+)
+
+@Serializable
+data class RemuxTask(val state: String = TASK_IDLE)
+
+/** Estado das tarefas de fundo. E o que a tela de configuracoes consulta. */
+@Serializable
+data class LibraryStatus(
+  val scan: ScanTask = ScanTask(),
+  val metadata: MetadataTask = MetadataTask(),
+  val remux: RemuxTask = RemuxTask(),
+)
+
+@Serializable
+data class ScanRequest(val mode: String = SCAN_MODE_INCREMENTAL)
+
+@Serializable
+data class MetadataRefreshRequest(val reset: Boolean = false)
+
+/** Resposta de quem dispara tarefa de fundo: 202 quando aceitou, 409 se ja rodava. */
+@Serializable
+data class TaskAccepted(
+  val started: Boolean = false,
+  /** Motivo quando `started` e false, ex. "scan ja esta em andamento". */
+  val reason: String? = null,
+)
+
 /** Rotas do objeto `API` em `api-types.ts`. */
 object Routes {
   const val LOGIN = "api/auth/login"
@@ -125,4 +289,9 @@ object Routes {
    * `track` e o `index` de `EpisodeRef.subtitleTracks`.
    */
   fun subtitle(track: Int): String = "subtitle/$track"
+
+  const val SETTINGS = "api/settings"
+  const val LIBRARY_STATUS = "api/library/status"
+  const val LIBRARY_SCAN = "api/library/scan"
+  const val LIBRARY_METADATA = "api/library/metadata"
 }

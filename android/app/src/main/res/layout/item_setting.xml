@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Uma linha da tela de configuracoes: rotulo a esquerda, valor a direita.
+
+  Alvo alto de proposito — a tres metros de distancia, uma lista apertada vira
+  um bloco de texto e ninguem acha onde o cursor esta.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/row_selectable"
+    android:focusable="true"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="@dimen/space_sm"
+    android:paddingTop="@dimen/space_sm"
+    android:paddingEnd="@dimen/space_sm"
+    android:paddingBottom="@dimen/space_sm">
+
+    <TextView
+        android:id="@+id/setting_label"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:paddingStart="@dimen/space_sm"
+        android:textColor="@color/text"
+        android:textSize="@dimen/text_body" />
+
+    <TextView
+        android:id="@+id/setting_value"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_sm"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/accent"
+        android:textSize="@dimen/text_body"
+        android:textStyle="bold" />
+</LinearLayout>

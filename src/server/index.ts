@@ -2,19 +2,20 @@ import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import cookie from '@fastify/cookie';
 import staticFiles from '@fastify/static';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify from 'fastify';
 
 import { registerAuthGuard, registerAuthRoutes } from './auth/routes';
 import { registerChannelRoutes } from './channels/routes';
 import { loadConfig } from './config';
 import { ensureDataDir } from './data-dir';
 import { registerHistoryRoutes } from './history/routes';
-import { openStore, type Store } from './library/index-store';
-import { runRemux } from './library/remux-job';
-import { startDailyRescan } from './library/rescan-timer';
-import { runScan } from './library/scan-job';
+import { openStore } from './library/index-store';
+import { registerLibraryRoutes } from './library/routes';
+import { createLibraryController, scanCommand } from './library/scan-controller';
 import { createVariantQueue } from './library/variant-queue';
-import { createEnricher, type Enricher } from './metadata/service';
+import { createEnricher } from './metadata/service';
+import { registerSettingsRoutes } from './settings/routes';
+import { createSettingsService } from './settings/store';
 import { registerStreamRoutes, type AudioResolution } from './stream/direct';
 import { registerSubtitleRoutes } from './stream/subtitle';
 
@@ -25,134 +26,13 @@ import { registerSubtitleRoutes } from './stream/subtitle';
  * servidor que so responde no fim disso reprova no healthcheck e e reiniciado
  * pelo orquestrador antes de terminar - reiniciando o scan junto, para sempre.
  * Entao: sobe primeiro, indexa depois, em segundo plano.
+ *
+ * Este arquivo so monta e conecta. Quem orquestra scan, metadata e remux e o
+ * controlador da biblioteca (library/scan-controller.ts) - inclusive a trava
+ * que impede duas varreduras do mesmo NAS.
  */
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const SCAN_LOG_INTERVAL_MS = 10_000;
-
-/** Comando de indexacao manual, ja com o caminho certo para este ambiente. */
-function scanCommand(libraryRoot: string): string {
-  return `node dist/server/scan.js "${libraryRoot}"`;
-}
-
-/**
- * Indexa em segundo plano quando o indice esta vazio.
- *
- * Quem sobe isto num NAS nao tem shell no container: exigir um comando manual
- * antes do primeiro canal aparecer transformava um deploy novo em beco sem
- * saida.
- */
-/**
- * Conversao MP4 em segundo plano, uma rodada por vez.
- *
- * E disparada no boot (indice ja populado) e no fim de cada scan. A trava de
- * "ja rodando" importa: os dois gatilhos podem se cruzar, e duas rodadas
- * simultaneas leriam o mesmo NAS em dobro para produzir os mesmos arquivos.
- */
-function createRemuxTrigger(
-  app: FastifyInstance,
-  store: Store,
-  libraryRoot: string,
-  dataDir: string,
-): () => void {
-  let running = false;
-  let ultimoLog = 0;
-
-  return () => {
-    if (running) return;
-    running = true;
-
-    void runRemux({
-      store,
-      libraryRoot,
-      dataDir,
-      onProgress: ({ done, total, episode }) => {
-        const agora = Date.now();
-        if (agora - ultimoLog < SCAN_LOG_INTERVAL_MS && done < total) return;
-        ultimoLog = agora;
-        app.log.info(`remux ${done}/${total}  ${episode}`);
-      },
-    })
-      .then((report) => {
-        if (report.planned === 0) return;
-        app.log.info(
-          `remux concluido: ${report.converted} convertidos, ${report.skipped} ja prontos` +
-            (report.failed.length > 0 ? `, ${report.failed.length} falharam` : ''),
-        );
-        for (const failure of report.failed.slice(0, 5)) {
-          app.log.warn(`remux falhou em ${failure.path}: ${failure.reason}`);
-        }
-      })
-      .catch((error: unknown) => {
-        app.log.error(
-          `remux falhou: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      })
-      .finally(() => {
-        running = false;
-      });
-  };
-}
-
-/** Trava de scan: bootstrap e rescan noturno nunca varrem o disco em dobro. */
-interface ScanLock {
-  running: boolean;
-}
-
-function bootstrapScan(
-  app: FastifyInstance,
-  store: Store,
-  libraryRoot: string,
-  enricher: Enricher,
-  lock: ScanLock,
-  onScanDone?: () => void,
-): void {
-  app.log.info(`indice vazio, indexando ${libraryRoot} em segundo plano`);
-
-  lock.running = true;
-  let ultimoLog = 0;
-  void runScan({
-    root: libraryRoot,
-    store,
-    onProgress: ({ done, total, show }) => {
-      const agora = Date.now();
-      if (agora - ultimoLog < SCAN_LOG_INTERVAL_MS && done < total) return;
-      ultimoLog = agora;
-      app.log.info(`scan ${done}/${total}  ${show}`);
-    },
-  })
-    .then((report) => {
-      if (report.shows === 0) {
-        // Quase sempre e LIBRARY_ROOT apontando para o lugar errado, ou o
-        // volume montado vazio. Dizer isso agora poupa muita procura.
-        app.log.error(
-          `scan terminou sem nenhum canal. Confira se ${libraryRoot} e mesmo a raiz ` +
-            'do acervo (uma pasta por desenho) e se o volume esta montado.',
-        );
-        return;
-      }
-      app.log.info(
-        `scan concluido: ${report.shows} canais, ${report.episodes} episodios ` +
-          `(${report.failed.length} arquivos falharam)`,
-      );
-      // Capas depois dos canais, e sem esperar: os canais ja funcionam sem elas,
-      // e uma rodada de rede em 460 series nao pode atrasar nada.
-      enricher.trigger();
-      // Remux por ultimo, pelo mesmo motivo: os canais ja funcionam, so os MKV
-      // ainda nao tocam - e cada um passa a tocar assim que a sua copia fica
-      // pronta, sem esperar a rodada inteira.
-      onScanDone?.();
-    })
-    .catch((error: unknown) => {
-      app.log.error(
-        `scan falhou: ${error instanceof Error ? error.message : String(error)}. ` +
-          `Rode manualmente: ${scanCommand(libraryRoot)}`,
-      );
-    })
-    .finally(() => {
-      lock.running = false;
-    });
-}
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -171,6 +51,15 @@ async function main(): Promise<void> {
     maxParamLength: 2048,
   });
 
+  // Preferencias do usuario. O `.env` entra so como DEFAULT: gravar no painel
+  // sobrepoe, apagar volta ao ambiente.
+  const settings = createSettingsService(store, {
+    rescanTime: config.rescanTime,
+    autoRemux: config.autoRemux,
+    smartGrouping: config.smartGrouping,
+    tmdbConfigured: config.tmdbApiKey !== null,
+  });
+
   // Busca de capa/sinopse. Uma instancia so no processo inteiro: e ela que
   // segura a trava de "ja rodando" entre o fim do scan e a rota de canais.
   const enricher = createEnricher(store, config.dataDir, {
@@ -180,17 +69,22 @@ async function main(): Promise<void> {
     },
   });
 
-  const triggerRemux = config.autoRemux
-    ? createRemuxTrigger(app, store, config.libraryRoot, config.dataDir)
-    : undefined;
-
-  const scanLock: ScanLock = { running: false };
+  const controller = createLibraryController({
+    store,
+    enricher,
+    libraryRoot: config.libraryRoot,
+    dataDir: config.dataDir,
+    settings,
+    log: (message) => {
+      app.log.info(message);
+    },
+  });
 
   // Indice existente mas sem nenhuma serie conta como vazio: e o estado de um
   // scan que nunca rodou e o de um scan interrompido no comeco.
   if (store.listShows().length === 0) {
     if (config.autoScan) {
-      bootstrapScan(app, store, config.libraryRoot, enricher, scanLock, triggerRemux);
+      controller.bootstrap();
     } else {
       app.log.warn(
         `indice vazio em ${dbPath} e AUTO_SCAN=false. Rode: ${scanCommand(config.libraryRoot)}`,
@@ -200,42 +94,14 @@ async function main(): Promise<void> {
     // Acervo ja indexado: uma rodada de remux no boot pega o que ficou pendente
     // (deploy da feature, rodada interrompida). Quando esta tudo pronto, ela so
     // percorre o indice e volta - barata o bastante para rodar sempre.
-    triggerRemux?.();
+    controller.triggerRemux();
   }
 
-  // Rescan diario da madrugada: adiciona o que chegou no NAS e remove o que
-  // saiu (o prune do scan-job cuida dos dois), depois busca capa das series
-  // novas e remuxa o que precisar. Rodar de novo e barato: so arquivo com
-  // mtime/tamanho novos passa pelo ffprobe.
-  if (config.rescanTime !== null) {
-    startDailyRescan({
-      time: config.rescanTime,
-      log: (message) => {
-        app.log.info(message);
-      },
-      run: async () => {
-        if (scanLock.running) {
-          // Bootstrap gigante ainda no ar: amanha tem outra madrugada.
-          app.log.warn('rescan pulado: outro scan ja esta em andamento');
-          return;
-        }
-        scanLock.running = true;
-        try {
-          const report = await runScan({ root: config.libraryRoot, store });
-          app.log.info(
-            `rescan concluido: ${report.shows} canais, ${report.episodes} episodios, ` +
-              `${report.probed} analisados (${report.cached} do cache), ` +
-              `${report.removedShows} canais e ${report.removedEpisodes} episodios removidos` +
-              (report.failed.length > 0 ? `, ${report.failed.length} falharam` : ''),
-          );
-          enricher.trigger();
-          triggerRemux?.();
-        } finally {
-          scanLock.running = false;
-        }
-      },
-    });
-  }
+  // Mudou preferencia no painel? O controlador reage sem reiniciar o servidor:
+  // reagenda o rescan, liga/desliga o remux, anota o agrupamento.
+  settings.subscribe((next) => {
+    controller.applySettings(next);
+  });
 
   await app.register(cookie);
 
@@ -257,6 +123,9 @@ async function main(): Promise<void> {
       enricher.trigger();
     },
   });
+  registerSettingsRoutes(app, { settings });
+  registerLibraryRoutes(app, { controller });
+
   // Fila das variantes de dublagem, uma por processo: e ela que impede dois
   // pedidos iguais de gerar o mesmo MP4 duas vezes.
   const variants = createVariantQueue({
@@ -268,7 +137,13 @@ async function main(): Promise<void> {
     },
   });
 
-  /** `?audio=N`: N e o `index` da faixa no arquivo FONTE. */
+  /**
+   * `?audio=N`: N e o `index` da faixa no arquivo FONTE.
+   *
+   * A preferencia de audio do painel NAO entra aqui: quem escolhe a faixa de
+   * cada episodio e o cliente, que conhece as trilhas do arquivo que esta
+   * tocando. O servidor so guarda a preferencia.
+   */
   async function resolveAudio(episodeId: string, audioIndex: number): Promise<AudioResolution> {
     const row = store.getEpisode(episodeId);
     if (row === null) return { status: 'invalid' };
@@ -343,7 +218,12 @@ async function main(): Promise<void> {
     });
   }
 
-  app.addHook('onClose', async () => store.close());
+  app.addHook('onClose', async () => {
+    // Antes do banco: o agendamento diario e a unica coisa que ainda poderia
+    // abrir uma varredura depois do close e escrever num Store fechado.
+    controller.stop();
+    store.close();
+  });
 
   await app.listen({ port: config.port, host: '0.0.0.0' });
 }

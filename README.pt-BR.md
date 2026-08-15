@@ -86,6 +86,40 @@ interface ChannelSummary {
 O contrato mora em `src/shared/api-types.ts` e e espelhado em
 `android/app/src/main/java/com/retrotv/app/net/Models.kt`.
 
+## Tela de configuracoes
+
+O app web tem uma tela de configuracoes, navegavel inteira por controle remoto
+(setas / D-pad, sem precisar de mouse ou teclado), onde a casa pode:
+
+- Disparar uma varredura da biblioteca, `incremental` (reaproveita o probe
+  cacheado por data de modificacao e tamanho de cada arquivo - o mesmo que o
+  rescan diario faz) ou `full` (reabre todo arquivo, para quando o indice em si
+  esta torto).
+- Rebuscar capa e sinopse, com a opcao de apagar o que ja esta gravado antes de
+  buscar de novo.
+- Definir preferencia de idioma de audio e de legenda, e se a legenda liga
+  sozinha.
+- Ligar ou desligar o agrupamento inteligente (veja abaixo) e o remux
+  automatico, e ajustar o horario do rescan diario.
+
+Essas preferencias sao gravadas no servidor, nao no `localStorage` do
+navegador: a casa toda usa a mesma senha e as mesmas telas, entao escolher
+"audio em portugues" na TV da sala tem que valer no tablet tambem.
+Preferencias que tambem existem no `.env` (`SMART_GROUPING`, `AUTO_REMUX`,
+`RESCAN_TIME`) usam o valor do ambiente como default - gravar no painel
+sobrepoe, e apagar a escolha no painel volta a usar o que estiver no `.env`.
+
+| Rota | Devolve |
+| --- | --- |
+| `GET /api/settings` | `AppSettings` |
+| `PATCH /api/settings` | `AppSettings`; corpo e um `SettingsPatch` parcial - nunca substitui o objeto inteiro, entao dois aparelhos editando ao mesmo tempo nao apagam a escolha um do outro |
+| `GET /api/library/status` | `LibraryStatus` - estado de scan/metadata/remux, consultado em intervalo curto enquanto uma tarefa roda |
+| `POST /api/library/scan` | 202 assim que a varredura e aceita, nao quando termina (14 mil arquivos levam minutos); 409 se ja ha uma rodando |
+| `POST /api/library/metadata` | 202 assim que a busca e aceita, 409 se ja ha uma rodando |
+
+O formato completo de request/response e os codigos de status estao em
+[docs/CONTRACTS.md](docs/CONTRACTS.md).
+
 ## Layout do acervo
 
 Os dois formatos sao entendidos, e uma mesma serie pode misturar os dois:
@@ -112,6 +146,37 @@ confiavel, os campos ficam null em vez de serem inventados.
 
 Arquivos ocultos, `@eaDir`, `.AppleDouble` e `#recycle` sao ignorados. Serie
 cujos arquivos falham todos no probe nao vira canal.
+
+## Agrupamento inteligente
+
+Pastas de release costumam nomear cada temporada separada, por exemplo:
+
+```
+Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/
+Rick.and.Morty.S02.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/
+```
+
+**Antes**, sem agrupamento: cada pasta e o proprio canal, entao isso vira dois
+canais, os dois com nome de release -
+`Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA` e
+`Rick.and.Morty.S02.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA` - em vez de uma
+serie so.
+
+**Depois**, com `SMART_GROUPING` ligado (o default): pastas da mesma serie sao
+juntadas num canal so, "Rick and Morty", com as duas temporadas. Vale para
+qualquer serie que siga esse mesmo padrao de nome por temporada, nao so para
+este exemplo.
+
+Se o seu acervo ja e uma pasta por serie, o agrupamento nao tem o que fazer -
+ligue `SMART_GROUPING=false` e pule essa parte.
+
+**Ligar o agrupamento num acervo ja indexado renomeia series e renumera
+canais.** O numero de um canal e atribuido uma unica vez, na primeira vez que
+o slug dele aparece, e o slug vem do nome da serie. Quando o agrupamento junta
+duas pastas de release numa serie com nome diferente, essa serie ganha um slug
+novo e um numero de canal novo; os numeros antigos nao voltam a ser usados. Se
+alguem da casa tem um numero de canal decorado, vai precisar decorar de novo
+depois de ligar o agrupamento.
 
 ## Codecs
 
@@ -174,6 +239,7 @@ npm run build && npm start
 | `AUTO_SCAN` | Indexa sozinho quando o indice esta vazio. So a string exata `false` desliga |
 | `RESCAN_TIME` | Rescan diario da biblioteca no horario LOCAL (`HH:MM`, padrao `04:00`): adiciona series/episodios novos e remove os apagados. `off` desliga |
 | `AUTO_REMUX` | Converte episodios MKV/Dolby para MP4 em segundo plano (copia de bytes, sem transcode). As copias vivem em `DATA_DIR/remux` e ocupam mais ou menos o tamanho dos proprios MKV. So a string exata `false` desliga |
+| `SMART_GROUPING` | Junta pastas de release da mesma serie (ex.: `Serie.S01...` + `Serie.S02...`) num canal so - veja [Agrupamento inteligente](#agrupamento-inteligente). Ligado por padrao; so a string exata `false` desliga. O painel de configuracoes pode sobrepor isso em tempo de execucao; apagar essa sobreposicao volta a usar este valor |
 | `TMDB_API_KEY` | Opcional. Poe o TMDB na frente da busca de capa, com sinopse em pt-BR. Sem ela, usa TVMaze e iTunes |
 | `PORT` | Porta HTTP, padrao 8080 |
 | `CHANNEL_EPOCH` | Instante zero da grade ao vivo. Mudar reposiciona todos os canais de uma vez |

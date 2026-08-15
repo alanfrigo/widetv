@@ -116,6 +116,22 @@ describe('runScan', () => {
     expect(report.probed).toBe(0);
   });
 
+  test('useCache false reabre todo arquivo, mesmo intocado', async () => {
+    // E o "scan completo" do painel: quando o indice esta torto, o probe
+    // cacheado por (mtime, tamanho) e justamente o que estava errado - e o
+    // arquivo continua com mtime e tamanho iguais.
+    await makeEpisode('ThunderCats', 'ep 01.mp4');
+    await makeEpisode('ThunderCats', 'ep 02.mp4');
+    await runScan({ root, store, probe: fakeProbe().probe });
+
+    const segundo = fakeProbe();
+    const report = await runScan({ root, store, probe: segundo.probe, useCache: false });
+
+    expect(segundo.calls).toHaveLength(2);
+    expect(report.cached).toBe(0);
+    expect(report.probed).toBe(2);
+  });
+
   test('arquivo alterado e reprocessado', async () => {
     const path = await makeEpisode('ThunderCats', 'ep 01.mp4');
     await runScan({ root, store, probe: fakeProbe().probe });

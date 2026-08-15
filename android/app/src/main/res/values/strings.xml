@@ -38,6 +38,17 @@
     <string name="tracks_unnamed">Faixa %1$d</string>
     <string name="tracks_forced">%1$s (forcada)</string>
 
+    <!-- Configuracoes. Rotulo e valor de cada linha vem de `ui/Settings.kt`. -->
+    <string name="settings_open">CONFIGURAÇÕES</string>
+    <string name="settings_title">Configurações</string>
+    <string name="settings_library">Biblioteca</string>
+    <string name="settings_loading">Carregando configurações…</string>
+    <string name="settings_busy">Aguarde…</string>
+    <string name="settings_started">Iniciado.</string>
+    <string name="settings_already_running">Já está rodando.</string>
+    <string name="settings_save_failed">Não foi possível salvar. O valor anterior voltou.</string>
+    <string name="settings_hint">↑ ↓ escolhe a linha   ← → muda o valor   OK aplica   VOLTAR fecha</string>
+
     <!-- Descricoes de acessibilidade -->
     <string name="cd_poster">Capa da serie</string>
 </resources>
