@@ -169,6 +169,31 @@ export interface AudioVariantRow {
 }
 
 /**
+ * Uma copia gerada ocupando disco, vinda de `remux` OU de `audio_variant`.
+ *
+ * As duas tabelas tem ciclos de vida distintos mas dividem o mesmo diretorio e
+ * o mesmo orcamento, entao a evicção precisa enxerga-las como uma lista so -
+ * senao o teto seria por tabela e o total continuaria sem limite.
+ */
+export interface CacheFileRow {
+  /**
+   * Chave estavel da LINHA. `remux:<episodeId>` ou
+   * `variant:<episodeId>:<audioIndex>`. E por ela que o plano de evicção
+   * identifica o que apagar e o que esta pinado.
+   */
+  key: string;
+  kind: 'remux' | 'variant';
+  episodeId: string;
+  /** null no remux principal; a faixa fonte numa variante de dublagem. */
+  audioIndex: number | null;
+  /** Nome do arquivo em `<DATA_DIR>/remux`. */
+  file: string;
+  /** Tamanho do arquivo GERADO. 0 quando a linha e anterior a versao 12. */
+  bytes: number;
+  lastAccessAt: number;
+}
+
+/**
  * Onde o usuario parou em cada episodio. Uma linha por episodio, sempre a mais
  * recente: o app e de senha unica, o "usuario" e a casa inteira.
  */
@@ -332,6 +357,28 @@ export interface Store {
   /** Nomes de arquivo das variantes; entram na mesma coleta de `remux/`. */
   listAudioVariantFiles(): string[];
 
+  /**
+   * Tudo que as copias geradas ocupam, remux e variantes numa lista so, para o
+   * orcamento de disco. Devolve a lista inteira: sao dezenas de linhas, nao
+   * milhares, e o evictor precisa do total antes de decidir qualquer coisa.
+   */
+  listCacheFiles(): CacheFileRow[];
+
+  /** Carimba uso. Quem chama por requisicao DEVE limitar a frequencia. */
+  touchCacheFile(key: string, at: number): void;
+
+  /** Tamanho do arquivo gerado, descoberto por stat quando a linha e antiga. */
+  setCacheFileBytes(key: string, bytes: number): void;
+
+  /** Quanto UMA copia ocupa; 0 quando a linha nao existe ou nunca foi medida. */
+  getCacheFileBytes(key: string): number;
+
+  /** Ocupacao total das copias geradas, remux e variantes somados. */
+  totalCacheBytes(): number;
+
+  /** Remove a LINHA. O arquivo em disco e problema de quem chama - e primeiro. */
+  deleteCacheFile(key: string): void;
+
   /** Posicao salva do episodio; null quando ele nunca foi aberto. */
   getWatchHistory(episodeId: string): WatchHistoryRow | null;
 
@@ -413,7 +460,7 @@ interface ShowMetadataRecord {
   not_found: number;
 }
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 const MIGRATIONS: readonly string[] = [
   // versao 1
@@ -610,10 +657,69 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE watch_history ADD COLUMN watched_at INTEGER;
   `,
+  // versao 12: orcamento de disco das copias geradas.
+  //
+  // Ate aqui, `remux` e `audio_variant` cresciam sem teto. Como o remux COPIA o
+  // video inteiro (nunca recodifica), cada episodio convertido custa quase o
+  // tamanho do original, e cada dublagem custa outro tanto: um acervo de 168 GB
+  // pedia 168 GB de copias. Estas duas colunas sao o que permite evictar por
+  // orcamento em vez de acumular para sempre.
+  //
+  // `size` (que ja existia) e do arquivo FONTE, e serve de par de invalidacao
+  // com `mtime_ms`. `size_bytes` e do arquivo GERADO - e o unico que responde
+  // "quanto disco isto esta ocupando". Sao numeros diferentes: o MP4 remuxado
+  // de um MKV nao tem o mesmo tamanho do MKV.
+  //
+  // Ambas nulaveis, e nenhuma precisa de backfill. `last_access_at` nulo cai em
+  // `created_at` por COALESCE na leitura - para uma linha que nunca foi tocada,
+  // a hora em que ela foi criada e exatamente a melhor estimativa de ultimo
+  // uso. `size_bytes` nulo cai em 0 e e preenchido pelo evictor com um stat na
+  // primeira rodada, custo pago uma vez por linha.
+  `
+  ALTER TABLE remux ADD COLUMN size_bytes INTEGER;
+  ALTER TABLE remux ADD COLUMN last_access_at INTEGER;
+  ALTER TABLE audio_variant ADD COLUMN size_bytes INTEGER;
+  ALTER TABLE audio_variant ADD COLUMN last_access_at INTEGER;
+  `,
 ];
 
 /** Chave do contador monotonico de canais. Nunca decrementa. */
 const NEXT_CHANNEL_KEY = 'next_channel_number';
+
+/** Chave de `CacheFileRow` para o remux principal de um episodio. */
+export function remuxCacheKey(episodeId: string): string {
+  return `remux:${episodeId}`;
+}
+
+/** Chave de `CacheFileRow` para uma variante de dublagem. */
+export function variantCacheKey(episodeId: string, audioIndex: number): string {
+  return `variant:${episodeId}:${String(audioIndex)}`;
+}
+
+/**
+ * Volta da chave para (tabela, episodio, faixa).
+ *
+ * O id do episodio e um caminho relativo e PODE conter ':', entao a leitura nao
+ * pode ser um `split(':')`: o prefixo sai pela esquerda e o indice da faixa
+ * pelo ULTIMO ':'. Chave irreconhecivel devolve null em vez de lancar - ela vem
+ * de uma lista que o proprio banco montou, mas quem apaga arquivo nao pode
+ * adivinhar alvo.
+ */
+export function parseCacheKey(
+  key: string,
+): { kind: 'remux' | 'variant'; episodeId: string; audioIndex: number | null } | null {
+  if (key.startsWith('remux:')) {
+    const episodeId = key.slice('remux:'.length);
+    return episodeId === '' ? null : { kind: 'remux', episodeId, audioIndex: null };
+  }
+  if (!key.startsWith('variant:')) return null;
+  const rest = key.slice('variant:'.length);
+  const cut = rest.lastIndexOf(':');
+  if (cut <= 0) return null;
+  const suffix = rest.slice(cut + 1);
+  if (!/^\d+$/.test(suffix)) return null;
+  return { kind: 'variant', episodeId: rest.slice(0, cut), audioIndex: Number(suffix) };
+}
 
 function toShowRow(record: ShowRecord): ShowRow {
   return {
@@ -973,6 +1079,50 @@ export function openStore(dbPath: string): Store {
        created_at = excluded.created_at`,
   );
   const selectAudioVariantFiles = db.prepare('SELECT file FROM audio_variant');
+
+  // COALESCE em vez de backfill: linha anterior a versao 12 tem as colunas
+  // vazias, e `created_at` e a melhor estimativa de ultimo uso que existe para
+  // ela. O tamanho desconhecido entra como 0 e o evictor corrige com um stat.
+  const selectCacheFiles = db.prepare(
+    `SELECT 'remux' AS kind, episode_id, NULL AS audio_index, file,
+            COALESCE(size_bytes, 0) AS bytes,
+            COALESCE(last_access_at, created_at) AS last_access_at
+       FROM remux
+     UNION ALL
+     SELECT 'variant' AS kind, episode_id, audio_index, file,
+            COALESCE(size_bytes, 0) AS bytes,
+            COALESCE(last_access_at, created_at) AS last_access_at
+       FROM audio_variant`,
+  );
+  const touchRemuxAccess = db.prepare(
+    'UPDATE remux SET last_access_at = @at WHERE episode_id = @episodeId',
+  );
+  const touchVariantAccess = db.prepare(
+    `UPDATE audio_variant SET last_access_at = @at
+      WHERE episode_id = @episodeId AND audio_index = @audioIndex`,
+  );
+  const updateRemuxBytes = db.prepare(
+    'UPDATE remux SET size_bytes = @bytes WHERE episode_id = @episodeId',
+  );
+  const updateVariantBytes = db.prepare(
+    `UPDATE audio_variant SET size_bytes = @bytes
+      WHERE episode_id = @episodeId AND audio_index = @audioIndex`,
+  );
+  const selectRemuxBytes = db.prepare(
+    'SELECT COALESCE(size_bytes, 0) AS bytes FROM remux WHERE episode_id = @episodeId',
+  );
+  const selectVariantBytes = db.prepare(
+    `SELECT COALESCE(size_bytes, 0) AS bytes FROM audio_variant
+      WHERE episode_id = @episodeId AND audio_index = @audioIndex`,
+  );
+  const selectTotalCacheBytes = db.prepare(
+    `SELECT COALESCE((SELECT SUM(COALESCE(size_bytes, 0)) FROM remux), 0)
+          + COALESCE((SELECT SUM(COALESCE(size_bytes, 0)) FROM audio_variant), 0) AS bytes`,
+  );
+  const deleteRemuxRow = db.prepare('DELETE FROM remux WHERE episode_id = @episodeId');
+  const deleteVariantRow = db.prepare(
+    'DELETE FROM audio_variant WHERE episode_id = @episodeId AND audio_index = @audioIndex',
+  );
 
   const selectWatchHistory = db.prepare('SELECT * FROM watch_history WHERE episode_id = ?');
   const insertWatchHistory = db.prepare(
@@ -1358,6 +1508,86 @@ export function openStore(dbPath: string): Store {
 
     listAudioVariantFiles(): string[] {
       return (selectAudioVariantFiles.all() as { file: string }[]).map((record) => record.file);
+    },
+
+    listCacheFiles(): CacheFileRow[] {
+      const records = selectCacheFiles.all() as {
+        kind: 'remux' | 'variant';
+        episode_id: string;
+        audio_index: number | null;
+        file: string;
+        bytes: number;
+        last_access_at: number;
+      }[];
+      return records.map((record) => ({
+        key:
+          record.kind === 'remux'
+            ? remuxCacheKey(record.episode_id)
+            : variantCacheKey(record.episode_id, record.audio_index ?? 0),
+        kind: record.kind,
+        episodeId: record.episode_id,
+        audioIndex: record.audio_index,
+        file: record.file,
+        bytes: record.bytes,
+        lastAccessAt: record.last_access_at,
+      }));
+    },
+
+    touchCacheFile(key, at): void {
+      const parsed = parseCacheKey(key);
+      if (parsed === null) return;
+      if (parsed.kind === 'remux') {
+        touchRemuxAccess.run({ episodeId: parsed.episodeId, at });
+        return;
+      }
+      touchVariantAccess.run({
+        episodeId: parsed.episodeId,
+        audioIndex: parsed.audioIndex,
+        at,
+      });
+    },
+
+    setCacheFileBytes(key, bytes): void {
+      const parsed = parseCacheKey(key);
+      if (parsed === null) return;
+      if (parsed.kind === 'remux') {
+        updateRemuxBytes.run({ episodeId: parsed.episodeId, bytes });
+        return;
+      }
+      updateVariantBytes.run({
+        episodeId: parsed.episodeId,
+        audioIndex: parsed.audioIndex,
+        bytes,
+      });
+    },
+
+    getCacheFileBytes(key): number {
+      const parsed = parseCacheKey(key);
+      if (parsed === null) return 0;
+      const record = (
+        parsed.kind === 'remux'
+          ? selectRemuxBytes.get({ episodeId: parsed.episodeId })
+          : selectVariantBytes.get({
+              episodeId: parsed.episodeId,
+              audioIndex: parsed.audioIndex,
+            })
+      ) as { bytes: number } | undefined;
+      return record?.bytes ?? 0;
+    },
+
+    totalCacheBytes(): number {
+      const record = selectTotalCacheBytes.get() as { bytes: number };
+      return record.bytes;
+    },
+
+    deleteCacheFile(key): void {
+      const parsed = parseCacheKey(key);
+      if (parsed === null) return;
+      if (parsed.kind === 'remux') {
+        deleteRemuxRow.run({ episodeId: parsed.episodeId });
+        return;
+      }
+      deleteVariantRow.run({ episodeId: parsed.episodeId, audioIndex: parsed.audioIndex });
     },
 
     getWatchHistory(episodeId): WatchHistoryRow | null {

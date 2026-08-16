@@ -74,6 +74,12 @@ const CONTENT_TYPES: Record<string, string> = {
   '.m4v': 'video/mp4',
   '.mkv': 'video/x-matroska',
   '.webm': 'video/webm',
+  // `.avi` nao toca em navegador nenhum, e nao e por falta deste cabecalho -
+  // e o codec de video (MPEG-4 Part 2) que nao decodifica. Mas
+  // `application/octet-stream` fazia o arquivo parecer um download generico e
+  // apagava a pista do que estava errado; um cliente nativo (ExoPlayer) tambem
+  // usa o tipo para escolher o extractor.
+  '.avi': 'video/x-msvideo',
 };
 
 function contentType(filePath: string): string {

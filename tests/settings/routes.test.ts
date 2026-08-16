@@ -17,6 +17,7 @@ beforeEach(async () => {
   settings = createSettingsService(store, {
     rescanTime: { hour: 4, minute: 0 },
     autoRemux: true,
+    remuxCacheMaxBytes: 20 * 1024 ** 3,
     autoThumbs: true,
     smartGrouping: true,
     tmdbConfigured: true,
@@ -44,6 +45,7 @@ describe('GET /api/settings', () => {
       subtitlesAuto: false,
       rescanTime: '04:00',
       autoRemux: true,
+      remuxCacheMaxBytes: 20 * 1024 ** 3,
       autoThumbs: true,
       smartGrouping: true,
       tmdbConfigured: true,

@@ -248,3 +248,25 @@ export function languagesBadge(tracks: readonly AudioTrackRef[]): string | null 
 export function joinMeta(parts: readonly (string | null | undefined)[]): string {
   return parts.filter((part): part is string => typeof part === 'string' && part !== '').join(' · ');
 }
+
+/**
+ * Aviso especifico quando o problema e o FORMATO do arquivo, e nao a rede.
+ *
+ * "Sem sinal" e o texto de NAS fora do ar, cabo solto e servidor caido. Usa-lo
+ * tambem para um arquivo que o navegador nunca vai conseguir abrir manda a
+ * pessoa procurar defeito onde nao ha - foi o que aconteceu com as temporadas
+ * `.avi` do acervo, servidas cruas, sem plano de remux e sem uma linha de
+ * diagnostico em lugar nenhum.
+ *
+ * `remux` nao gera aviso: aquele caminho ja tem o seu ("Preparando o
+ * episodio..."), e ele termina em sucesso. `unknown` tambem nao - sem probe de
+ * video, culpar o formato seria chute.
+ *
+ * @returns null quando nao ha nada especifico a dizer; o chamador cai no aviso
+ *          generico.
+ */
+export function playbackProblemText(playback: EpisodeRef['playback']): string | null {
+  return playback === 'video-transcode'
+    ? 'Formato antigo: este arquivo precisa ser convertido para tocar no navegador'
+    : null;
+}

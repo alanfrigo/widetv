@@ -13,14 +13,20 @@ import { openStore } from '../../src/server/library/index-store';
  * migracao afirmarem "chegou na versao mais nova", e nao um numero solto que
  * envelhece a cada coluna adicionada.
  */
-const SCHEMA_VERSION_ATUAL = 11;
+const SCHEMA_VERSION_ATUAL = 12;
 
 /**
  * Desfaz, num banco ja aberto na versao atual, tudo o que veio depois da versao
  * `alvo` - e o jeito de reencenar um indice daquela epoca sem manter um dump
  * SQL congelado por versao.
  */
-const DESFAZER_11 = 'ALTER TABLE watch_history DROP COLUMN watched_at;';
+const DESFAZER_12 =
+  'ALTER TABLE remux DROP COLUMN size_bytes;' +
+  'ALTER TABLE remux DROP COLUMN last_access_at;' +
+  'ALTER TABLE audio_variant DROP COLUMN size_bytes;' +
+  'ALTER TABLE audio_variant DROP COLUMN last_access_at;';
+
+const DESFAZER_11 = 'ALTER TABLE watch_history DROP COLUMN watched_at;' + DESFAZER_12;
 
 const DESFAZER_10 =
   'ALTER TABLE episodes DROP COLUMN thumb_file;' +
@@ -39,6 +45,7 @@ const DESFAZER_ATE: Record<number, string> = {
   8: 'ALTER TABLE show_metadata DROP COLUMN backdrop_checked_at;' + DESFAZER_10,
   9: DESFAZER_10,
   10: DESFAZER_11,
+  11: DESFAZER_12,
 };
 
 function rebobinar(dbPath: string, alvo: number): void {
@@ -1777,6 +1784,180 @@ describe('ja vi este episodio (schema 11)', () => {
     // recuperar.
     expect(store.getWatchHistory('serie/ep01.mp4')?.watchedAt).toBeNull();
     store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('orcamento de disco das copias geradas (schema 12)', () => {
+  function comCopias(): { base: string; dbPath: string; store: Store; showId: number } {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-cache-'));
+    const dbPath = join(base, 'library.db');
+    const store = openStore(dbPath);
+    const showId = makeShow(store, 'serie');
+    store.upsertEpisodes(showId, [makeEpisode()]);
+    return { base, dbPath, store, showId };
+  }
+
+  it('remux e variante aparecem na MESMA lista: o teto e do diretorio, nao da tabela', () => {
+    const { base, store } = comCopias();
+
+    store.upsertRemux({
+      episodeId: 'serie/ep01.mp4',
+      file: 'aaa.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      audioTracks: [],
+      createdAt: 10,
+    });
+    store.upsertAudioVariant({
+      episodeId: 'serie/ep01.mp4',
+      audioIndex: 1,
+      file: 'bbb.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      createdAt: 20,
+    });
+
+    const files = store.listCacheFiles();
+    expect(files).toHaveLength(2);
+    expect(files.map((row) => row.key).sort()).toEqual([
+      'remux:serie/ep01.mp4',
+      'variant:serie/ep01.mp4:1',
+    ]);
+    expect(files.find((row) => row.kind === 'variant')?.audioIndex).toBe(1);
+
+    store.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('sem last_access_at a linha vale pelo created_at, e nao por zero', () => {
+    // Se caisse em 0, toda copia anterior a versao 12 seria a "mais fria" do
+    // cache e sairia primeiro, mesmo a que acabou de ser gerada.
+    const { base, store } = comCopias();
+
+    store.upsertRemux({
+      episodeId: 'serie/ep01.mp4',
+      file: 'aaa.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      audioTracks: [],
+      createdAt: 777,
+    });
+
+    expect(store.listCacheFiles()[0]?.lastAccessAt).toBe(777);
+
+    store.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('touch, medicao e remocao acertam a linha certa', () => {
+    const { base, store } = comCopias();
+    const key = 'remux:serie/ep01.mp4';
+
+    store.upsertRemux({
+      episodeId: 'serie/ep01.mp4',
+      file: 'aaa.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      audioTracks: [],
+      createdAt: 1,
+    });
+
+    store.touchCacheFile(key, 999);
+    store.setCacheFileBytes(key, 4096);
+    expect(store.listCacheFiles()[0]).toMatchObject({ lastAccessAt: 999, bytes: 4096 });
+    expect(store.getCacheFileBytes(key)).toBe(4096);
+    expect(store.totalCacheBytes()).toBe(4096);
+
+    store.deleteCacheFile(key);
+    expect(store.listCacheFiles()).toEqual([]);
+    expect(store.getCacheFileBytes(key)).toBe(0);
+    expect(store.totalCacheBytes()).toBe(0);
+
+    store.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('id de episodio com ":" no caminho nao confunde a chave da variante', () => {
+    // O id e um caminho relativo e pode conter ':'. Uma leitura por split(':')
+    // apontaria para a faixa errada - ou para episodio nenhum.
+    const base = mkdtempSync(join(tmpdir(), 'index-store-cache-colon-'));
+    const dbPath = join(base, 'library.db');
+    const store = openStore(dbPath);
+    const showId = makeShow(store, 'serie');
+    const id = 'serie/S01E01: O Piloto.mkv';
+    store.upsertEpisodes(showId, [makeEpisode({ id, absolutePath: `/lib/${id}` })]);
+
+    store.upsertAudioVariant({
+      episodeId: id,
+      audioIndex: 2,
+      file: 'ccc.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      createdAt: 5,
+    });
+
+    const key = store.listCacheFiles()[0]?.key ?? '';
+    expect(key).toBe(`variant:${id}:2`);
+    store.setCacheFileBytes(key, 2048);
+    expect(store.getCacheFileBytes(key)).toBe(2048);
+
+    store.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('chave desconhecida nao apaga nada nem lanca', () => {
+    const { base, store } = comCopias();
+
+    store.upsertRemux({
+      episodeId: 'serie/ep01.mp4',
+      file: 'aaa.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      audioTracks: [],
+      createdAt: 1,
+    });
+
+    for (const ruim of ['', 'remux:', 'variant:sem-indice', 'variant:x:abc', 'outra-coisa']) {
+      expect(() => {
+        store.deleteCacheFile(ruim);
+      }).not.toThrow();
+    }
+    expect(store.listCacheFiles()).toHaveLength(1);
+
+    store.close();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('indice na versao 11 ganha as colunas sem perder a copia ja registrada', () => {
+    const { base, dbPath, store } = comCopias();
+
+    store.upsertRemux({
+      episodeId: 'serie/ep01.mp4',
+      file: 'aaa.mp4',
+      mtimeMs: 1_700_000_000_000,
+      size: 123_456,
+      audioTracks: [],
+      createdAt: 55,
+    });
+    store.close();
+
+    rebobinar(dbPath, 11);
+
+    const migrado = openStore(dbPath);
+    expect(migrado.getRemux('serie/ep01.mp4', 1_700_000_000_000, 123_456)?.file).toBe('aaa.mp4');
+    // Colunas novas vazias: sem uso registrado, o carimbo cai no created_at e o
+    // tamanho fica em 0 ate o evictor medir o arquivo.
+    expect(migrado.listCacheFiles()[0]).toMatchObject({ lastAccessAt: 55, bytes: 0 });
+    migrado.close();
 
     const conferencia = new Database(dbPath);
     const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {

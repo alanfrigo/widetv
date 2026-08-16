@@ -221,3 +221,100 @@ describe('runRemux', () => {
     expect(files).not.toContain('lixo.mp4');
   });
 });
+
+describe('orcamento de disco', () => {
+  /**
+   * Tres episodios MKV, todos precisando de remux. O conversor grava um
+   * arquivo de tamanho controlado para o teto ser atingido de forma previsivel.
+   */
+  async function tresMkv(bytesPorCopia: number): Promise<{ calls: { input: string }[]; convert: Convert }> {
+    await writeFile(join(libraryRoot, 'Serie', 'ep3.mkv'), 'mkv');
+    await writeFile(join(libraryRoot, 'Serie', 'ep4.mkv'), 'mkv');
+    const show = store.listShows()[0];
+    if (show === undefined) throw new Error('fixture sem serie');
+    store.upsertEpisodes(show.id, [
+      episodeRow('Serie/ep1.mkv'),
+      episodeRow('Serie/ep3.mkv', { orderIndex: 1 }),
+      episodeRow('Serie/ep4.mkv', { orderIndex: 2 }),
+    ]);
+    const calls: { input: string }[] = [];
+    const convert: Convert = async ({ inputPath, outputPath }) => {
+      calls.push({ input: inputPath });
+      await writeFile(outputPath, Buffer.alloc(bytesPorCopia));
+    };
+    return { calls, convert };
+  }
+
+  test('sem teto converte o catalogo inteiro', async () => {
+    const { calls, convert } = await tresMkv(1000);
+
+    const report = await runRemux({ store, libraryRoot, dataDir, convert, probe: fakeProbe });
+
+    expect(report.converted).toBe(3);
+    expect(report.budgetSkipped).toBe(0);
+    expect(calls).toHaveLength(3);
+  });
+
+  test('a rodada PARA quando o orcamento acaba, em vez de converter e evictar em circulo', async () => {
+    // Cada copia ocupa 1000 bytes e o fonte tambem declara 1000 (episodeRow).
+    // Com teto de 2500 cabem dois: o terceiro seria estimado em 3000 > 2500.
+    const { calls, convert } = await tresMkv(1000);
+
+    const report = await runRemux({
+      store,
+      libraryRoot,
+      dataDir,
+      convert,
+      probe: fakeProbe,
+      cacheMaxBytes: 2500,
+    });
+
+    expect(report.converted).toBe(2);
+    expect(report.budgetSkipped).toBe(1);
+    expect(calls).toHaveLength(2);
+  });
+
+  test('teto zero significa SEM teto, nao "nao converta nada"', async () => {
+    const { calls, convert } = await tresMkv(1000);
+
+    const report = await runRemux({
+      store,
+      libraryRoot,
+      dataDir,
+      convert,
+      probe: fakeProbe,
+      cacheMaxBytes: 0,
+    });
+
+    expect(report.converted).toBe(3);
+    expect(report.budgetSkipped).toBe(0);
+    expect(calls).toHaveLength(3);
+  });
+
+  test('teto menor que um unico episodio nao converte nada, e diz por que', async () => {
+    const { calls, convert } = await tresMkv(1000);
+
+    const report = await runRemux({
+      store,
+      libraryRoot,
+      dataDir,
+      convert,
+      probe: fakeProbe,
+      cacheMaxBytes: 10,
+    });
+
+    expect(report.converted).toBe(0);
+    expect(report.budgetSkipped).toBe(3);
+    expect(calls).toEqual([]);
+  });
+
+  test('o tamanho do arquivo GERADO fica registrado para o evictor', async () => {
+    const { convert } = await tresMkv(4096);
+
+    await runRemux({ store, libraryRoot, dataDir, convert, probe: fakeProbe });
+
+    // `size` (1000) e do fonte; `bytes` e do MP4 que foi realmente escrito.
+    expect(store.getCacheFileBytes('remux:Serie/ep1.mkv')).toBe(4096);
+    expect(store.totalCacheBytes()).toBe(3 * 4096);
+  });
+});

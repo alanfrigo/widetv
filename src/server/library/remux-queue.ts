@@ -35,6 +35,12 @@ export interface RemuxQueueOptions {
   probe?: (filePath: string) => Promise<ProbeResult>;
   log?: (message: string) => void;
   now?: () => number;
+  /**
+   * Chamado depois de CADA item, com ou sem sucesso. Existe para o orcamento de
+   * disco: acabou de nascer uma copia do tamanho de um episodio, e a hora de
+   * conferir o teto e agora, nao no proximo boot.
+   */
+  onSettled?: () => void;
 }
 
 export interface RemuxQueue {
@@ -99,6 +105,7 @@ export function createRemuxQueue(options: RemuxQueueOptions): RemuxQueue {
       .finally(() => {
         pending.delete(next);
         running = false;
+        options.onSettled?.();
         pump();
       });
   }

@@ -28,6 +28,7 @@ const KEY = {
   subtitlesAuto: 'subtitles_auto',
   rescanTime: 'rescan_time',
   autoRemux: 'auto_remux',
+  remuxCacheMaxBytes: 'remux_cache_max_bytes',
   autoThumbs: 'auto_thumbs',
   smartGrouping: 'smart_grouping',
 } as const;
@@ -105,6 +106,8 @@ export function canonicalLang(raw: string | null | undefined): string | null {
 export interface SettingsDefaults {
   rescanTime: RescanTime | null;
   autoRemux: boolean;
+  /** Teto de disco das copias geradas, em bytes; 0 = sem teto. */
+  remuxCacheMaxBytes: number;
   autoThumbs: boolean;
   smartGrouping: boolean;
   tmdbConfigured: boolean;
@@ -139,6 +142,18 @@ function readBoolean(raw: string | undefined, fallback: boolean): boolean {
   if (raw === 'true') return true;
   if (raw === 'false') return false;
   return fallback;
+}
+
+/**
+ * Tamanho em bytes gravado. Linha ilegivel ou negativa cai no default do
+ * `.env`, e nunca em zero: zero significa "sem teto", e um banco editado na mao
+ * nao pode desligar a protecao de disco por acidente.
+ */
+function readBytes(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.floor(parsed);
 }
 
 /**
@@ -189,6 +204,10 @@ export function createSettingsService(
       subtitlesAuto: readBoolean(rows[KEY.subtitlesAuto], false),
       rescanTime: rescan === null ? null : formatRescanTime(rescan),
       autoRemux: readBoolean(rows[KEY.autoRemux], defaults.autoRemux),
+      remuxCacheMaxBytes: readBytes(
+        rows[KEY.remuxCacheMaxBytes],
+        defaults.remuxCacheMaxBytes,
+      ),
       autoThumbs: readBoolean(rows[KEY.autoThumbs], defaults.autoThumbs),
       smartGrouping: readBoolean(rows[KEY.smartGrouping], defaults.smartGrouping),
       // Nunca gravavel: e um fato sobre o ambiente, nao uma preferencia.
@@ -234,6 +253,16 @@ export function createSettingsService(
 
       if (input.autoRemux !== undefined) {
         store.setSetting(KEY.autoRemux, input.autoRemux ? 'true' : 'false');
+      }
+
+      if (input.remuxCacheMaxBytes !== undefined) {
+        const bytes = input.remuxCacheMaxBytes;
+        if (!Number.isFinite(bytes) || bytes < 0) {
+          throw new SettingsError(
+            `remuxCacheMaxBytes precisa ser um numero de bytes >= 0 (0 desliga o teto), recebeu "${String(bytes)}".`,
+          );
+        }
+        store.setSetting(KEY.remuxCacheMaxBytes, String(Math.floor(bytes)));
       }
 
       if (input.autoThumbs !== undefined) {

@@ -187,6 +187,46 @@ describe('loadConfig', () => {
   });
 });
 
+describe('REMUX_CACHE_MAX_BYTES', () => {
+  const GiB = 1024 ** 3;
+
+  test('ausente cai no padrao de 20 GiB', () => {
+    expect(loadConfig(env()).remuxCacheMaxBytes).toBe(20 * GiB);
+  });
+
+  test('vazio (a UI do TrueNAS manda assim) tambem cai no padrao', () => {
+    expect(loadConfig(env({ REMUX_CACHE_MAX_BYTES: '   ' })).remuxCacheMaxBytes).toBe(20 * GiB);
+  });
+
+  test('numero puro e lido como bytes', () => {
+    expect(loadConfig(env({ REMUX_CACHE_MAX_BYTES: '1048576' })).remuxCacheMaxBytes).toBe(1_048_576);
+  });
+
+  test.each([
+    ['50G', 50 * GiB],
+    ['50g', 50 * GiB],
+    ['50GB', 50 * GiB],
+    ['50 gb', 50 * GiB],
+    ['500M', 500 * 1024 ** 2],
+    ['2T', 2 * 1024 ** 4],
+    ['1.5G', Math.floor(1.5 * GiB)],
+  ])('aceita o sufixo %s', (raw, expected) => {
+    expect(loadConfig(env({ REMUX_CACHE_MAX_BYTES: raw })).remuxCacheMaxBytes).toBe(expected);
+  });
+
+  test('zero desliga o teto e nao vira "apague tudo"', () => {
+    expect(loadConfig(env({ REMUX_CACHE_MAX_BYTES: '0' })).remuxCacheMaxBytes).toBe(0);
+  });
+
+  test('unidade desconhecida falha em vez de virar um teto errado por 1024x', () => {
+    expect(() => loadConfig(env({ REMUX_CACHE_MAX_BYTES: '20 gigas' }))).toThrow(ConfigError);
+  });
+
+  test('texto sem numero falha', () => {
+    expect(() => loadConfig(env({ REMUX_CACHE_MAX_BYTES: 'muito' }))).toThrow(ConfigError);
+  });
+});
+
 describe('parseRescanTimeEnv x parseRescanTimeInput', () => {
   test('os dois leem o mesmo horario', () => {
     expect(parseRescanTimeEnv('23:59')).toEqual({ hour: 23, minute: 59 });

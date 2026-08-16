@@ -340,6 +340,7 @@ describe('GET /api/history/resume', () => {
         'episode',
         'height',
         'id',
+        'playback',
         'season',
         'subtitleTracks',
         'thumbUrl',

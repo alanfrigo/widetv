@@ -38,6 +38,8 @@ services:
       # transcode). As copias ficam no volume de DATA_DIR e ocupam mais ou
       # menos o tamanho dos proprios MKV; "false" desliga.
       AUTO_REMUX: "true"
+      # Teto de disco das copias geradas (remux + dublagens). "0" = sem teto.
+      REMUX_CACHE_MAX_BYTES: "20G"
       # Opcional: melhora as capas e traz sinopse em pt-BR. Sem ela o servidor
       # usa TVMaze e iTunes, que nao pedem chave.
       TMDB_API_KEY: ${TMDB_API_KEY:-}

@@ -7,6 +7,7 @@ import type {
 } from '../../src/shared/api-types';
 import {
   audioLanguageOptions,
+  formatCacheSize,
   initialSettings,
   metadataSummaryText,
   reduceSettings,
@@ -16,6 +17,7 @@ import {
   settingsGroupRows,
   settingsRows,
   settingsValueText,
+  stepCacheSize,
   stepRescanTime,
   subtitleLanguageOptions,
   thumbProgressRatio,
@@ -35,6 +37,7 @@ const SETTINGS: AppSettings = {
   subtitlesAuto: true,
   rescanTime: '03:30',
   autoRemux: false,
+  remuxCacheMaxBytes: 20 * 1024 ** 3,
   autoThumbs: true,
   smartGrouping: true,
   tmdbConfigured: false,
@@ -90,6 +93,7 @@ describe('as linhas da tela', () => {
     expect(library.map((row) => row.field)).toEqual([
       'smartGrouping',
       'autoRemux',
+      'remuxCacheMaxBytes',
       'autoThumbs',
       'rescanTime',
       'scanIncremental',
@@ -101,7 +105,7 @@ describe('as linhas da tela', () => {
     // Os indices sao os de `settingsRows()`, e nao a posicao dentro do grupo:
     // e o que faz o cursor unico casar com a linha desenhada.
     expect([...playback, ...library].map((row) => row.index)).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
     for (const row of [...playback, ...library]) {
       expect(settingsRows()[row.index]?.field).toBe(row.field);
@@ -707,5 +711,64 @@ describe('progresso da fila de miniaturas', () => {
 
   test('servidor recem-ligado nao tem rodada de miniaturas para contar', () => {
     expect(thumbSummaryText(status())).toBeNull();
+  });
+});
+
+describe('espaco das copias convertidas', () => {
+  const GIB = 1024 ** 3;
+
+  test('a seta sobe e desce pelos degraus, sem dar a volta', () => {
+    expect(stepCacheSize(20 * GIB, 1)).toBe(50 * GIB);
+    expect(stepCacheSize(20 * GIB, -1)).toBe(10 * GIB);
+    // Ponta de baixo: encosta, nao vira "sem limite" por acidente.
+    expect(stepCacheSize(5 * GIB, -1)).toBe(5 * GIB);
+  });
+
+  test('"sem limite" e o degrau ACIMA do maior valor', () => {
+    expect(stepCacheSize(500 * GIB, 1)).toBe(0);
+    expect(stepCacheSize(0, 1)).toBe(0);
+    expect(stepCacheSize(0, -1)).toBe(500 * GIB);
+  });
+
+  test('valor fora da escada (veio do .env) anda para o degrau vizinho', () => {
+    // 30 GiB nao e um degrau: subir vai para 50, descer vai para 20.
+    expect(stepCacheSize(30 * GIB, 1)).toBe(50 * GIB);
+    expect(stepCacheSize(30 * GIB, -1)).toBe(20 * GIB);
+    // Acima do maior degrau, subir so pode dar "sem limite".
+    expect(stepCacheSize(900 * GIB, 1)).toBe(0);
+    // Abaixo do menor, descer encosta no menor.
+    expect(stepCacheSize(1024, -1)).toBe(5 * GIB);
+  });
+
+  test('rotulo: zero e "Sem limite", nunca "0 GB"', () => {
+    expect(formatCacheSize(0)).toBe('Sem limite');
+    expect(formatCacheSize(-1)).toBe('Sem limite');
+    expect(formatCacheSize(Number.NaN)).toBe('Sem limite');
+  });
+
+  test('rotulo em GB, e em MB quando nao chega a 1 GB', () => {
+    expect(formatCacheSize(20 * GIB)).toBe('20 GB');
+    expect(formatCacheSize(500 * GIB)).toBe('500 GB');
+    expect(formatCacheSize(Math.floor(1.5 * GIB))).toBe('1.5 GB');
+    expect(formatCacheSize(512 * 1024 ** 2)).toBe('512 MB');
+  });
+
+  test('a seta na linha emite o PATCH com o valor novo', () => {
+    const result = fire('remuxCacheMaxBytes', { type: 'right' }, { remuxCacheMaxBytes: 20 * GIB });
+    expect(result.command).toEqual({
+      type: 'patch',
+      patch: { remuxCacheMaxBytes: 50 * GIB },
+    });
+  });
+
+  test('na ponta, a seta nao gasta rede', () => {
+    const result = fire('remuxCacheMaxBytes', { type: 'left' }, { remuxCacheMaxBytes: 5 * GIB });
+    expect(result.command).toBeNull();
+  });
+
+  test('a linha mostra o valor legivel, nao o numero de bytes', () => {
+    expect(
+      settingsValueText('remuxCacheMaxBytes', { ...SETTINGS, remuxCacheMaxBytes: 20 * GIB }, initialSettings()),
+    ).toBe('20 GB');
   });
 });

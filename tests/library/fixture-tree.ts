@@ -21,6 +21,7 @@ const FILES = [
   "ext/Serie/c.webm",
   "ext/Serie/d.m4v",
   "ext/Serie/e.avi",
+  "ext/Serie/f.iso",
   "flat/Pica-Pau/Pica-Pau Ep 01.mp4",
   "flat/Pica-Pau/Pica-Pau Ep 02.mp4",
   "ignored/.oculta/Lixo Ep 02.mp4",

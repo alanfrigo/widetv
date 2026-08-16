@@ -47,7 +47,20 @@ export interface ScanOptions {
   smartGrouping?: boolean;
 }
 
-const DEFAULT_EXTENSIONS = ['.mp4', '.mkv', '.webm', '.m4v'];
+/**
+ * `.avi` entra aqui apesar de nao tocar em navegador nenhum.
+ *
+ * Ficar de fora nao "protegia" ninguem: fazia as 24 primeiras temporadas de um
+ * acervo de desenho sumirem do catalogo inteiro, sem uma linha de log dizendo
+ * por que. Invisivel e o pior estado possivel - a pessoa nao sabe se o arquivo
+ * esta corrompido, se o caminho esta errado ou se o servidor ignorou de
+ * proposito.
+ *
+ * Indexado, o episodio aparece, toca no app Android (o Media3 tem extractor de
+ * AVI) e no navegador recebe um aviso explicando que precisa ser convertido -
+ * ver `playbackVerdict` em `remux-plan.ts` e `npm run transcode-legacy`.
+ */
+const DEFAULT_EXTENSIONS = ['.mp4', '.mkv', '.webm', '.m4v', '.avi'];
 
 /** Lixo de NAS e de sistema operacional, nunca e conteudo. */
 const IGNORED_NAMES = new Set(['@eadir', '#recycle', '#snapshot', 'lost+found']);

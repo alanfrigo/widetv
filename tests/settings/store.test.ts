@@ -14,6 +14,7 @@ import {
 const DEFAULTS: SettingsDefaults = {
   rescanTime: { hour: 4, minute: 0 },
   autoRemux: true,
+  remuxCacheMaxBytes: 20 * 1024 ** 3,
   autoThumbs: true,
   smartGrouping: true,
   tmdbConfigured: false,
@@ -65,6 +66,7 @@ describe('valores efetivos', () => {
       subtitlesAuto: false,
       rescanTime: '04:00',
       autoRemux: true,
+      remuxCacheMaxBytes: 20 * 1024 ** 3,
       autoThumbs: true,
       smartGrouping: true,
       tmdbConfigured: false,
@@ -303,5 +305,42 @@ describe('sobre o indice de verdade', () => {
     expect(store.getSetting('subtitle_lang')).toBe('off');
 
     store.close();
+  });
+});
+
+describe('teto de disco das copias geradas', () => {
+  test('sem linha no banco, vale o default do .env', () => {
+    const { settings } = service();
+    expect(settings.get().remuxCacheMaxBytes).toBe(20 * 1024 ** 3);
+  });
+
+  test('grava o valor escolhido no painel', () => {
+    const { settings } = service();
+    expect(settings.patch({ remuxCacheMaxBytes: 50 * 1024 ** 3 }).remuxCacheMaxBytes).toBe(
+      50 * 1024 ** 3,
+    );
+    expect(settings.get().remuxCacheMaxBytes).toBe(50 * 1024 ** 3);
+  });
+
+  test('zero e um valor VALIDO: significa "sem teto"', () => {
+    const { settings } = service();
+    expect(settings.patch({ remuxCacheMaxBytes: 0 }).remuxCacheMaxBytes).toBe(0);
+  });
+
+  test('valor negativo ou nao-finito e recusado', () => {
+    const { settings } = service();
+    expect(() => settings.patch({ remuxCacheMaxBytes: -1 })).toThrow(SettingsError);
+    expect(() => settings.patch({ remuxCacheMaxBytes: Number.NaN })).toThrow(SettingsError);
+    expect(() => settings.patch({ remuxCacheMaxBytes: Number.POSITIVE_INFINITY })).toThrow(
+      SettingsError,
+    );
+  });
+
+  test('linha ilegivel no banco cai no default, nunca em zero', () => {
+    // Zero desligaria a protecao de disco; um banco editado na mao nao pode
+    // conseguir isso por acidente.
+    const { settings, store } = service();
+    store.setSetting('remux_cache_max_bytes', 'muito');
+    expect(settings.get().remuxCacheMaxBytes).toBe(20 * 1024 ** 3);
   });
 });

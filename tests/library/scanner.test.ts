@@ -277,11 +277,16 @@ describe('scanLibrary', () => {
     it('aceita a lista default e descarta o resto', async () => {
       const shows = await scanLibrary(fixture('ext'));
 
+      // `.avi` entra: ficar de fora fazia as temporadas antigas de um acervo
+      // sumirem do catalogo sem nenhum aviso. Elas nao tocam no navegador, mas
+      // "invisivel" e pior que "aparece com um aviso do que fazer".
+      // `.iso` continua fora - aquilo nao e um episodio.
       expect(shows[0]!.episodes.map((e) => e.title)).toEqual([
         'a',
         'b',
         'c',
         'd',
+        'e',
       ]);
     });
 

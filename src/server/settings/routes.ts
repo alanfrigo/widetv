@@ -54,6 +54,14 @@ function toPatch(body: Record<string, unknown>): SettingsPatch | string {
     patch[field] = value;
   }
 
+  const cacheMax = body.remuxCacheMaxBytes;
+  if (cacheMax !== undefined) {
+    // O intervalo (>= 0) e conferido pelo servico, que e quem conhece a regra;
+    // aqui so o TIPO, como nos demais campos.
+    if (typeof cacheMax !== 'number') return 'remuxCacheMaxBytes precisa ser number';
+    patch.remuxCacheMaxBytes = cacheMax;
+  }
+
   return patch;
 }
 

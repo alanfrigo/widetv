@@ -392,7 +392,18 @@ rodam em seguida. `RESCAN_TIME=off` desliga; o comando manual acima continua
 valendo a qualquer hora.
 
 O remux (MKV/Dolby para MP4, veja `AUTO_REMUX` no `.env.example`) roda sozinho
-depois do scan e em todo boot. Para rodar na mao:
+depois do scan e em todo boot.
+
+As copias geradas tem **teto de disco** (`REMUX_CACHE_MAX_BYTES`, padrao `20G`,
+tambem ajustavel no painel). A conversao copia o video inteiro, entao cada
+episodio ocupa quase o tamanho do original: sem teto, um acervo de 168 GB pede
+outros 168 GB em `DATA_DIR`. Passou do teto, a copia menos assistida e apagada -
+o arquivo **original nunca e tocado**, e quem esta assistindo (mais o proximo
+episodio, ja em preload) nunca e evictado. A rodada de catalogo tambem para
+quando o orcamento acaba, e diz no log quantos episodios ficaram para a fila sob
+demanda. `REMUX_CACHE_MAX_BYTES=0` volta ao crescimento sem limite.
+
+Para rodar o remux na mao:
 
 ```bash
 docker compose exec widetv node dist/server/remux.js /media/biblioteca

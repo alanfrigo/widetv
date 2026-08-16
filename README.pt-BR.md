@@ -106,6 +106,7 @@ Essas preferencias sao gravadas no servidor, nao no `localStorage` do
 navegador: a casa toda usa a mesma senha e as mesmas telas, entao escolher
 "audio em portugues" na TV da sala tem que valer no tablet tambem.
 Preferencias que tambem existem no `.env` (`SMART_GROUPING`, `AUTO_REMUX`,
+`REMUX_CACHE_MAX_BYTES`,
 `AUTO_THUMBS`, `RESCAN_TIME`) usam o valor do ambiente como default - gravar no painel
 sobrepoe, e apagar a escolha no painel volta a usar o que estiver no `.env`.
 
@@ -191,6 +192,36 @@ npm run survey -- "/caminho/da/biblioteca"
 O relatorio traz distribuicao de codec e container, quantos arquivos tem o atomo
 `moov` na frente e um veredito direto sobre direct play.
 
+### Arquivos que nenhum remux salva
+
+O remux copia bytes; nao decodifica imagem. Um acervo antigo com MPEG-4 Part 2
+(DivX/XviD dos rips `.avi`), MPEG-2 ou WMV nao toca em navegador nenhum, e
+trocar o container nao muda isso. Esses arquivos sao indexados e aparecem
+normalmente - tocam no app Android, e no navegador o player avisa que precisam
+ser convertidos, em vez de mostrar "Sem sinal".
+
+Para converter, e so voce quem decide quando:
+
+```bash
+# Lista e mede. NAO converte nada - este e o padrao.
+npm run transcode-legacy -- "/caminho/da/biblioteca"
+
+# Converte, gravando "<nome>.h264.mp4" ao lado. O original NAO e tocado.
+npm run transcode-legacy -- "/caminho/da/biblioteca" --apply --limit 5
+
+# Converte e substitui, guardando os originais para poder voltar atras.
+npm run transcode-legacy -- "/caminho/da/biblioteca" \
+  --replace --keep-originals /mnt/tank/originais
+```
+
+O original so sai depois de o convertido passar numa conferencia que decodifica
+o comeco e o FIM do arquivo - um ffmpeg interrompido produz um MP4 com a duracao
+certa no cabecalho e os ultimos minutos faltando. Falhou a conferencia, o
+convertido e descartado e o original fica onde estava.
+
+Rode o scan depois: o arquivo novo tem outro nome, e o indice ainda aponta para
+o antigo.
+
 ## Requisitos
 
 - Node 22 ou mais novo
@@ -239,6 +270,7 @@ npm run build && npm start
 | `AUTO_SCAN` | Indexa sozinho quando o indice esta vazio. So a string exata `false` desliga |
 | `RESCAN_TIME` | Rescan diario da biblioteca no horario LOCAL (`HH:MM`, padrao `04:00`): adiciona series/episodios novos e remove os apagados. `off` desliga |
 | `AUTO_REMUX` | Converte episodios MKV/Dolby para MP4 em segundo plano (copia de bytes, sem transcode). As copias vivem em `DATA_DIR/remux` e ocupam mais ou menos o tamanho dos proprios MKV. So a string exata `false` desliga |
+| `REMUX_CACHE_MAX_BYTES` | Teto de disco das copias geradas, somadas. Passou daqui, a copia menos assistida e apagada; o arquivo original nunca e tocado. Aceita sufixo (`20G`, `500MB`, `1T`) ou o numero de bytes. `0` desliga o teto. Padrao `20G` |
 | `AUTO_THUMBS` | Tira um quadro de cada episodio em segundo plano, para a lista de episodios e as faixas do catalogo (nenhum provedor de metadata tem imagem por episodio de acervo caseiro). Um ffmpeg por arquivo, um por vez, cedendo a vez ao remux. Os JPEG vivem em `DATA_DIR/thumbs` e ocupam uns 30 KB cada. So a string exata `false` desliga |
 | `SMART_GROUPING` | Junta pastas de release da mesma serie (ex.: `Serie.S01...` + `Serie.S02...`) num canal so - veja [Agrupamento inteligente](#agrupamento-inteligente). Ligado por padrao; so a string exata `false` desliga. O painel de configuracoes pode sobrepor isso em tempo de execucao; apagar essa sobreposicao volta a usar este valor |
 | `TMDB_API_KEY` | Opcional. Poe o TMDB na frente da busca de capa, com sinopse em pt-BR. Sem ela, usa TVMaze e iTunes |

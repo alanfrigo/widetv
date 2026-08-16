@@ -78,6 +78,16 @@ export interface LibraryControllerDeps {
   /** Caminho dos binarios quando fora do PATH (launchd, container). */
   ffmpegPath?: string;
   ffprobePath?: string;
+  /**
+   * Teto de disco das copias geradas, em bytes; `0` = sem teto. A rodada de
+   * catalogo para quando o orcamento acaba - ver `RemuxJobOptions.cacheMaxBytes`.
+   *
+   * Funcao, e nao numero: a preferencia muda no painel com o servidor de pe, e
+   * um valor capturado na construcao so valeria no proximo boot.
+   */
+  cacheMaxBytes?: () => number;
+  /** Chamado no fim da rodada de remux, para aplicar o teto ao que foi gerado. */
+  onRemuxSettled?: () => void;
   /** Injetaveis para teste. */
   scan?: (options: ScanJobOptions) => Promise<ScanReport>;
   remux?: (options: RemuxJobOptions) => Promise<RemuxReport>;
@@ -176,6 +186,7 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
       dataDir: deps.dataDir,
       ffmpegPath: deps.ffmpegPath ?? 'ffmpeg',
       ffprobePath: deps.ffprobePath ?? 'ffprobe',
+      cacheMaxBytes: deps.cacheMaxBytes?.() ?? 0,
       onProgress: ({ done, total, episode }) => {
         const agora = now();
         if (agora - ultimoLog < SCAN_LOG_INTERVAL_MS && done < total) return;
@@ -189,6 +200,15 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
           `remux concluido: ${report.converted} convertidos, ${report.skipped} ja prontos` +
             (report.failed.length > 0 ? `, ${report.failed.length} falharam` : ''),
         );
+        // Nao e falha: e o teto de disco fazendo o trabalho dele. Precisa
+        // aparecer no log, senao o operador ve "concluido" e conclui que o
+        // acervo inteiro esta convertido.
+        if (report.budgetSkipped > 0) {
+          log(
+            `remux parou no orcamento de disco: ${report.budgetSkipped} episodio(s) ficaram ` +
+              `para a fila sob demanda. Aumente REMUX_CACHE_MAX_BYTES para converter mais.`,
+          );
+        }
         for (const failure of report.failed.slice(0, 5)) {
           log(`remux falhou em ${failure.path}: ${failure.reason}`);
         }
@@ -198,6 +218,7 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
       })
       .finally(() => {
         remuxRunning = false;
+        deps.onRemuxSettled?.();
       });
   }
 

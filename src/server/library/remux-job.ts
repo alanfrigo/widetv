@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { resolveWithinRoot } from '../stream/direct';
 
-import type { EpisodeRow, Store } from './index-store';
+import { remuxCacheKey, type EpisodeRow, type Store } from './index-store';
 import { probeFile } from './probe';
 import type { ProbeResult } from './probe-types';
 import { planRemux, REMUX_PLAN_VERSION, type RemuxPlan } from './remux-plan';
@@ -36,6 +36,11 @@ export interface RemuxReport {
   removedFiles: number;
   failed: RemuxFailure[];
   durationMs: number;
+  /**
+   * Episodios planejados que a rodada nao chegou a converter porque o orcamento
+   * de disco acabou. Zero quando nao ha teto ou quando tudo coube.
+   */
+  budgetSkipped: number;
 }
 
 export interface RemuxProgress {
@@ -67,6 +72,17 @@ export interface RemuxJobOptions {
   convert?: Convert;
   onProgress?: (progress: RemuxProgress) => void;
   now?: () => number;
+  /**
+   * Teto de disco das copias geradas, em bytes; `0` (ou ausente) = sem teto.
+   *
+   * A rodada de catalogo existe para pre-converter o acervo, e isso so faz
+   * sentido enquanto o resultado CABE. Converter alem do orcamento nao adianta
+   * nada: cada arquivo novo evictaria um anterior, o NAS passaria dias lendo e
+   * escrevendo, e no fim o disco teria a mesma coisa que teria parando na hora.
+   * Por isso a rodada para em vez de continuar - a fila sob demanda cobre
+   * quem apertar play num episodio que ficou de fora.
+   */
+  cacheMaxBytes?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 30 * 60_000;
@@ -194,6 +210,13 @@ export async function remuxEpisode(
     // Probe do RESULTADO, nao previsao: e a lista que o painel de trilhas vai
     // usar para selecionar por posicao, entao ela tem que vir do arquivo real.
     const result = await options.probe(tmpPath);
+    // Tamanho do GERADO, antes do rename: e o que o orcamento de disco conta.
+    // Sem isto a linha nasceria com 0 bytes e o evictor so descobriria o custo
+    // real dela na proxima varredura.
+    const generated = await stat(tmpPath).then(
+      (info) => info.size,
+      () => 0,
+    );
     await rename(tmpPath, targetPath);
     store.upsertRemux({
       episodeId: row.id,
@@ -203,6 +226,7 @@ export async function remuxEpisode(
       audioTracks: result.audioTracks,
       createdAt: options.now(),
     });
+    store.setCacheFileBytes(remuxCacheKey(row.id), generated);
   } catch (error) {
     await unlink(tmpPath).catch(() => undefined);
     throw error;
@@ -249,13 +273,30 @@ export async function runRemux(options: RemuxJobOptions): Promise<RemuxReport> {
 
   const planned = collectPlanned(store);
   const failed: RemuxFailure[] = [];
+  const cacheMaxBytes = options.cacheMaxBytes ?? 0;
   let converted = 0;
   let skipped = 0;
   let done = 0;
+  let budgetSkipped = 0;
+
+  // Ocupacao corrente, mantida em memoria durante a rodada. Reler o indice
+  // inteiro a cada episodio custaria uma varredura das duas tabelas por
+  // conversao; o unico escritor durante a rodada e ela propria, entao somar o
+  // que ela gera basta.
+  let cacheBytes = cacheMaxBytes > 0 ? store.totalCacheBytes() : 0;
 
   for (const { row, plan } of planned) {
     options.onProgress?.({ done, total: planned.length, episode: row.id });
     done += 1;
+
+    // Orcamento estourado: o resto do catalogo fica para a fila sob demanda.
+    // A conta e feita ANTES de converter, com o tamanho do fonte como
+    // estimativa do gerado - o video sai copiado byte a byte, entao os dois
+    // tamanhos ficam na mesma ordem de grandeza.
+    if (cacheMaxBytes > 0 && cacheBytes + row.size > cacheMaxBytes) {
+      budgetSkipped += 1;
+      continue;
+    }
 
     try {
       const outcome = await remuxEpisode(
@@ -263,8 +304,10 @@ export async function runRemux(options: RemuxJobOptions): Promise<RemuxReport> {
         row,
         plan,
       );
-      if (outcome === 'converted') converted += 1;
-      else skipped += 1;
+      if (outcome === 'converted') {
+        converted += 1;
+        if (cacheMaxBytes > 0) cacheBytes += store.getCacheFileBytes(remuxCacheKey(row.id));
+      } else skipped += 1;
     } catch (error) {
       failed.push({
         path: row.id,
@@ -296,5 +339,6 @@ export async function runRemux(options: RemuxJobOptions): Promise<RemuxReport> {
     removedFiles,
     failed,
     durationMs: now() - startedAt,
+    budgetSkipped,
   };
 }

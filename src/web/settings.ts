@@ -32,6 +32,7 @@ export type SettingsField =
   | 'subtitlesAuto'
   | 'rescanTime'
   | 'autoRemux'
+  | 'remuxCacheMaxBytes'
   | 'autoThumbs'
   | 'smartGrouping'
   | 'scanIncremental'
@@ -49,7 +50,7 @@ export type SettingsGroup = 'playback' | 'library';
 
 export interface SettingsRow {
   field: SettingsField;
-  kind: 'choice' | 'toggle' | 'action' | 'time';
+  kind: 'choice' | 'toggle' | 'action' | 'time' | 'size';
   group: SettingsGroup;
   /**
    * As setas MUDAM alguma coisa nesta linha.
@@ -71,6 +72,7 @@ const ROWS: readonly SettingsRow[] = [
   { field: 'subtitlesAuto', kind: 'toggle', group: 'playback', stepper: true },
   { field: 'smartGrouping', kind: 'toggle', group: 'library', stepper: true },
   { field: 'autoRemux', kind: 'toggle', group: 'library', stepper: true },
+  { field: 'remuxCacheMaxBytes', kind: 'size', group: 'library', stepper: true },
   { field: 'autoThumbs', kind: 'toggle', group: 'library', stepper: true },
   { field: 'rescanTime', kind: 'time', group: 'library', stepper: true },
   { field: 'scanIncremental', kind: 'action', group: 'library', stepper: false },
@@ -198,6 +200,12 @@ export function reduceSettings(
         type: 'patch',
         patch: row.field === 'audioLang' ? { audioLang: next } : { subtitleLang: next },
       });
+    }
+
+    case 'size': {
+      const next = stepCacheSize(context.settings.remuxCacheMaxBytes, delta);
+      if (next === context.settings.remuxCacheMaxBytes) return still();
+      return fired(state, { type: 'patch', patch: { remuxCacheMaxBytes: next } });
     }
 
     case 'time': {
@@ -386,6 +394,61 @@ export function stepRescanTime(current: string | null, delta: 1 | -1): string | 
   return next < 0 || next >= SLOTS ? null : formatTime(next * SLOT_MINUTES);
 }
 
+/* --- espaco das copias convertidas ---------------------------------------- */
+
+const GIB = 1024 ** 3;
+
+/**
+ * Degraus oferecidos pela seta, em bytes. Escada curta de proposito: isto e
+ * escolhido com um controle remoto, e um campo numerico livre numa TV seria
+ * dezenas de toques para digitar um numero de onze digitos.
+ *
+ * O `0` ("Sem limite") fica no TOPO, e nao no fim de baixo: subindo de tamanho,
+ * "sem limite" e o passo seguinte ao maior valor: e onde a pessoa espera achar.
+ */
+const CACHE_SIZES: readonly number[] = [
+  5 * GIB,
+  10 * GIB,
+  20 * GIB,
+  50 * GIB,
+  100 * GIB,
+  200 * GIB,
+  500 * GIB,
+  0,
+];
+
+/**
+ * Proximo degrau de espaco ao apertar a seta. Nao e ciclico: encosta nas
+ * pontas, como o cursor da tela.
+ *
+ * Um valor gravado FORA da escada (veio do `.env`, que aceita qualquer numero)
+ * nao e descartado - a seta anda para o degrau vizinho, em vez de pular para um
+ * ponto arbitrario da lista.
+ */
+export function stepCacheSize(current: number, delta: 1 | -1): number {
+  const at = CACHE_SIZES.indexOf(current);
+  if (at === -1) {
+    // Fora da escada. "Sem limite" e o topo, entao um valor qualquer sobe para
+    // o menor degrau maior que ele e desce para o maior degrau menor.
+    const ladder = CACHE_SIZES.filter((size) => size > 0);
+    if (delta === 1) {
+      return ladder.find((size) => size > current) ?? 0;
+    }
+    return [...ladder].reverse().find((size) => size < current) ?? ladder[0] ?? 0;
+  }
+  const next = at + delta;
+  return next < 0 || next >= CACHE_SIZES.length ? current : (CACHE_SIZES[next] ?? current);
+}
+
+/** Rotulo do espaco; `0` e "Sem limite", nao "0 GB". */
+export function formatCacheSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return 'Sem limite';
+  const gib = bytes / GIB;
+  // Abaixo de 1 GiB o numero em GB viraria "0 GB": mostra em MB.
+  if (gib < 1) return `${String(Math.round(bytes / 1024 ** 2))} MB`;
+  return `${gib >= 10 ? String(Math.round(gib)) : gib.toFixed(1).replace(/\.0$/, '')} GB`;
+}
+
 /* --- texto da tela -------------------------------------------------------- */
 
 const TITLES: Readonly<Record<SettingsField, string>> = {
@@ -394,6 +457,7 @@ const TITLES: Readonly<Record<SettingsField, string>> = {
   subtitlesAuto: 'Ligar legenda sozinha',
   smartGrouping: 'Agrupar temporadas da mesma série',
   autoRemux: 'Converter arquivos em segundo plano',
+  remuxCacheMaxBytes: 'Espaço para os arquivos convertidos',
   autoThumbs: 'Tirar miniatura de cada episódio',
   rescanTime: 'Varredura diária',
   scanIncremental: 'Procurar arquivos novos',
@@ -409,6 +473,9 @@ const HINTS: Readonly<Record<SettingsField, string>> = {
   smartGrouping:
     'Junta as pastas de release da mesma série num canal só. Vale a partir da próxima varredura.',
   autoRemux: 'Prepara em MP4 o que o navegador não toca direto, sem segurar quem está assistindo.',
+  remuxCacheMaxBytes:
+    'A conversão copia o vídeo inteiro, então cada episódio ocupa quase o tamanho do original. ' +
+    'Passou daqui, o menos assistido é apagado — o arquivo original nunca é tocado.',
   autoThumbs:
     'Tira um quadro do próprio vídeo para a lista e as faixas. Desligar não apaga o que já existe.',
   rescanTime: 'Horário em que o servidor procura arquivos novos sem ninguém pedir.',
@@ -445,6 +512,8 @@ export function settingsValueText(
     case 'autoThumbs':
     case 'smartGrouping':
       return toggleValue(field, settings) ? 'Ligado' : 'Desligado';
+    case 'remuxCacheMaxBytes':
+      return formatCacheSize(settings.remuxCacheMaxBytes);
     case 'rescanTime':
       return settings.rescanTime ?? 'Desligada';
     case 'refreshMetadata':

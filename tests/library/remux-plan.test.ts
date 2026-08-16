@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import type { AudioTrackRef } from '../../src/shared/api-types';
-import { planAudioVariant, planRemux } from '../../src/server/library/remux-plan';
+import { planAudioVariant, planRemux, playbackVerdict } from '../../src/server/library/remux-plan';
 
 function track(index: number, codec: string | null, over: Partial<AudioTrackRef> = {}): AudioTrackRef {
   return { index, lang: 'por', title: null, codec, isDefault: index === 0, ...over };
@@ -213,5 +213,68 @@ describe('planAudioVariant: MP4 com uma dublagem escolhida', () => {
 
   test('arquivo sem video devolve null', () => {
     expect(planAudioVariant({ videoCodec: null, audioTracks: DUAL, audioIndex: 0 })).toBeNull();
+  });
+});
+
+describe('playbackVerdict: o que a PESSOA vai ver', () => {
+  function verdict(relativePath: string, videoCodec: string | null, tracks: AudioTrackRef[]) {
+    return playbackVerdict({ relativePath, videoCodec, audioTracks: tracks });
+  }
+
+  test('mp4 h264 + aac sai do disco como esta', () => {
+    expect(verdict('Serie/ep1.mp4', 'h264', [track(0, 'aac')])).toBe('direct');
+  });
+
+  test('webm vp9 + opus tambem: webm e nativo', () => {
+    expect(verdict('Serie/ep1.webm', 'vp9', [track(0, 'opus')])).toBe('direct');
+  });
+
+  test('mkv h264 precisa de remux, e o remux resolve', () => {
+    expect(verdict('Serie/ep1.mkv', 'h264', [track(0, 'aac')])).toBe('remux');
+  });
+
+  test('mp4 h264 com dolby default precisa de remux por causa do audio', () => {
+    expect(verdict('Serie/ep1.mp4', 'h264', [track(0, 'eac3')])).toBe('remux');
+  });
+
+  /**
+   * O BUG que este veredito existe para expor. As 24 primeiras temporadas do
+   * acervo sao `.avi` com MPEG-4 Part 2 (DivX/XviD) e duas faixas mp3.
+   * `planRemux` devolve `null` para elas - `containerNeeds` e literalmente
+   * `extension === '.mkv'`, e mp3 e universal -, entao nao ha plano, nao ha 202
+   * e nao ha aviso: o arquivo e servido cru e o `<video>` morre calado.
+   */
+  test('avi mpeg4 + mp3: NENHUM remux resolve, o video precisa ser reconvertido', () => {
+    const tracks = [track(0, 'mp3'), track(1, 'mp3', { isDefault: false })];
+    expect(verdict('Serie/Episodio 01.avi', 'mpeg4', tracks)).toBe('video-transcode');
+    // E o planejador continua sem plano para isso - de proposito, porque remux
+    // nao recodifica imagem. Os dois nao se contradizem: respondem perguntas
+    // diferentes.
+    expect(plan('Serie/Episodio 01.avi', 'mpeg4', tracks)).toBeNull();
+  });
+
+  test('o codec de video vence container e audio', () => {
+    // Mesmo num container que o navegador abre, com audio universal.
+    expect(verdict('Serie/ep1.mp4', 'mpeg4', [track(0, 'aac')])).toBe('video-transcode');
+    // Trocar a casca de um video que nao decodifica so produz outro arquivo
+    // que tambem nao decodifica.
+    expect(verdict('Serie/ep1.mkv', 'mpeg2video', [track(0, 'aac')])).toBe('video-transcode');
+  });
+
+  test('hevc nao promete: so toca onde ha decoder de hardware', () => {
+    expect(verdict('Serie/ep1.mkv', 'hevc', [track(0, 'aac')])).toBe('video-transcode');
+  });
+
+  test('av1 e vp9 tocam: nao viram trabalho de transcode a toa', () => {
+    expect(verdict('Serie/ep1.mp4', 'av1', [track(0, 'aac')])).toBe('direct');
+    expect(verdict('Serie/ep1.mp4', 'vp9', [track(0, 'aac')])).toBe('direct');
+  });
+
+  test('codec em maiuscula e o mesmo codec', () => {
+    expect(verdict('Serie/ep1.mp4', 'H264', [track(0, 'aac')])).toBe('direct');
+  });
+
+  test('sem probe de video nao condena nem promete', () => {
+    expect(verdict('Serie/ep1.mkv', null, [track(0, 'aac')])).toBe('unknown');
   });
 });

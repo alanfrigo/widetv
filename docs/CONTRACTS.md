@@ -48,7 +48,7 @@ export interface ScannedShow {
 }
 
 export interface ScanOptions {
-  /** Extensoes aceitas, minusculas, com ponto. Default: ['.mp4', '.mkv', '.webm', '.m4v'] */
+  /** Extensoes aceitas, minusculas, com ponto. Default: ['.mp4', '.mkv', '.webm', '.m4v', '.avi'] */
   extensions?: string[];
 }
 
@@ -70,6 +70,8 @@ Comportamento obrigatorio:
   partir da posicao - `orderIndex` ja cobre isso.
 - Ignore arquivos ocultos (`.` inicial), `@eaDir`, `.AppleDouble`, `#recycle`,
   e qualquer extensao fora da lista.
+- `.avi` esta na lista default apesar de nao tocar em navegador nenhum: manter
+  fora fazia temporadas inteiras sumirem do catalogo sem nenhum aviso. Ver 10.2.2.
 - Serie sem nenhum episodio valido nao aparece no resultado.
 - Series ordenadas por `name` com natural sort.
 - Raiz inexistente: lanca erro com o caminho na mensagem.
@@ -726,6 +728,123 @@ export function remuxFileName(episodeId: string, mtimeMs: number, size: number):
 - As copias vivem em `<DATA_DIR>/remux`; a biblioteca continua **read-only**.
 - `AUTO_REMUX=false` desliga o automatico; `npm run remux` /
   `node dist/server/remux.js` roda manualmente (exige indice ja populado).
+
+### 10.2.1 Orcamento de disco (schema 12)
+
+O remux **copia o video inteiro** (`-c:v copy`), entao cada episodio convertido
+custa quase o tamanho do original e cada variante de dublagem custa outro tanto.
+Sem teto, um acervo de 168 GB pede outros 168 GB em `DATA_DIR`. O teto e o que
+transforma isso num orcamento fixo.
+
+```ts
+// library/cache-budget.ts - puro, sem disco, sem ffmpeg, sem Store
+export function planEvictions(
+  entries: readonly CacheEntry[],
+  capBytes: number,
+  pinned: ReadonlySet<string>,
+): CacheEntry[];
+```
+
+- **Colunas** `size_bytes` e `last_access_at` em `remux` e `audio_variant`.
+  `size_bytes` e do arquivo **GERADO** (`size`, que ja existia, e do FONTE e
+  serve de par de invalidacao com `mtime_ms`). Ambas nulaveis e **sem backfill**:
+  na leitura, `last_access_at` cai em `created_at` por COALESCE e `size_bytes`
+  cai em 0, medido por `stat` na primeira varredura do evictor.
+- **Chaves**: `remux:<episodeId>` e `variant:<episodeId>:<audioIndex>`. O id e um
+  caminho relativo e **pode conter `:`**, entao a leitura e por prefixo a
+  esquerda e ultimo `:` a direita - nunca `split(':')`.
+- **Criterio**: menos recentemente **USADO**, nao mais antigo em disco. O canal
+  linear toca um episodio por horas, e a copia mais antiga do diretorio pode ser
+  justamente a que esta tocando.
+- **Pinning e obrigatorio** (`library/cache-access.ts`): o que foi usado nos
+  ultimos 5 min nunca sai. Uma evicção no meio da reproducao faz o `stat()` da
+  proxima requisicao Range falhar, a cadeia de candidatos cai no original, e o
+  navegador que nao demuxa MKV morre no meio do episodio. Se o conjunto pinado
+  sozinho estourar o teto, a varredura evicta o que pode e **para acima do
+  orcamento** - o excedente sai quando os pins expirarem.
+- **Carimbo com throttle** (60 s por arquivo): o `<video>` faz uma requisicao
+  Range por pedaco, e gravar em cada uma seriam centenas de writes por episodio.
+  O ponto de carimbo e o closure `getEpisode` de `server/index.ts` - o unico
+  lugar por requisicao que ja consulta `store.getRemux`. O HEAD do preload do
+  proximo episodio passa por ali, entao o proximo da grade e pinado de graca.
+- **Ordem da evicção**: `unlink` do arquivo, **depois** `DELETE` da linha. O
+  inverso deixaria orfao para a coleta do fim de `runRemux`, que so roda com
+  `AUTO_REMUX` ligado. Leitura em voo sobrevive ao `unlink` (POSIX).
+- **A rodada de catalogo PARA no orcamento** (`RemuxJobOptions.cacheMaxBytes`),
+  em vez de converter e evictar em circulo; `RemuxReport.budgetSkipped` conta o
+  que ficou para a fila sob demanda, e vai para o log.
+- **Varredura** no boot, no fim de cada item das duas filas e a cada mudanca de
+  preferencia. Chamadas concorrentes compartilham a rodada em andamento.
+- `REMUX_CACHE_MAX_BYTES` (sufixo `20G`/`500MB`/`1T` ou bytes; **`0` = sem
+  teto**, nao "apague tudo"). O painel tem a mesma opcao
+  (`AppSettings.remuxCacheMaxBytes`, em bytes) e ela vence o `.env`. O teto e
+  lido a **cada** varredura: mudar no painel vale na hora, sem reboot.
+
+### 10.2.2 Arquivos que o remux NAO resolve
+
+`planRemux` nunca olhou o codec de VIDEO - decidia por container e audio. Para
+um `.avi` com MPEG-4 Part 2 isso significava devolver `null` (nada a fazer) para
+um arquivo que nao toca em navegador nenhum. E o scanner sequer indexava `.avi`
+(`DEFAULT_EXTENSIONS`), entao aquelas temporadas nao existiam no catalogo: nem
+erro, nem aviso, nem linha de log.
+
+Duas mudancas, e as duas de contrato:
+
+- **`scanner.ts` indexa `.avi`.** Um episodio que aparece com um aviso e melhor
+  que um episodio invisivel. Ele toca no app Android (Media3 tem extractor de
+  AVI) e no navegador recebe diagnostico.
+- **`playbackVerdict(input): PlaybackVerdict`** em `library/remux-plan.ts`,
+  exposto em `EpisodeRef.playback` (opcional; ausente = servidor mais velho que
+  a tela). Valores: `direct`, `remux`, `video-transcode`, `unknown`.
+
+```ts
+export function playbackVerdict(input: PlaybackInput): PlaybackVerdict;
+```
+
+Deliberadamente separado de `planRemux`: aquele responde "o que o ffmpeg deve
+fazer", este "o que a pessoa vai ver". Os dois discordam num caso, que e
+justamente o que estava escondido - para `.avi` MPEG-4, `planRemux` devolve
+`null` e `playbackVerdict` devolve `video-transcode`.
+
+O codec de video vem PRIMEIRO no veredito: quando ele nao toca, container e
+audio sao irrelevantes. `.webm` sai antes da checagem de audio, como em
+`planRemux` - `UNIVERSAL` significa "seguro dentro de um MP4", nao "o navegador
+decodifica", e opus/vorbis sao os codecs legais do proprio WebM.
+
+O cliente web usa isso em `format.ts::playbackProblemText` para trocar "Sem
+sinal" - que e o texto de NAS fora do ar - por um aviso especifico.
+
+### 10.2.3 `npm run transcode-legacy`
+
+A UNICA ferramenta do projeto que recodifica video, e a unica que escreve na
+biblioteca. `library/transcode-plan.ts` (puro) + `library/transcode-job.ts`
+(execucao) + `cli/transcode-legacy.ts`.
+
+- **Nenhum gatilho automatico.** Nao ha import destes modulos no servidor, no
+  scan nem no controlador. A invariante "o servidor nunca escreve na biblioteca"
+  continua de pe.
+- **`dryRun` e o padrao.** Sem flag, nem ffmpeg roda.
+- **Lista de INCLUSAO** (`LEGACY_VIDEO`), nao "tudo que nao e h264": AV1, VP9 e
+  HEVC ficam de fora para nao serem degradados sem necessidade.
+- **Receita**: `libx264 -preset veryfast -crf 20 -tune animation`, `+faststart`.
+  crf 20 e nao 23 porque com `--replace` a perda e irreversivel. Audio `mp3`/
+  `aac` sai COPIADO; o resto vira AAC 192k. TODAS as faixas vao junto - o acervo
+  antigo e dual.
+- **Saida ao LADO** (`<nome>.h264.mp4`), via `.tmp` + rename. Rodar de novo pula
+  o que ja existe.
+- **O original so sai depois da conferencia**, e so com `--replace`. A
+  conferencia decodifica o inicio e o FIM: um ffmpeg interrompido produz um MP4
+  com a duracao certa no cabecalho e os ultimos minutos faltando.
+- **`--keep-originals DIR`** move em vez de apagar, preservando o caminho
+  relativo - o lote inteiro volta com um `mv`. Falha de `rename` entre
+  filesystems (EXDEV) registra `kept-original`: os dois arquivos ficam, nada se
+  perde, e o episodio nao conta como convertido E como falho.
+- **O id do episodio E o caminho relativo**, entao o arquivo convertido e um
+  episodio NOVO para o indice: e preciso rescan, e o progresso salvo nao
+  sobrevive a troca de nome. A CLI avisa.
+
+Medido num episodio real (`.avi` 512x384, 1392 s): 195 MB -> 164 MB, 16 s
+(~87x realtime), duas faixas mp3 copiadas bit a bit.
 
 ### 10.3 Entrega
 

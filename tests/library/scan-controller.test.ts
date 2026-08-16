@@ -47,7 +47,15 @@ function scanReport(overrides: Partial<ScanReport> = {}): ScanReport {
 }
 
 function remuxReport(): RemuxReport {
-  return { planned: 0, converted: 0, skipped: 0, removedFiles: 0, failed: [], durationMs: 1 };
+  return {
+    planned: 0,
+    converted: 0,
+    skipped: 0,
+    removedFiles: 0,
+    failed: [],
+    durationMs: 1,
+    budgetSkipped: 0,
+  };
 }
 
 function thumbReport(overrides: Partial<ThumbReport> = {}): ThumbReport {
@@ -172,6 +180,7 @@ function makeSettings(overrides: Partial<AppSettings> = {}): FakeSettings {
     subtitlesAuto: false,
     rescanTime: '04:00',
     autoRemux: true,
+    remuxCacheMaxBytes: 20 * 1024 ** 3,
     autoThumbs: true,
     smartGrouping: true,
     tmdbConfigured: false,

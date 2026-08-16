@@ -2,6 +2,7 @@ import { API } from '@shared/api-types';
 import type { ChannelSummary, EpisodeRef, NowPlaying } from '@shared/api-types';
 
 import type { EpisodeRow, ShowMetadataRow, ShowRow } from '../library/index-store';
+import { playbackVerdict } from '../library/remux-plan';
 import { channelPhaseOffsetMs, resolveSlot } from '../schedule/clock';
 
 import { readGrid, type TimelineCache } from './timeline-cache';
@@ -58,6 +59,14 @@ export function toRef(row: EpisodeRow): EpisodeRef {
     // DEPOIS de ele existir, e a rota do quadro confere o arquivo de verdade
     // antes de servir - um 404 la e mais barato que a lentidao aqui.
     thumbUrl: row.thumbFile === null ? null : API.thumb(row.id),
+    // Puro, calculado das colunas que ja estao na linha: nenhum acesso a disco,
+    // pela mesma razao do `thumbUrl` acima - isto roda uma vez por episodio em
+    // `/api/channels/:n/episodes`.
+    playback: playbackVerdict({
+      relativePath: row.id,
+      videoCodec: row.videoCodec,
+      audioTracks: row.audioTracks,
+    }),
   };
 }
 

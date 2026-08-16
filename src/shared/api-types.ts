@@ -81,6 +81,23 @@ export interface EpisodeRef {
    * e a tela cai no padrao listrado.
    */
   thumbUrl: string | null;
+  /**
+   * O que separa este arquivo de tocar num NAVEGADOR.
+   *
+   * - `direct`: sai do disco como esta;
+   * - `remux`: o servidor prepara uma copia MP4 (o cliente ve "preparando");
+   * - `video-transcode`: o codec de video nao toca e NENHUMA preparacao do
+   *   servidor resolve - o arquivo precisa ser reconvertido fora dele;
+   * - `unknown`: sem probe de video.
+   *
+   * Existe para a tela parar de dizer "Sem sinal" - que e o mesmo texto de NAS
+   * fora do ar - quando o problema e o formato do arquivo. Opcional porque um
+   * servidor mais velho que esta tela nao manda o campo; ausente = nao sei.
+   *
+   * Nao vale para clientes nativos: a TV Android decodifica coisas que o
+   * navegador nao decodifica, e ela ignora este campo.
+   */
+  playback?: 'direct' | 'remux' | 'video-transcode' | 'unknown';
 }
 
 /**
@@ -184,6 +201,16 @@ export interface AppSettings {
   rescanTime: string | null;
   /** Converte para MP4, em segundo plano, o que o navegador nao toca direto. */
   autoRemux: boolean;
+  /**
+   * Teto de disco, em bytes, das copias geradas pelo remux (e pelas variantes
+   * de dublagem). Passou do teto, a copia menos recentemente usada e apagada.
+   * `0` = sem teto.
+   *
+   * Existe porque o remux COPIA o video inteiro em vez de recodificar: cada
+   * episodio convertido custa quase o tamanho do original. Sem teto, o acervo
+   * acaba duplicado dentro de DATA_DIR.
+   */
+  remuxCacheMaxBytes: number;
   /**
    * Tira um quadro de cada episodio, em segundo plano, para a lista de
    * episodios e as faixas do catalogo. Desligar nao apaga o que ja existe.

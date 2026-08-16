@@ -10,7 +10,9 @@ import { loadConfig } from './config';
 import { ensureDataDir } from './data-dir';
 import { libraryRootWarning } from './library-root';
 import { registerHistoryRoutes } from './history/routes';
-import { openStore } from './library/index-store';
+import { createCacheAccess } from './library/cache-access';
+import { createCacheEvictor } from './library/cache-evictor';
+import { openStore, remuxCacheKey, variantCacheKey } from './library/index-store';
 import { registerLibraryRoutes } from './library/routes';
 import { createLibraryController, scanCommand } from './library/scan-controller';
 import { remuxFileName } from './library/remux-job';
@@ -38,6 +40,13 @@ import { registerThumbRoutes } from './stream/thumb';
  */
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Intervalo da varredura periodica do cache de copias geradas. Maior que o TTL
+ * do pin (5 min) de proposito: e o que garante que a rodada seguinte encontre
+ * liberado o arquivo que a anterior teve de poupar por estar tocando.
+ */
+const CACHE_SWEEP_INTERVAL_MS = 10 * 60_000;
 
 async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -69,6 +78,7 @@ async function main(): Promise<void> {
   const settings = createSettingsService(store, {
     rescanTime: config.rescanTime,
     autoRemux: config.autoRemux,
+    remuxCacheMaxBytes: config.remuxCacheMaxBytes,
     autoThumbs: config.autoThumbs,
     smartGrouping: config.smartGrouping,
     tmdbConfigured: config.tmdbApiKey !== null,
@@ -83,6 +93,35 @@ async function main(): Promise<void> {
     },
   });
 
+  // Orcamento de disco das copias geradas. O remux copia o video inteiro em vez
+  // de recodificar, entao cada episodio convertido custa quase o tamanho do
+  // original, e cada dublagem custa outro tanto: sem teto, o acervo inteiro
+  // acabaria duplicado dentro de DATA_DIR.
+  //
+  // `cacheAccess` carimba o uso (com throttle, porque o `<video>` pede uma faixa
+  // por pedaco) e protege o que esta tocando; `cacheEvictor` derruba o mais
+  // frio quando o total passa do teto.
+  const cacheAccess = createCacheAccess({ store, now: () => Date.now() });
+  const cacheEvictor = createCacheEvictor({
+    store,
+    remuxDir: join(config.dataDir, 'remux'),
+    // Lido a cada varredura: mudar o teto no painel vale na hora, sem reboot.
+    capBytes: () => settings.get().remuxCacheMaxBytes,
+    pinned: () => cacheAccess.pinned(),
+    log: (message) => {
+      app.log.info(message);
+    },
+  });
+  /** Nao propaga: uma falha de unlink nao pode derrubar quem gerou a copia. */
+  const sweepCache = (): void => {
+    void cacheEvictor.sweep().catch((error: unknown) => {
+      app.log.warn(
+        'varredura do cache de remux falhou: ' +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    });
+  };
+
   const controller = createLibraryController({
     store,
     enricher,
@@ -91,10 +130,28 @@ async function main(): Promise<void> {
     settings,
     ffmpegPath: config.ffmpegPath,
     ffprobePath: config.ffprobePath,
+    cacheMaxBytes: () => settings.get().remuxCacheMaxBytes,
+    onRemuxSettled: sweepCache,
     log: (message) => {
       app.log.info(message);
     },
   });
+
+  // Uma passada no boot, antes de qualquer conversao: recolhe linhas sem
+  // arquivo (volume trocado, container recriado), mede as copias anteriores ao
+  // schema 12 e aplica um teto que pode ter sido reduzido entre dois deploys.
+  sweepCache();
+
+  // Varredura periodica. Os outros gatilhos (boot, fim de conversao, mudanca de
+  // preferencia) sao todos EVENTOS, e existe um estado que nenhum deles alcanca:
+  // o cache acima do teto so por causa dos pins. A varredura para acima do
+  // orcamento de proposito - derrubar quem esta assistindo seria pior -, mas sem
+  // uma volta periodica o excedente ficaria em disco ate o proximo evento, que
+  // pode nao vir por horas. O intervalo e maior que o TTL do pin para a rodada
+  // seguinte encontrar os arquivos ja liberados.
+  const cacheTimer = setInterval(sweepCache, CACHE_SWEEP_INTERVAL_MS);
+  // Sem unref, um timer de 10 min segura o processo vivo no shutdown.
+  cacheTimer.unref();
 
   // Indice existente mas sem nenhuma serie conta como vazio: e o estado de um
   // scan que nunca rodou e o de um scan interrompido no comeco.
@@ -129,6 +186,9 @@ async function main(): Promise<void> {
   // reagenda o rescan, liga/desliga o remux, anota o agrupamento.
   settings.subscribe((next) => {
     controller.applySettings(next);
+    // O teto pode ter DIMINUIDO: a varredura aplica o valor novo agora, em vez
+    // de deixar o disco acima do limite ate a proxima conversao.
+    sweepCache();
   });
 
   await app.register(cookie);
@@ -161,6 +221,7 @@ async function main(): Promise<void> {
     libraryRoot: config.libraryRoot,
     dataDir: config.dataDir,
     ffmpegPath: config.ffmpegPath,
+    onSettled: sweepCache,
     log: (message) => {
       app.log.warn(message);
     },
@@ -179,7 +240,14 @@ async function main(): Promise<void> {
     const chosen = row.audioTracks.find((track) => track.isDefault) ?? row.audioTracks[0];
     // A faixa pedida ja e a que toca no arquivo servido: nada a gerar.
     if (chosen !== undefined && chosen.index === audioIndex) return { status: 'default' };
-    return variants.request(episodeId, audioIndex);
+    const resolution = await variants.request(episodeId, audioIndex);
+    // Variante que vai ser servida agora e variante que nao pode ser evictada
+    // no meio da reproducao. O carimbo entra aqui, e nao no `getEpisode`, porque
+    // e aqui que se sabe QUAL faixa foi escolhida.
+    if (resolution.status === 'ready') {
+      cacheAccess.record(variantCacheKey(episodeId, audioIndex));
+    }
+    return resolution;
   }
 
   // Fila de prioridade do remux principal: o episodio que alguem tentou
@@ -191,6 +259,7 @@ async function main(): Promise<void> {
     dataDir: config.dataDir,
     ffmpegPath: config.ffmpegPath,
     ffprobePath: config.ffprobePath,
+    onSettled: sweepCache,
     log: (message) => {
       app.log.warn(message);
     },
@@ -207,6 +276,15 @@ async function main(): Promise<void> {
         // `basename` pelo mesmo motivo da capa: o nome vem do banco e vira
         // caminho - mesmo escrito por nos, ele nao pode sair de `remux/`.
         const remux = store.getRemux(row.id, row.mtimeMs, row.size);
+        // Este closure e o unico ponto por requisicao que ja consulta o remux,
+        // entao e aqui que o uso e carimbado. O `record` faz throttle sozinho:
+        // o `<video>` pede uma faixa por pedaco e uma escrita por requisicao
+        // seriam centenas de writes no SQLite por episodio.
+        //
+        // Vale tambem para o HEAD do preload do proximo episodio, que passa por
+        // aqui - e e o que impede o proximo da grade de ser evictado justamente
+        // enquanto esta sendo baixado.
+        if (remux !== null) cacheAccess.record(remuxCacheKey(row.id));
         // Linha de versao antiga do plano marca pendencia quando o defeito dela
         // e audivel: com a faixa default dolby/dts, o MP4 antigo pode ser
         // exatamente o da gemea AAC quebrada - mudo no NAVEGADOR. O caminho
@@ -296,6 +374,7 @@ async function main(): Promise<void> {
     // Antes do banco: o agendamento diario e a unica coisa que ainda poderia
     // abrir uma varredura depois do close e escrever num Store fechado.
     controller.stop();
+    clearInterval(cacheTimer);
     store.close();
   });
 

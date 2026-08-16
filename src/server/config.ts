@@ -39,6 +39,18 @@ export interface AppConfig {
    */
   autoRemux: boolean;
   /**
+   * Teto de disco, em bytes, das copias geradas em `<DATA_DIR>/remux` - remux
+   * principal e variantes de dublagem somados. Passou do teto, o menos
+   * recentemente usado sai.
+   *
+   * Existe porque o remux COPIA o video inteiro em vez de recodificar: cada
+   * episodio convertido custa quase o tamanho do original, e cada dublagem
+   * custa outro tanto. Sem teto, um acervo de 168 GB pede 168 GB de copias.
+   *
+   * `0` desliga o teto e volta ao crescimento sem limite.
+   */
+  remuxCacheMaxBytes: number;
+  /**
    * Tira um quadro de cada episodio, em segundo plano, para a lista de
    * episodios e as faixas do catalogo. Um ffmpeg por episodio: barato por
    * arquivo, longo num acervo grande - por isso da para desligar.
@@ -112,6 +124,49 @@ function parsePort(raw: string | undefined): number {
     throw new ConfigError(`PORT precisa estar entre 1 e 65535, recebeu ${port}.`);
   }
   return port;
+}
+
+/**
+ * Teto padrao das copias geradas (remux + dublagens). 20 GiB cobrem ~10 horas
+ * seguidas de canal linear antes de reaproveitar espaco, e cabem no disco de
+ * sistema de um NAS sem competir com o acervo.
+ */
+const DEFAULT_REMUX_CACHE_BYTES = 20 * 1024 * 1024 * 1024;
+
+const BYTE_SUFFIXES: Record<string, number> = {
+  '': 1,
+  b: 1,
+  k: 1024,
+  kb: 1024,
+  m: 1024 ** 2,
+  mb: 1024 ** 2,
+  g: 1024 ** 3,
+  gb: 1024 ** 3,
+  t: 1024 ** 4,
+  tb: 1024 ** 4,
+};
+
+/**
+ * Tamanho em bytes, aceitando sufixo ("20G", "500MB", "1t").
+ *
+ * O sufixo nao e conforto gratuito: este valor e digitado num campo de texto da
+ * interface do TrueNAS, e exigir 21474836480 convida a errar uma casa - para
+ * mais, o teto some; para menos, o cache entra em thrash.
+ *
+ * `0` significa SEM TETO, que e a leitura natural de "zero limite" e o que
+ * preserva o comportamento antigo para quem nao quiser evicção.
+ */
+export function parseCacheBytes(raw: string | undefined, key: string, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const trimmed = raw.trim().toLowerCase();
+  const match = /^(\d+(?:\.\d+)?)\s*([a-z]*)$/.exec(trimmed);
+  const unit = match === null ? undefined : BYTE_SUFFIXES[match[2] ?? ''];
+  if (match === null || unit === undefined) {
+    throw new ConfigError(
+      `${key} precisa ser um tamanho como "20G", "500MB" ou o numero de bytes, recebeu "${raw.trim()}".`,
+    );
+  }
+  return Math.floor(Number(match[1]) * unit);
 }
 
 /** Mesmo valor do .env.example: madrugada, depois do horario tipico de download. */
@@ -209,6 +264,11 @@ export function loadConfig(env: Env): AppConfig {
     autoScan: env.AUTO_SCAN?.trim().toLowerCase() !== 'false',
     // Mesma regra do AUTO_SCAN: so "false" desliga.
     autoRemux: env.AUTO_REMUX?.trim().toLowerCase() !== 'false',
+    remuxCacheMaxBytes: parseCacheBytes(
+      env.REMUX_CACHE_MAX_BYTES,
+      'REMUX_CACHE_MAX_BYTES',
+      DEFAULT_REMUX_CACHE_BYTES,
+    ),
     // Idem. Ligado por padrao porque o desenho das telas e feito de miniaturas:
     // sem elas o acervo inteiro abre listrado.
     autoThumbs: env.AUTO_THUMBS?.trim().toLowerCase() !== 'false',

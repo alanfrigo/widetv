@@ -56,7 +56,77 @@ const AAC_CHANNEL_LAYOUTS = 'aformat=channel_layouts=7.1|5.1|stereo|mono';
  */
 export const REMUX_PLAN_VERSION = 2;
 
+/**
+ * Codecs de VIDEO que um navegador atual decodifica sem ajuda.
+ *
+ * A mesma lista de `cli/survey.ts`, agora tambem em runtime. Ela existia so na
+ * ferramenta de analise offline, e essa ausencia e um bug real: `planRemux`
+ * nunca olhou o codec de video, entao um `.avi` com MPEG-4 Part 2 (DivX/XviD)
+ * era servido cru, sem plano, sem 202 e sem diagnostico - o `<video>` morre e a
+ * tela diz "Sem sinal", que e indistinguivel de NAS fora do ar.
+ *
+ * AV1 esta aqui de proposito: Chrome traz o dav1d por software e o ExoPlayer
+ * decodifica nativo. HEVC fica de FORA: so toca onde o sistema expoe decoder de
+ * hardware, entao prometer que toca seria pior que avisar que talvez nao toque.
+ */
+const BROWSER_PLAYABLE_VIDEO = new Set(['h264', 'avc1', 'av1', 'av01', 'vp8', 'vp9']);
+
+/** Containers que o `<video>` abre. Fora daqui, o remux precisa trocar a casca. */
+const BROWSER_CONTAINERS = new Set(['.mp4', '.m4v', '.webm']);
+
 export type RemuxReason = 'container' | 'audio';
+
+/**
+ * O que separa este arquivo de tocar no navegador.
+ *
+ * - `direct`: sai do disco como esta.
+ * - `remux`: container e/ou audio resolvem com copia de bytes - e o que o
+ *   `planRemux` faz, e vale a pena esperar.
+ * - `video-transcode`: o codec de VIDEO nao toca. Nenhum remux resolve, porque
+ *   remux nao recodifica imagem. O arquivo precisa ser reconvertido fora do
+ *   servidor (`npm run transcode-legacy`).
+ * - `unknown`: sem probe de video. Nao promete nem condena - serve o original e
+ *   deixa o navegador tentar.
+ */
+export type PlaybackVerdict = 'direct' | 'remux' | 'video-transcode' | 'unknown';
+
+export interface PlaybackInput {
+  relativePath: string;
+  videoCodec: string | null;
+  audioTracks: readonly AudioTrackRef[];
+}
+
+/**
+ * Veredito honesto sobre tocar no NAVEGADOR.
+ *
+ * Deliberadamente separado de `planRemux`: aquele responde "o que o ffmpeg deve
+ * fazer", este responde "o que a pessoa vai ver". Os dois discordam num caso, e
+ * e justamente o que estava escondido: para um `.avi` MPEG-4, `planRemux`
+ * devolve `null` (nada a fazer) e este devolve `video-transcode` (nao vai
+ * tocar). Fundir os dois obrigaria o planejador a inventar um plano que ele nao
+ * tem, ou este a mentir que esta tudo bem.
+ */
+export function playbackVerdict(input: PlaybackInput): PlaybackVerdict {
+  if (input.videoCodec === null) return 'unknown';
+
+  const codec = input.videoCodec.toLowerCase();
+  // O codec de video vem PRIMEIRO: quando ele nao toca, container e audio sao
+  // irrelevantes - trocar a casca de um arquivo que o navegador nao decodifica
+  // so produz um arquivo diferente que ele tambem nao decodifica.
+  if (!BROWSER_PLAYABLE_VIDEO.has(codec)) return 'video-transcode';
+
+  const extension = extname(input.relativePath).toLowerCase();
+  if (!BROWSER_CONTAINERS.has(extension)) return 'remux';
+
+  // WebM sai antes da checagem de audio, como em `planRemux`: `UNIVERSAL` diz
+  // "seguro DENTRO de um MP4", nao "o navegador decodifica". Opus e vorbis sao
+  // decodificados por todos e sao os codecs legais do proprio WebM - reprova-los
+  // aqui mandaria remuxar um arquivo que ja toca.
+  if (extension === '.webm') return 'direct';
+
+  if (defaultAudioNeedsCompat(input.audioTracks)) return 'remux';
+  return 'direct';
+}
 
 interface AudioOutput {
   /** `-map 0:a:N` do arquivo fonte. */

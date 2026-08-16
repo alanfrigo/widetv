@@ -50,6 +50,7 @@ import {
   formatRemaining,
   formatUpNext,
   initialsOf,
+  playbackProblemText,
   languagesBadge,
   resolutionBadge,
   seasonsLabel,
@@ -645,14 +646,26 @@ function episodeArtInto(art: HTMLElement, url: string | null): void {
 /** true enquanto o aviso "Preparando o episódio…" do ao vivo esta na tela. */
 let livePreparing = false;
 
+/**
+ * Veredito de reproducao do episodio no ar. Guardado aqui, e nao lido do
+ * player, porque `ChannelPlayer.playing` e privado de proposito - e o que a
+ * tela precisa saber e so isto: quando o `<video>` falhar, o defeito e a rede
+ * ou o formato do arquivo?
+ */
+let livePlayback: EpisodeRef['playback'] = undefined;
+
 const live = new ChannelPlayer(dom.videoA, dom.videoB, {
   onTuned: (playing) => {
     livePreparing = false;
+    livePlayback = playing.episode.playback;
     notice(null);
     renderOverlay();
     applyPreferredSubtitle(playing.episode);
   },
   onEpisodeChange: (playing) => {
+    // Na virada da grade o episodio muda, e com ele o veredito: sem esta linha
+    // um `.avi` que entrou no ar seria diagnosticado com o formato do anterior.
+    livePlayback = playing.episode.playback;
     // So o aviso de "preparando" sai daqui: apagar qualquer aviso na virada
     // engoliria o "Clique na tela para começar" de um autoplay bloqueado.
     if (livePreparing) {
@@ -669,7 +682,14 @@ const live = new ChannelPlayer(dom.videoA, dom.videoB, {
     if (tracks.open) renderTracksPanel();
   },
   onBlocked: () => notice('Clique na tela para começar', { sticky: true }),
-  onStalled: (reason) => notice(reason === 'error' ? 'Sem sinal' : 'Sinal fraco'),
+  onStalled: (reason) =>
+    notice(
+      reason === 'error'
+        ? // Formato que o navegador nao abre nao e "sem sinal": mandar a pessoa
+          // conferir a rede quando o defeito e o arquivo custa a tarde dela.
+          (playbackProblemText(livePlayback) ?? 'Sem sinal')
+        : 'Sinal fraco',
+    ),
   // O player espera sozinho e segue quando o remux fica pronto; o aviso existe
   // so para a tela nao ficar preta sem explicacao.
   onPreparing: () => {
@@ -2166,7 +2186,10 @@ async function playVod(
 
   const ok = await session.player.play(episode.id, { startMs, audioIndex });
   if (!ok) {
-    notice('Clique na tela para começar', { sticky: true });
+    // Autoplay bloqueado e formato inreproduzivel chegam os dois aqui como
+    // `false`; so o segundo tem explicacao propria.
+    const problem = playbackProblemText(episode.playback);
+    notice(problem ?? 'Clique na tela para começar', { sticky: true });
     return;
   }
   if (resumed && startMs > 0) {
