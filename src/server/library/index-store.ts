@@ -274,6 +274,19 @@ export interface Store {
   /** Remove series que sumiram do disco. Numeros de canal removidos nao sao reciclados. */
   pruneShows(keepSlugs: readonly string[]): number;
 
+  /**
+   * Funde a serie `sourceId` na `targetId`: move os episodios (com
+   * `orderIndex` deslocado para depois dos que ja estao la) e apaga a fonte.
+   *
+   * O historico de exibicao segue os episodios de graca - a chave dele e o
+   * caminho relativo do arquivo, que nao muda. Metadata e numero de canal da
+   * fonte morrem com ela (CASCADE; numeros nunca sao reciclados). A grade do
+   * canal fundido fica com a ordem provisoria ate o proximo scan completo
+   * reordenar - e o mesmo estado de um scan interrompido, e a tela ja convive
+   * com ele.
+   */
+  mergeShows(sourceId: number, targetId: number): void;
+
   /** Probe cacheado, valido apenas se mtime e size baterem. */
   getCachedProbe(id: string, mtimeMs: number, size: number): ProbeResult | null;
 
@@ -1049,6 +1062,23 @@ export function openStore(dbPath: string): Store {
     return result.changes;
   });
 
+  // O deslocamento e calculado em JS, fora do UPDATE: subconsulta sobre a
+  // mesma tabela que esta sendo alterada nao tem ordem de avaliacao garantida.
+  const selectNextOrderIndex = db.prepare(
+    'SELECT COALESCE(MAX(order_index) + 1, 0) AS next FROM episodes WHERE show_id = ?',
+  );
+  const moveEpisodesToShow = db.prepare(
+    `UPDATE episodes SET show_id = @targetId, order_index = order_index + @offset
+     WHERE show_id = @sourceId`,
+  );
+  const deleteShowById = db.prepare('DELETE FROM shows WHERE id = ?');
+
+  const mergeShowsTx = db.transaction((sourceId: number, targetId: number): void => {
+    const { next } = selectNextOrderIndex.get(targetId) as { next: number };
+    moveEpisodesToShow.run({ sourceId, targetId, offset: next });
+    deleteShowById.run(sourceId);
+  });
+
   return {
     listShows(): ShowRow[] {
       return (selectShows.all() as ShowRecord[]).map(toShowRow);
@@ -1170,6 +1200,11 @@ export function openStore(dbPath: string): Store {
       const removed = pruneShowsTx(keepSlugs);
       bumpIndexVersion();
       return removed;
+    },
+
+    mergeShows(sourceId, targetId): void {
+      mergeShowsTx(sourceId, targetId);
+      bumpIndexVersion();
     },
 
     getCachedProbe(id, mtimeMs, size): ProbeResult | null {

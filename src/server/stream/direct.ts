@@ -34,12 +34,15 @@ export interface StreamEpisode {
    */
   remuxPath?: string | null;
   /**
-   * true quando servir o ORIGINAL significaria episodio sem som no navegador:
-   * a faixa default e dolby/dts e ainda nao ha remux valido (fila pendente,
-   * conversao falhada, plano de versao antiga). Com a flag, a rota responde
-   * 202 "preparando" em vez de degradar em silencio - e avisa o chamador para
-   * furar a fila de conversao. Quem calcula e quem monta o servidor, que
-   * enxerga o indice; este modulo so obedece.
+   * true quando o que ha em disco tocaria SEM SOM num navegador: a faixa
+   * default e dolby/dts e ainda nao ha remux da versao atual do plano (fila
+   * pendente, conversao falhada, MP4 de receita antiga). A flag NAO derruba a
+   * resposta sozinha: clientes nativos (TV Android, Safari) decodificam a
+   * faixa dolby e recebem o melhor arquivo disponivel, como sempre receberam.
+   * So quem se declara navegador (`?compat=browser`, o web player) ganha 202
+   * "preparando" - e ai a rota avisa o chamador para furar a fila de
+   * conversao. Quem calcula e quem monta o servidor, que enxerga o indice;
+   * este modulo so obedece.
    */
   remuxPending?: boolean;
 }
@@ -123,8 +126,10 @@ export function registerStreamRoutes(
       }
 
       // Dublagem escolhida: `?audio=N` troca o arquivo inteiro, nao a faixa -
-      // e a unica troca que funciona em todo navegador.
-      const { audio } = request.query as { audio?: string };
+      // e a unica troca que funciona em todo navegador. `?compat=browser` e o
+      // web player se apresentando: sem decoder Dolby, ele prefere um 202
+      // "preparando" a um arquivo que tocaria mudo.
+      const { audio, compat } = request.query as { audio?: string; compat?: string };
       let variantPath: string | null = null;
       if (audio !== undefined && audioResolver !== undefined) {
         if (!/^\d+$/.test(audio)) {
@@ -171,10 +176,14 @@ export function registerStreamRoutes(
         return reply.code(404).send({ error: 'episodio indisponivel' });
       }
 
-      // Sobrou so o original de um episodio que tocaria mudo: mesmo contrato
-      // do `?audio=N` em geracao - 202 sem cache, o cliente consulta de novo.
-      // Servir o MKV aqui pareceria funcionar (video anda), mas sem som.
-      if (episode.remuxPending === true && filePath === original) {
+      // Episodio pendente sem variante de dublagem pronta: o que sobrou (remux
+      // de plano antigo ou o proprio original) tocaria mudo NUM NAVEGADOR. So
+      // o cliente que se declarou navegador recebe 202 - mesmo contrato do
+      // `?audio=N` em geracao, sem cache, consulta de novo. Um cliente nativo
+      // (TV Android, Safari) decodifica a faixa dolby: para ele o arquivo sai
+      // normalmente, senao um bump de versao do plano apagaria o catalogo
+      // inteiro da TV de uma vez ate a reconversao terminar.
+      if (episode.remuxPending === true && filePath !== variantPath && compat === 'browser') {
         onRemuxPending?.(id);
         reply.header('cache-control', 'no-store');
         return reply.code(202).send({ preparing: true });

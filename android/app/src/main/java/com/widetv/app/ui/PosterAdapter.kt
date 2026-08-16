@@ -127,25 +127,4 @@ class PosterAdapter(
     holder.views.cardPoster.visibility = if (bitmap == null) View.GONE else View.VISIBLE
     holder.views.cardInitials.visibility = if (bitmap == null) View.VISIBLE else View.GONE
   }
-
-  private companion object {
-    /** 1.03 e o numero do design; acima disso o card come o vizinho da faixa. */
-    const val FOCUS_SCALE = 1.03f
-    const val FOCUS_MS = 140L
-    const val FOCUS_ELEVATION = 16f
-
-    /**
-     * O card em foco cresce e sobe. So o contorno de acento nao bastaria: a tres
-     * metros de distancia, o que o olho pega e o card maior.
-     */
-    fun lift(view: View, focused: Boolean) {
-      val scale = if (focused) FOCUS_SCALE else 1f
-      view.animate()
-        .scaleX(scale)
-        .scaleY(scale)
-        .translationZ(if (focused) FOCUS_ELEVATION else 0f)
-        .setDuration(FOCUS_MS)
-        .start()
-    }
-  }
 }

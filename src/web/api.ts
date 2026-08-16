@@ -112,10 +112,17 @@ export async function fetchResume(): Promise<ResumeEntry[]> {
  * @param audioIndex `index` da faixa FONTE desejada; null/ausente toca a
  *                   default. A troca de dublagem e um arquivo diferente no
  *                   servidor, nunca uma faixa dentro do mesmo.
+ *
+ * `compat=browser` vai sempre: e o web player se apresentando como cliente sem
+ * decoder Dolby. E ele que faz o servidor responder 202 "preparando" em vez de
+ * um arquivo que tocaria mudo - clientes nativos (TV, Safari) nao mandam a
+ * marca e recebem o arquivo direto.
  */
 export function streamUrl(episodeId: string, audioIndex?: number | null): string {
   const base = API.stream(encodeURIComponent(episodeId));
-  return audioIndex == null ? base : `${base}?audio=${String(audioIndex)}`;
+  return audioIndex == null
+    ? `${base}?compat=browser`
+    : `${base}?audio=${String(audioIndex)}&compat=browser`;
 }
 
 export type StreamProbe = 'ready' | 'preparing' | 'error';

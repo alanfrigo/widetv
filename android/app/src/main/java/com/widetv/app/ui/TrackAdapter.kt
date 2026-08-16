@@ -8,6 +8,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.widetv.app.R
 import com.widetv.app.databinding.ItemTrackBinding
 import com.widetv.app.databinding.ItemTrackHeaderBinding
+import com.widetv.app.databinding.ItemTrackRememberBinding
 
 /**
  * Desenho do painel de trilhas. Nao decide nada: recebe as linhas prontas do
@@ -45,15 +46,21 @@ class TrackAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
   private class OptionHolder(val views: ItemTrackBinding) : RecyclerView.ViewHolder(views.root)
 
-  override fun getItemViewType(position: Int): Int =
-    if (rows[position] is TrackRow.Header) TYPE_HEADER else TYPE_OPTION
+  private class RememberHolder(val views: ItemTrackRememberBinding) :
+    RecyclerView.ViewHolder(views.root)
+
+  override fun getItemViewType(position: Int): Int = when (rows[position]) {
+    is TrackRow.Header -> TYPE_HEADER
+    is TrackRow.Option -> TYPE_OPTION
+    is TrackRow.Remember -> TYPE_REMEMBER
+  }
 
   override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
     val inflater = LayoutInflater.from(parent.context)
-    return if (viewType == TYPE_HEADER) {
-      HeaderHolder(ItemTrackHeaderBinding.inflate(inflater, parent, false))
-    } else {
-      OptionHolder(ItemTrackBinding.inflate(inflater, parent, false))
+    return when (viewType) {
+      TYPE_HEADER -> HeaderHolder(ItemTrackHeaderBinding.inflate(inflater, parent, false))
+      TYPE_REMEMBER -> RememberHolder(ItemTrackRememberBinding.inflate(inflater, parent, false))
+      else -> OptionHolder(ItemTrackBinding.inflate(inflater, parent, false))
     }
   }
 
@@ -91,6 +98,14 @@ class TrackAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
         views.trackRow.isSelected = option.selected
         views.trackRow.isActivated = position == cursor
       }
+
+      is TrackRow.Remember -> {
+        val views = (holder as RememberHolder).views
+        // O interruptor so DESENHA o estado que veio do reducer; quem alterna e
+        // o OK na linha (ou MENU, nos controles que ainda o tem).
+        views.trackRememberSwitch.isChecked = row.on
+        views.trackRememberRow.isActivated = position == cursor
+      }
     }
   }
 
@@ -99,6 +114,7 @@ class TrackAdapter : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
   private companion object {
     const val TYPE_HEADER = 0
     const val TYPE_OPTION = 1
+    const val TYPE_REMEMBER = 2
     const val TAG_PLAYING = "Tocando"
   }
 }

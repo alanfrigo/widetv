@@ -85,6 +85,46 @@ class SeasonsTest {
     assertTrue(seasonTabs(emptyList(), flat).isEmpty())
   }
 
+  // Aba restaurada na volta do player
+
+  @Test
+  fun `a temporada salva vence a da retomada`() {
+    val tabs = seasonTabs(listOf(1, 2), library)
+    // A pessoa estava na aba 0 quando o player abriu; a retomada aponta a
+    // temporada 2. A tela volta para onde ela estava, nao para onde ela parou.
+    assertEquals(0, restoreSeasonAt(tabs, savedAt = 0, resumeSeason = 2))
+  }
+
+  @Test
+  fun `sem estado salvo a aba e a da retomada`() {
+    val tabs = seasonTabs(listOf(1, 2), library)
+    assertEquals(1, restoreSeasonAt(tabs, savedAt = null, resumeSeason = 2))
+  }
+
+  @Test
+  fun `sem estado salvo nem retomada a aba e a primeira`() {
+    // Sem o episodio solto: com ele haveria aba "Sem temporada" (season null),
+    // que e onde uma retomada de episodio solto de fato abre.
+    val tabs = seasonTabs(listOf(1, 2), library.take(4))
+    assertEquals(0, restoreSeasonAt(tabs, savedAt = null, resumeSeason = null))
+  }
+
+  @Test
+  fun `retomada de episodio solto abre a aba Sem temporada`() {
+    val tabs = seasonTabs(listOf(1, 2), library)
+    // `resumeSeason == null` com abas na tela e a aba dos soltos, como no
+    // filtro: e la que o episodio retomado esta.
+    assertEquals(2, restoreSeasonAt(tabs, savedAt = null, resumeSeason = null))
+  }
+
+  @Test
+  fun `indice salvo que as abas de agora nao tem cai na retomada`() {
+    // A biblioteca mudou entre sair e voltar: um indice fora das abas atuais
+    // nao pode virar aba fantasma.
+    val tabs = seasonTabs(listOf(1, 2), library)
+    assertEquals(1, restoreSeasonAt(tabs, savedAt = 7, resumeSeason = 2))
+  }
+
   // Filtro
 
   @Test

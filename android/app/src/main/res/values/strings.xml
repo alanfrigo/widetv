@@ -9,7 +9,6 @@
     <string name="dot_separator">·</string>
     <string name="glyph_play">▶</string>
     <string name="glyph_close">✕</string>
-    <string name="glyph_fullscreen">⤢</string>
     <string name="glyph_volume">♪</string>
     <string name="glyph_search">○</string>
     <string name="glyph_arrow_left">←</string>
@@ -33,11 +32,13 @@
     <string name="home_empty">Nenhuma serie no acervo.</string>
     <string name="no_channels">Nenhuma serie no acervo.</string>
     <string name="no_signal">Sem sinal.</string>
+    <string name="preparing_stream">Preparando o episódio…</string>
     <string name="nav_home">Início</string>
     <string name="nav_live">Ao vivo</string>
     <string name="nav_shelf">Séries</string>
     <string name="search_hint">Buscar no acervo</string>
     <string name="home_logout">Sair</string>
+    <string name="home_exit_confirm">Pressione VOLTAR de novo para sair</string>
 
     <!-- Hero do catálogo -->
     <string name="hero_play">▶  Entrar no canal</string>

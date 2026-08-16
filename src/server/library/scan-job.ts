@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { cpus } from 'node:os';
 
+import { mergeDuplicateShows } from './dedupe';
 import type { EpisodeInput, Store } from './index-store';
 import { probeFile } from './probe';
 import type { ProbeResult } from './probe-types';
@@ -121,6 +122,12 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
   const concurrency = options.concurrency ?? Math.max(2, cpus().length);
   const useCache = options.useCache ?? true;
 
+  // Canais duplicados de scanners antigos saem ANTES de tocar o disco. O prune
+  // do fim so acontece em rodada perfeita: uma raiz sem permissao ou um volume
+  // desmontado lancam ja na caminhada, e a duplicata sobreviveria para sempre.
+  // Aqui ela morre mesmo no scan que vai falhar dez linhas abaixo.
+  const mergedShows = mergeDuplicateShows(store);
+
   const shows = await scanLibrary(root, { smartGrouping: options.smartGrouping ?? true });
   const total = shows.reduce((sum, show) => sum + show.episodes.length, 0);
 
@@ -199,7 +206,9 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
     episodes += rows.length;
   }
 
-  const removedShows = store.pruneShows([...keptSlugs, ...protectedSlugs]);
+  // Um canal fundido na limpeza de duplicatas e um canal que sumiu do painel:
+  // conta como removido, que e o que a pessoa ve.
+  const removedShows = mergedShows + store.pruneShows([...keptSlugs, ...protectedSlugs]);
 
   return {
     shows: keptSlugs.length,

@@ -207,20 +207,20 @@ async function main(): Promise<void> {
         // `basename` pelo mesmo motivo da capa: o nome vem do banco e vira
         // caminho - mesmo escrito por nos, ele nao pode sair de `remux/`.
         const remux = store.getRemux(row.id, row.mtimeMs, row.size);
-        // Linha de versao antiga do plano so vale enquanto o defeito dela nao
-        // for audivel: quando a faixa default e dolby/dts, o MP4 antigo pode
-        // ser exatamente o da gemea AAC quebrada - melhor 202 do que mudo.
+        // Linha de versao antiga do plano marca pendencia quando o defeito dela
+        // e audivel: com a faixa default dolby/dts, o MP4 antigo pode ser
+        // exatamente o da gemea AAC quebrada - mudo no NAVEGADOR. O caminho
+        // continua indo junto mesmo assim: a rota decide por cliente (202 so
+        // para `?compat=browser`), e um cliente nativo toca a faixa dolby do
+        // MP4 antigo normalmente - descarta-lo aqui apagaria o catalogo da TV
+        // inteiro num bump de versao do plano.
         const fresh = remux !== null && remux.file === remuxFileName(row.id, row.mtimeMs, row.size);
         const wouldBeSilent =
           row.videoCodec !== null && defaultAudioNeedsCompat(row.audioTracks);
-        const pending = wouldBeSilent && !fresh;
         return {
           relativePath: row.id,
-          remuxPath:
-            remux === null || pending
-              ? null
-              : join(config.dataDir, 'remux', basename(remux.file)),
-          remuxPending: pending,
+          remuxPath: remux === null ? null : join(config.dataDir, 'remux', basename(remux.file)),
+          remuxPending: wouldBeSilent && !fresh,
         };
       },
     },

@@ -70,6 +70,13 @@ const FILES = [
   "prefixo/The.Office.UK.S01.720p.WEBRip/The.Office.UK.S01E01.mkv",
   "prefixo/The.Office.US.S03.720p.WEBRip/The.Office.US.S03E01.mkv",
   "prefixo/The.Office.US.S04.720p.WEBRip/The.Office.US.S04E01.mkv",
+  // Episodios soltos como ARQUIVO direto na raiz da biblioteca: um junta-se a
+  // serie que ja tem pasta, outro forma serie propria pelo nome, e o que nao
+  // carrega serie nenhuma fica invisivel.
+  "rootfiles/Chaves.S01E01.720p.WEB-DL.mkv",
+  "rootfiles/The Simpsons/The.Simpsons.S36E01.mkv",
+  "rootfiles/The.Simpsons.S37E01.1080p.DSNP.WEB-DL-DUAL.mkv",
+  "rootfiles/ferias na praia.mp4",
   // Acervo de release: a mesma serie espalhada em uma pasta por temporada, com
   // o cabecalho de release inteiro no nome. Sem agrupar, viram quatro canais.
   "release/Rick.and.Morty.S01.1080p.HMAX.WEB-DL.DD2.0.x264-DUAL-SiGLA/Rick.and.Morty.S01E01.mkv",
@@ -94,6 +101,21 @@ const FILES = [
   "symlink/Serie/Serie Ep 01.mp4",
   "symlink/Serie/Serie Ep 02.mp4",
   "symlink/Serie/Temporada 1/Serie S01E03.mp4",
+  // Mesma base com DOIS anos e uma temporada solta sem ano: ambiguidade real,
+  // nada se funde - fundir com qualquer um dos dois seria adivinhacao.
+  "twoyears/Doctor Who (1963)/Doctor.Who.S01E01.mkv",
+  "twoyears/Doctor Who (2005)/Doctor.Who.S01E01.mkv",
+  "twoyears/Temporada 3/Doctor.Who.S03E01.1080p.WEB-DL.mkv",
+  // Pasta com ano e SEM sinal de release dos dois lados: continua separado.
+  "yearplain/Doce Vida (1989)/ep 01.mp4",
+  "yearplain/Doce Vida/ep 01.mp4",
+  // Pasta principal com ano ao lado da temporada solta batizada pelos
+  // arquivos (que nunca carregam ano): o ano e desempate, nao discriminante -
+  // sem a fusao, o catalogo mostraria DOIS canais "The Simpsons".
+  "yeartie/Temporada 37/The.Simpsons.S37E01.1080p.DSNP.WEB-DL-DUAL.mkv",
+  "yeartie/Temporada 37/The.Simpsons.S37E02.1080p.DSNP.WEB-DL-DUAL.mkv",
+  "yeartie/The Simpsons (1989)/The.Simpsons.S36E01.mkv",
+  "yeartie/The Simpsons (1989)/The.Simpsons.S36E02.mkv",
 ];
 
 /** Symlinks, incluindo os que apontam para fora da raiz e o auto-referente. */

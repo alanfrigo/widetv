@@ -45,6 +45,20 @@ fun seasonTabs(seasons: List<Int>, episodes: List<EpisodeRef>): List<SeasonTab> 
 }
 
 /**
+ * Aba a abrir quando a tela de serie (re)aparece.
+ *
+ * A temporada SALVA — a aba que estava aberta quando o player saiu desta tela —
+ * vence a da retomada: quem estava fuçando a temporada 1 e voltou de um episodio
+ * nao quer a tela pulando sozinha para a aba de onde parou. Sem estado salvo, ou
+ * com um indice que as abas de agora nao tem, vale o comportamento de sempre: a
+ * aba da retomada e, sem retomada, a primeira.
+ */
+fun restoreSeasonAt(seasons: List<SeasonTab>, savedAt: Int?, resumeSeason: Int?): Int {
+  if (savedAt != null && savedAt in seasons.indices) return savedAt
+  return seasons.indexOfFirst { it.season == resumeSeason }.coerceAtLeast(0)
+}
+
+/**
  * Indices, na lista original, dos episodios de uma temporada.
  *
  * Indices e nao episodios: quem toca recebe a posicao na fila INTEIRA do canal,

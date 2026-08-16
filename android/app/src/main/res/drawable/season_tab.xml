@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Focado E ativo primeiro: sem este item o `state_selected` venceria e o
+         anel de foco sumiria sobre a aba já escolhida. O anel é em `text`
+         porque acento sobre o fundo de acento seria invisível. -->
+    <item android:state_focused="true" android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent" />
+            <stroke android:width="@dimen/stroke_focus" android:color="@color/text" />
+            <corners android:radius="@dimen/radius_14" />
+        </shape>
+    </item>
     <item android:state_selected="true">
         <shape android:shape="rectangle">
             <solid android:color="@color/accent" />

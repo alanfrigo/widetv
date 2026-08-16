@@ -77,8 +77,11 @@ function compareNatural(a: string, b: string): number {
  * Converte o nome da pasta em id ASCII kebab-case. Nome sem nenhuma letra ASCII
  * (japones, cirilico, so simbolos) cai para um hash estavel do proprio nome, e
  * nunca devolve string vazia: o slug e chave da serie no resto do sistema.
+ *
+ * Exportado porque a limpeza de canais duplicados (dedupe.ts) precisa gerar o
+ * MESMO slug para casar um titulo derivado com uma serie ja indexada.
  */
-function slugify(name: string): string {
+export function slugify(name: string): string {
   const ascii = name
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -111,8 +114,13 @@ const SEASON_NUMBER_FIRST = /^(\d{1,3})\s*[aoº°ªst]{0,2}[\s._-]*(?:temporadas
 
 const SEASON_ORDINAL_WORD = /^([a-zà-ú]+)\s+(?:temporadas?|seasons?)\b/i;
 
-/** Numero da temporada quando a pasta e de temporada; senao null. */
-function parseSeasonFolder(folderName: string): number | null {
+/**
+ * Numero da temporada quando a pasta e de temporada; senao null.
+ *
+ * Exportado porque a limpeza de canais duplicados (dedupe.ts) usa a mesma
+ * assinatura para reconhecer um canal fantasma chamado "Temporada 37".
+ */
+export function parseSeasonFolder(folderName: string): number | null {
   const numberFirst = SEASON_NUMBER_FIRST.exec(folderName);
   if (numberFirst?.[1]) return Number.parseInt(numberFirst[1], 10);
 
@@ -360,6 +368,49 @@ interface ShowFolder {
   absolutePath: string;
   parsed: ParsedFolderTitle;
   episodes: ScannedEpisode[];
+  /**
+   * true quando a "pasta" e um ARQUIVO de video solto na raiz. Um grupo nunca
+   * elege um arquivo como representante enquanto houver pasta de verdade: o
+   * `absolutePath` da serie deve apontar para um diretorio quando existir um.
+   */
+  looseFile?: boolean;
+}
+
+/**
+ * Arquivo de video SOLTO na raiz, sem pasta nenhuma ("The.Simpsons.S37E01...
+ * .mkv" jogado direto na biblioteca). Ignora-lo faria o episodio sumir do
+ * catalogo sem aviso; vira-lo canal proprio criaria um canal por arquivo. O
+ * titulo mora no proprio nome: derivado de la, o arquivo entra no agrupamento
+ * como qualquer pasta de release - e funde-se a serie quando ela existe.
+ *
+ * Nome sem serie nenhuma ("home video.mp4") continua invisivel: nao ha de onde
+ * tirar um canal. Fora do smartGrouping nada muda: o modo antigo e uma pasta
+ * por serie, e arquivo solto nunca foi canal la.
+ */
+function looseRootFile(
+  root: string,
+  absolutePath: string,
+  name: string,
+  extensions: readonly string[],
+  smartGrouping: boolean,
+): ShowFolder | null {
+  if (!smartGrouping) return null;
+  const extension = path.extname(name).toLowerCase();
+  if (!extensions.includes(extension)) return null;
+
+  const title = path.basename(name, path.extname(name));
+  const parsedName = parseEpisodeName(title);
+  const episode: ScannedEpisode = {
+    absolutePath,
+    relativePath: toRelativePath(root, absolutePath),
+    title,
+    season: parsedName.season,
+    episode: parsedName.episode,
+    orderIndex: 0,
+  };
+  const derived = titleFromEpisodes([{ title }]);
+  if (derived === null) return null;
+  return { name, absolutePath, parsed: derived, episodes: [episode], looseFile: true };
 }
 
 export async function scanLibrary(
@@ -384,7 +435,13 @@ export async function scanLibrary(
     async (entry): Promise<ShowFolder | null> => {
       const showPath = path.join(root, entry.name);
       const info = await resolveEntry(entry, showPath, rootReal, rootReal);
-      if (info?.kind !== 'directory') return null;
+      if (info === null) return null;
+      // Episodio solto como ARQUIVO direto na raiz: nao ha pasta para virar
+      // canal, mas o arquivo existe e sumir com ele seria pior. Vira uma
+      // pseudo-pasta batizada pelo proprio nome e entra no agrupamento normal.
+      if (info.kind === 'file') {
+        return looseRootFile(root, showPath, entry.name, extensions, smartGrouping);
+      }
 
       let parsed = parseFolderTitle(entry.name);
       // Pasta que e SO temporada ("Temporada 37", "S05") solta na raiz: o
@@ -439,9 +496,14 @@ export async function scanLibrary(
  * Titulo da serie derivado dos NOMES DE ARQUIVO ("The.Simpsons.S37E01...").
  * Voto de maioria absoluta entre os episodios: um arquivo fora do padrao nao
  * pode rebatizar a pasta inteira, e empate nao decide nada.
+ *
+ * So precisa dos titulos, e e exportado por isso: a limpeza de canais
+ * duplicados (dedupe.ts) faz o mesmo voto sobre linhas ja indexadas.
  * @returns null quando os arquivos nao carregam serie nenhuma ("01.mp4").
  */
-function titleFromEpisodes(episodes: readonly ScannedEpisode[]): ParsedFolderTitle | null {
+export function titleFromEpisodes(
+  episodes: readonly { title: string }[],
+): ParsedFolderTitle | null {
   const votes = new Map<string, { count: number; parsed: ParsedFolderTitle }>();
   for (const episode of episodes) {
     const parsed = parseFolderTitle(episode.title);
@@ -482,7 +544,9 @@ function toRawShow(folder: ShowFolder): ScannedShow {
 function groupFolders(folders: readonly ShowFolder[]): ScannedShow[] {
   const shows: ScannedShow[] = [];
   for (const group of buildGroups(folders)) {
-    const first = group[0];
+    // Arquivo solto na raiz nunca representa o grupo enquanto houver pasta de
+    // verdade: o caminho da serie deve apontar para um diretorio quando existe.
+    const first = group.find((folder) => folder.looseFile !== true) ?? group[0];
     if (first === undefined) continue;
 
     const name = pickTitle(group, first);
@@ -512,27 +576,79 @@ function groupFolders(folders: readonly ShowFolder[]): ScannedShow[] {
  * gera chave diferente, antes de qualquer decisao de fusao.
  */
 function buildGroups(folders: readonly ShowFolder[]): ShowFolder[][] {
-  const byKey = new Map<string, ShowFolder[]>();
+  // Indexa pela base SEM ano, com o ano como sub-chave. O ano nao pode morar
+  // embutido na chave (groupingKey completo): ele precisa ficar visivel ate a
+  // fusao para servir de DESEMPATE em `mergeLoneYear`, e nao de discriminante
+  // absoluto que impede "The Simpsons (1989)" de encontrar o titulo derivado
+  // dos arquivos (que nunca carrega ano).
+  const byBase = new Map<string, Map<number | null, ShowFolder[]>>();
   for (const folder of folders) {
-    push(byKey, groupingKey(folder.parsed), folder);
+    const base = groupingKey({ ...folder.parsed, year: null });
+    let byYear = byBase.get(base);
+    if (byYear === undefined) {
+      byYear = new Map();
+      byBase.set(base, byYear);
+    }
+    push(byYear, folder.parsed.year, folder);
   }
 
+  // A ordem natural da raiz elege o representante do grupo (caminho e
+  // desempate de titulo); a fusao de buckets nao pode embaralha-la.
+  const position = new Map(folders.map((folder, index) => [folder, index] as const));
+
   const groups: ShowFolder[][] = [];
-  for (const bucket of byKey.values()) {
-    if (bucket.some((folder) => folder.parsed.isRelease)) {
-      groups.push(bucket);
-      continue;
+  for (const byYear of byBase.values()) {
+    mergeLoneYear(byYear, position);
+    for (const bucket of byYear.values()) {
+      if (bucket.some((folder) => folder.parsed.isRelease)) {
+        groups.push(bucket);
+        continue;
+      }
+      const byTitle = new Map<string, ShowFolder[]>();
+      for (const folder of bucket) {
+        push(byTitle, folder.parsed.title.normalize('NFC'), folder);
+      }
+      groups.push(...byTitle.values());
     }
-    const byTitle = new Map<string, ShowFolder[]>();
-    for (const folder of bucket) {
-      push(byTitle, folder.parsed.title.normalize('NFC'), folder);
-    }
-    groups.push(...byTitle.values());
   }
   return groups;
 }
 
-function push(index: Map<string, ShowFolder[]>, key: string, folder: ShowFolder): void {
+/**
+ * Funde o bucket SEM ano com o unico bucket COM ano da mesma base.
+ *
+ * O ano na chave existe para separar "Doctor Who (2005)" de "Doctor Who
+ * (1963)". Mas titulo derivado de NOME DE ARQUIVO nunca carrega ano, entao a
+ * pasta principal "The Simpsons (1989)" e a temporada solta batizada pelos
+ * arquivos nunca se encontrariam - e o catalogo mostraria DOIS canais com o
+ * MESMO nome, um slug com digest no segundo. Aqui o ano vira desempate: com um
+ * ano so em jogo e sinal de release na uniao (a mesma regra conservadora dos
+ * buckets), os dois lados sao a mesma serie.
+ *
+ * Duas series homonimas de anos DIFERENTES continuam separadas (fundir o sem-
+ * ano com qualquer uma delas seria adivinhacao), e sem release nada se move:
+ * "Acao" e "Ação (1989)" seguem canais proprios.
+ */
+function mergeLoneYear(
+  byYear: Map<number | null, ShowFolder[]>,
+  position: ReadonlyMap<ShowFolder, number>,
+): void {
+  const yearless = byYear.get(null);
+  if (yearless === undefined) return;
+
+  const years = [...byYear.keys()].filter((year): year is number => year !== null);
+  if (years.length !== 1 || years[0] === undefined) return;
+  const dated = byYear.get(years[0]);
+  if (dated === undefined) return;
+
+  if (![...dated, ...yearless].some((folder) => folder.parsed.isRelease)) return;
+
+  dated.push(...yearless);
+  dated.sort((a, b) => (position.get(a) ?? 0) - (position.get(b) ?? 0));
+  byYear.delete(null);
+}
+
+function push<Key>(index: Map<Key, ShowFolder[]>, key: Key, folder: ShowFolder): void {
   const bucket = index.get(key);
   if (bucket === undefined) index.set(key, [folder]);
   else bucket.push(folder);

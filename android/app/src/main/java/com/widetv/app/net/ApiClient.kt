@@ -34,6 +34,51 @@ data class TimedNow(
 )
 
 /**
+ * Resultado do probe de `/api/stream/:id`. Porte do `StreamProbe` do web.
+ *
+ * PREPARING e o 202 do servidor gerando o remux do episodio: entregar essa
+ * resposta ao ExoPlayer nao daria "aguarde" - o corpo JSON morreria no
+ * extractor como erro fatal e derrubaria o canal. Quem toca pergunta aqui
+ * primeiro e espera.
+ */
+enum class StreamProbe { READY, PREPARING, ERROR }
+
+/** Funcao pura, separada do OkHttp de proposito: e ela que o teste exercita. */
+fun classifyProbe(statusCode: Int): StreamProbe = when {
+  statusCode == 202 -> StreamProbe.PREPARING
+  statusCode in 200..299 -> StreamProbe.READY
+  else -> StreamProbe.ERROR
+}
+
+/**
+ * Resolve um path que chegou PRONTO do servidor (`posterUrl`, `backdropUrl`,
+ * `thumbUrl`) contra a base, sem re-encodar nada.
+ *
+ * NAO passa por `addPathSegments` de proposito, por duas razoes que ja foram
+ * 404 silencioso em todos os cards:
+ * - os segmentos ja vem percent-encoded do servidor (o id do episodio no
+ *   `thumbUrl` carrega `%2F` e `%20`); re-encodar o `%` viraria `%252F`, o
+ *   servidor decodificaria uma vez so e procuraria um episodio que nao existe;
+ * - o poster/backdrop vem com query de cache-buster (`?v=...`), e o `?`
+ *   encodado como `%3F` viraria parte do path — a rota do Fastify nao casa.
+ *
+ * Funcao pura, separada do OkHttp de proposito: e ela que o teste exercita.
+ */
+fun resolveServerPath(base: HttpUrl, path: String): HttpUrl {
+  val trimmed = path.trimStart('/')
+  val question = trimmed.indexOf('?')
+  val builder = base.newBuilder()
+  return if (question < 0) {
+    builder.addEncodedPathSegments(trimmed).build()
+  } else {
+    builder
+      .addEncodedPathSegments(trimmed.take(question))
+      .encodedQuery(trimmed.substring(question + 1))
+      .build()
+  }
+}
+
+/**
  * Cliente HTTP do app.
  *
  * Duas responsabilidades alem de falar JSON: guardar o cookie de sessao entre
@@ -74,6 +119,22 @@ class ApiClient(private val store: Store) {
       .addPathSegment(episodeId)
       .build()
       .toString()
+
+  /**
+   * Pergunta se o stream do episodio ja existe, sem baixar nada (HEAD).
+   *
+   * ERROR nao lanca de proposito: um probe falhado nao prova que o arquivo nao
+   * vem, e quem chama segue em frente e deixa o fluxo normal avisar - mesma
+   * regra do `probeStream` do web player.
+   */
+  suspend fun probeStream(episodeId: String): StreamProbe = withContext(Dispatchers.IO) {
+    try {
+      val request = Request.Builder().url(streamUrl(episodeId)).head().build()
+      http.newCall(request).execute().use { response -> classifyProbe(response.code) }
+    } catch (error: IOException) {
+      StreamProbe.ERROR
+    }
+  }
 
   suspend fun login(password: String): Boolean = withContext(Dispatchers.IO) {
     performLogin(password)
@@ -142,17 +203,18 @@ class ApiClient(private val store: Store) {
   }
 
   /**
-   * Bytes crus de um recurso binario da API — hoje, so a capa do canal.
+   * Bytes crus de um recurso binario da API — capas, backdrops e quadros.
    *
    * Vai pelo `http` de sempre porque a capa esta atras do mesmo guard de sessao
    * do resto: um cliente HTTP separado nasceria sem cookie e receberia 401.
    *
-   * @param path rota relativa como vem de `ChannelSummary.posterUrl`, com ou sem
-   *   a barra inicial.
+   * @param path rota relativa como vem PRONTA do servidor (`posterUrl`,
+   *   `backdropUrl`, `thumbUrl`), com ou sem a barra inicial — os segmentos ja
+   *   chegam percent-encoded e pode haver query; ver `resolveServerPath`.
    * @return null quando o recurso nao existe (404).
    */
   suspend fun bytes(path: String): ByteArray? = withContext(Dispatchers.IO) {
-    val target = url(path.trimStart('/'))
+    val target = resolveServerPath(base(), path)
     http.newCall(Request.Builder().url(target).build()).execute().use { response ->
       if (response.code == 404) return@withContext null
       if (response.code == 401) throw UnauthorizedException()

@@ -148,6 +148,9 @@ class OsdTest {
   @Test
   fun `ao vivo o recado explica por que a barra nao obedece`() {
     assertEquals("ao vivo · a grade não para", formatScrubNote(live = true, remainingMs = 60_000))
+    // Chamada exata do guarda de DPAD lateral ao vivo: a seta consumida mostra
+    // este recado com resto zero, e ele nao pode virar string vazia.
+    assertEquals("ao vivo · a grade não para", formatScrubNote(live = true, remainingMs = 0))
   }
 
   @Test

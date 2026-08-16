@@ -456,6 +456,78 @@ describe('scanLibrary', () => {
     });
   });
 
+  describe('ano como desempate no agrupamento', () => {
+    it('pasta com ano funde com a temporada solta batizada pelos arquivos', async () => {
+      // "The Simpsons (1989)" gera chave com ano; o titulo derivado dos NOMES
+      // DE ARQUIVO nunca carrega ano. Sem desempate, nasceriam DOIS canais com
+      // o mesmo nome - e o slug do segundo ganharia digest.
+      const shows = await scanLibrary(fixture('yeartie'));
+
+      expect(shows.map((s) => s.name)).toEqual(['The Simpsons']);
+      const simpsons = shows[0]!;
+      expect(simpsons.slug).toBe('the-simpsons');
+      expect(simpsons.episodes).toHaveLength(4);
+      expect(simpsons.episodes.map((e) => e.season)).toEqual([36, 36, 37, 37]);
+    });
+
+    it('dois anos diferentes na mesma base continuam series separadas', async () => {
+      // Com "Doctor Who (1963)" e "Doctor Who (2005)" em jogo, fundir a
+      // temporada solta sem ano com qualquer um deles seria adivinhacao.
+      const shows = await scanLibrary(fixture('twoyears'));
+
+      expect(shows).toHaveLength(3);
+      expect(new Set(shows.map((s) => s.slug)).size).toBe(3);
+    });
+
+    it('sem sinal de release, o ano continua separando', async () => {
+      // "Doce Vida" e "Doce Vida (1989)" sao pastas curadas, sem release: a
+      // regra conservadora vale e nada se move.
+      const shows = await scanLibrary(fixture('yearplain'));
+
+      expect(shows).toHaveLength(2);
+    });
+  });
+
+  describe('arquivo de video solto na raiz', () => {
+    it('junta-se a serie que ja tem pasta, pelo titulo no proprio nome', async () => {
+      const shows = await scanLibrary(fixture('rootfiles'));
+
+      const simpsons = shows.find((s) => s.slug === 'the-simpsons');
+      expect(simpsons).toBeDefined();
+      expect(simpsons!.episodes.map((e) => e.relativePath)).toEqual([
+        'The Simpsons/The.Simpsons.S36E01.mkv',
+        'The.Simpsons.S37E01.1080p.DSNP.WEB-DL-DUAL.mkv',
+      ]);
+      // A pasta de verdade representa o grupo, nunca o arquivo solto.
+      expect(simpsons!.absolutePath).toBe(
+        path.join(fixture('rootfiles'), 'The Simpsons'),
+      );
+    });
+
+    it('sem pasta nenhuma, forma serie propria pelo nome do arquivo', async () => {
+      const shows = await scanLibrary(fixture('rootfiles'));
+
+      const chaves = shows.find((s) => s.slug === 'chaves');
+      expect(chaves).toBeDefined();
+      expect(chaves!.name).toBe('Chaves');
+      expect(chaves!.episodes.map((e) => [e.season, e.episode])).toEqual([[1, 1]]);
+    });
+
+    it('arquivo sem serie no nome continua invisivel', async () => {
+      // "ferias na praia.mp4" nao carrega serie nenhuma: inventar um canal por
+      // arquivo encheria o catalogo de lixo.
+      const shows = await scanLibrary(fixture('rootfiles'));
+
+      expect(shows.map((s) => s.slug).sort()).toEqual(['chaves', 'the-simpsons']);
+    });
+
+    it('smartGrouping false ignora arquivo solto, como sempre ignorou', async () => {
+      const shows = await scanLibrary(fixture('rootfiles'), { smartGrouping: false });
+
+      expect(shows.map((s) => s.name)).toEqual(['The Simpsons']);
+    });
+  });
+
   describe('raiz invalida', () => {
     it('lanca erro com o caminho na mensagem quando a raiz nao existe', async () => {
       const missing = fixture('nao-existe-em-lugar-nenhum');

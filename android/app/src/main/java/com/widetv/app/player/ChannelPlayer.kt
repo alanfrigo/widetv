@@ -13,6 +13,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.MediaSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -22,6 +23,7 @@ import com.widetv.app.net.ApiClient
 import com.widetv.app.net.ChannelSummary
 import com.widetv.app.net.EpisodeRef
 import com.widetv.app.net.NowPlaying
+import com.widetv.app.net.StreamProbe
 import com.widetv.app.net.TimedNow
 import java.io.IOException
 import kotlin.math.max
@@ -51,7 +53,7 @@ data class TrackPrefs(
  */
 @OptIn(UnstableApi::class)
 class ChannelPlayer(
-  context: Context,
+  private val context: Context,
   private val api: ApiClient,
   private val scope: CoroutineScope,
   private val events: Events,
@@ -63,6 +65,12 @@ class ChannelPlayer(
     fun onEpisodeChange(playing: NowPlaying)
     /** O arquivo nao respondeu. Numa TV, tela preta muda parece app quebrado. */
     fun onStalled()
+    /**
+     * O stream respondeu 202: o servidor esta gerando o remux do episodio. O
+     * player espera sozinho e segue quando pronto; este aviso existe so para a
+     * tela nao ficar preta sem explicacao - igual ao web player.
+     */
+    fun onPreparing() {}
     fun onError(error: Throwable)
     /** Comecou um episodio sob demanda: o escolhido, ou o proximo da maratona. */
     fun onVodEpisode(channel: ChannelSummary, episode: EpisodeRef) {}
@@ -105,6 +113,22 @@ class ChannelPlayer(
   private var vodChannel: ChannelSummary? = null
   private var vodQueue: List<EpisodeRef> = emptyList()
 
+  /** Invalida a espera de "preparando" de um load antigo quando outro assume. */
+  private var loadToken = 0
+
+  /**
+   * true depois que o item carregado pelo ultimo `load` chegou a READY. E o que
+   * separa "o next pre-carregado falhou" de "o proprio episodio nao abriu".
+   */
+  private var currentItemStarted = false
+
+  /** Ultimo `next` cuja entrada na fila foi PEDIDA; evita re-probar o mesmo arquivo. */
+  private var nextRequestedId: String? = null
+  private var nextJob: Job? = null
+
+  /** Viva so enquanto algo toca; ver [ensureSession]. */
+  private var session: MediaSession? = null
+
   init {
     applyPrefs()
 
@@ -134,6 +158,25 @@ class ChannelPlayer(
 
       override fun onPlayerError(error: PlaybackException) {
         Log.w(TAG, "erro de reproducao", error)
+
+        if (
+          mode == PlaybackMode.LIVE &&
+          decideLiveError(currentItemStarted, exo.currentMediaItemIndex, exo.mediaItemCount) ==
+          LiveErrorAction.DROP_NEXT
+        ) {
+          // Quem falhou foi a preparacao antecipada do `next` (ex.: um 202
+          // "preparando" que virou JSON no extractor); o episodio no ar nao tem
+          // culpa. Tira o next da fila e retoma da posicao em que parou, em vez
+          // de derrubar o canal - o resync readiciona o proximo quando o probe
+          // disser que ele esta pronto.
+          while (exo.mediaItemCount > exo.currentMediaItemIndex + 1) {
+            exo.removeMediaItem(exo.mediaItemCount - 1)
+          }
+          nextRequestedId = null
+          exo.prepare()
+          return
+        }
+
         events.onStalled()
 
         if (mode == PlaybackMode.ON_DEMAND) {
@@ -154,6 +197,10 @@ class ChannelPlayer(
       }
 
       override fun onPlaybackStateChanged(state: Int) {
+        // O item do ultimo load abriu de verdade: um erro daqui em diante com
+        // fila de dois itens e culpa do `next` pre-carregado, nao dele.
+        if (state == Player.STATE_READY) currentItemStarted = true
+
         // A grade nunca termina; a maratona sim.
         if (state != Player.STATE_ENDED || mode != PlaybackMode.ON_DEMAND) return
         events.onVodEnded()
@@ -206,6 +253,7 @@ class ChannelPlayer(
   /** false quando o canal nao existe. */
   suspend fun tune(channelNumber: Int): Boolean {
     stopLoop()
+    ensureSession()
     // Sintonizar e sempre sair do sob demanda: o canal ao vivo nao divide a
     // tela com maratona nenhuma.
     resetVod()
@@ -213,7 +261,10 @@ class ChannelPlayer(
 
     val timed = api.now(channelNumber) ?: return false
 
-    load(timed)
+    // load pode esperar um episodio "preparando"; se outra sintonia (ou o
+    // stop) assumiu nesse meio tempo, quem assumiu ja cuidou do OSD e do loop
+    // — repetir aqui sobrescreveria o canal novo com o velho.
+    if (!load(timed)) return true
     events.onTuned(timed.data)
     startLoop()
     return true
@@ -234,6 +285,7 @@ class ChannelPlayer(
     startPositionMs: Long = 0L,
   ) {
     stopLoop()
+    ensureSession()
     mode = PlaybackMode.ON_DEMAND
     vodChannel = channel
     vodQueue = episodes
@@ -242,6 +294,11 @@ class ChannelPlayer(
     channelNumber = null
     sample = null
     playing = null
+    // A espera de "preparando" e o probe do next eram do ao vivo; a maratona
+    // que comeca agora nao pode ser atropelada por eles.
+    loadToken++
+    nextJob?.cancel()
+    nextRequestedId = null
 
     exo.setMediaItems(episodes.map(::mediaItem), startIndex, startPositionMs.coerceAtLeast(0L))
     exo.playWhenReady = true
@@ -266,6 +323,17 @@ class ChannelPlayer(
   }
 
   /**
+   * Salto absoluto: e o commit do scrub, que ja escolheu o alvo em cima da
+   * posicao projetada. Mesma regra do [seekBy] — ao vivo a posicao e da grade.
+   */
+  fun seekTo(positionMs: Long) {
+    if (mode != PlaybackMode.ON_DEMAND) return
+    val duration = exo.duration
+    val target = max(0L, positionMs)
+    exo.seekTo(if (duration > 0) minOf(target, duration) else target)
+  }
+
+  /**
    * Fixa o grupo de audio escolhido no painel — imediato e exato, para o caso de
    * dois grupos dividirem o mesmo idioma. A permanencia entre episodios vem de
    * `prefs`, que quem chama atualiza junto.
@@ -284,10 +352,34 @@ class ChannelPlayer(
       .build()
   }
 
+  /**
+   * MediaSession por cima do exo, criada quando a reproducao comeca e desfeita
+   * no [stop]: e ela que recebe as teclas de midia que NAO passam pela
+   * Activity — assistente, fone bluetooth, controle com o app fora de foco.
+   * Com a Activity em foco quem age e o `onKeyDown`, que consome as MEDIA_*
+   * antes de o sistema encaminha-las para ca: a sessao e a dona do caminho
+   * remoto, o `onKeyDown` do local, e nenhuma tecla age duas vezes.
+   */
+  private fun ensureSession() {
+    if (session != null) return
+    session = MediaSession.Builder(context, exo).build()
+  }
+
+  private fun releaseSession() {
+    session?.release()
+    session = null
+  }
+
   /** Solta o decoder quando a TV dorme. A grade nao precisa de ninguem olhando. */
   fun stop() {
     stopLoop()
+    releaseSession()
     resetVod()
+    // Mata a espera de "preparando" e o probe do next: sem isso um load antigo
+    // acordaria depois do stop e ressuscitaria a reproducao sozinho.
+    loadToken++
+    nextJob?.cancel()
+    nextRequestedId = null
     exo.stop()
     exo.clearMediaItems()
     sample = null
@@ -302,6 +394,7 @@ class ChannelPlayer(
 
   fun release() {
     stopLoop()
+    releaseSession()
     exo.release()
   }
 
@@ -322,23 +415,45 @@ class ChannelPlayer(
       .build()
   }
 
-  private fun load(timed: TimedNow) {
+  /** @return false quando outro load, stop() ou playOnDemand() assumiu no meio da espera. */
+  private suspend fun load(timed: TimedNow): Boolean {
     val next = toSample(timed)
     sample = next
     playing = timed.data
     lastResyncMs = System.currentTimeMillis()
 
+    // Episodio respondendo 202 (remux com prioridade em andamento): espera
+    // antes de entregar a URL ao ExoPlayer, senao o corpo JSON morre no
+    // extractor como erro fatal e o canal entra em loop de retune. O offset
+    // nao se perde: `expectedOffsetMs` projeta a grade pelo relogio, entao ao
+    // ficar pronto o video entra na posicao em que a grade ja esta.
+    val token = ++loadToken
+    var probe = api.probeStream(timed.data.episode.id)
+    if (probe == StreamProbe.PREPARING) events.onPreparing()
+    while (probe == StreamProbe.PREPARING) {
+      delay(STREAM_POLL_MS)
+      if (token != loadToken || channelNumber == null) return false
+      probe = api.probeStream(timed.data.episode.id)
+    }
+    // ERROR segue em frente: um HEAD falhado nao prova nada, e o fluxo normal
+    // ja sabe avisar quando o arquivo realmente nao vem.
+
     // Projeta o offset ate o instante do seek: o request custa centenas de ms,
     // e sem isso o canal ja nasce atrasado.
     val start = max(0L, expectedOffsetMs(next, System.currentTimeMillis()))
 
-    exo.setMediaItems(
-      listOf(mediaItem(timed.data.episode), mediaItem(timed.data.next)),
-      0,
-      start,
-    )
+    currentItemStarted = false
+    // Fila nova: o pedido de `next` de antes morreu junto com ela.
+    nextJob?.cancel()
+    nextRequestedId = null
+    // So o episodio atual entra ja: o `next` e adicionado depois que o probe
+    // dele confirmar que nao esta "preparando" - um 202 pre-carregado na fila
+    // derrubaria tambem o episodio no ar.
+    exo.setMediaItems(listOf(mediaItem(timed.data.episode)), 0, start)
     exo.playWhenReady = true
     exo.prepare()
+    enqueueNextWhenReady(timed.data.next)
+    return true
   }
 
   private fun startLoop() {
@@ -403,13 +518,19 @@ class ChannelPlayer(
     // Compara pelo id do episodio, nao pela URL: o `mediaId` e nosso e nao passa
     // por normalizacao nenhuma.
     val mismatch = exo.currentMediaItem?.mediaId != timed.data.episode.id
-    if (mismatch) load(timed) else alignQueue(timed)
+    if (mismatch) {
+      // load abortado = outra sintonia assumiu; o OSD dela nao pode ser
+      // atropelado por um onEpisodeChange deste canal.
+      if (!load(timed)) return
+    } else {
+      alignQueue(timed)
+    }
 
     if (episodeChanged || mismatch) events.onEpisodeChange(timed.data)
   }
 
   /**
-   * Deixa a fila com exatamente dois itens: o que toca agora e o `next` que o
+   * Deixa a fila com no maximo dois itens: o que toca agora e o `next` que o
    * servidor acabou de dizer. Nao mexe no item seguinte quando ele ja e o certo
    * — remover e readicionar jogaria fora o buffer que o ExoPlayer ja carregou.
    */
@@ -420,8 +541,38 @@ class ChannelPlayer(
     if (exo.mediaItemCount > 1) {
       if (exo.getMediaItemAt(1).mediaId == wanted) return
       while (exo.mediaItemCount > 1) exo.removeMediaItem(exo.mediaItemCount - 1)
+      nextRequestedId = null
     }
-    exo.addMediaItem(mediaItem(timed.data.next))
+    enqueueNextWhenReady(timed.data.next)
+  }
+
+  /**
+   * Poe o `next` na fila SO depois de um probe confirmar que o stream dele
+   * existe. Um item "preparando" (202) na playlist nao e inofensivo: o
+   * ExoPlayer prepara o proximo item antecipadamente e a falha dele e fatal
+   * para o episodio que esta tocando (veja `decideLiveError`). Enquanto o
+   * servidor gera o remux, o probe insiste — e, se o next nunca entrar, a
+   * virada cai no resync do `step()`, que sabe carregar do zero.
+   */
+  private fun enqueueNextWhenReady(episode: EpisodeRef) {
+    if (nextRequestedId == episode.id) return
+    nextRequestedId = episode.id
+    nextJob?.cancel()
+    nextJob = scope.launch {
+      var probe = api.probeStream(episode.id)
+      while (probe == StreamProbe.PREPARING) {
+        delay(STREAM_POLL_MS)
+        if (nextRequestedId != episode.id || mode != PlaybackMode.LIVE) return@launch
+        probe = api.probeStream(episode.id)
+      }
+      // ERROR entra mesmo assim: mesmo criterio do load — um HEAD falhado nao
+      // prova nada, e o tratamento de erro sabe tirar um next defeituoso.
+      if (nextRequestedId != episode.id || mode != PlaybackMode.LIVE) return@launch
+      if (playing?.next?.id != episode.id) return@launch
+      // Ja tem um item depois do atual: outro caminho chegou primeiro.
+      if (exo.mediaItemCount > exo.currentMediaItemIndex + 1) return@launch
+      exo.addMediaItem(mediaItem(episode))
+    }
   }
 
   private fun mediaItem(episode: EpisodeRef): MediaItem =
@@ -451,5 +602,8 @@ class ChannelPlayer(
     const val END_GRACE_MS = 2_000L
 
     const val RETRY_DELAY_MS = 2_000L
+
+    /** De quanto em quanto tempo perguntar se o episodio "preparando" ficou pronto. */
+    const val STREAM_POLL_MS = 3_000L
   }
 }

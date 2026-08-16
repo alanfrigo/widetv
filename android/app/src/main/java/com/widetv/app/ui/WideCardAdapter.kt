@@ -73,6 +73,9 @@ class WideCardAdapter(
       val position = holder.bindingAdapterPosition
       if (position != RecyclerView.NO_POSITION) onOpen(items[position])
     }
+    // Escala 1.03 + elevacao prometidas por item_card_wide.xml ("animadas no
+    // ViewHolder"): o contorno de acento vem do XML, o crescimento vem daqui.
+    views.card.setOnFocusChangeListener { view, focused -> lift(view, focused) }
     return holder
   }
 

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  "Lembrar este idioma", a ultima linha do painel de trilhas. Virou linha do
+  cursor porque o controle do Google TV nao tem MENU: a seta desce ate aqui e o
+  OK alterna o interruptor.
+
+  Como as demais linhas, NAO e focavel — o cursor e do reducer e chega por
+  `isActivated`. O interruptor so desenha o estado; quem alterna e o OK na
+  linha inteira.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/track_remember_row"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="12dp"
+    android:layout_marginBottom="6dp"
+    android:background="@drawable/row_track"
+    android:focusable="false"
+    android:focusableInTouchMode="false"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="12dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="10dp">
+
+    <TextView
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:text="@string/track_remember"
+        android:textColor="@color/text"
+        android:textSize="@dimen/text_card"
+        android:textStyle="bold" />
+
+    <androidx.appcompat.widget.SwitchCompat
+        android:id="@+id/track_remember_switch"
+        android:layout_width="wrap_content"
+        android:layout_height="22dp"
+        android:clickable="false"
+        android:focusable="false"
+        android:showText="false"
+        android:switchMinWidth="39dp"
+        android:thumb="@drawable/switch_knob"
+        android:track="@drawable/switch_track" />
+</LinearLayout>

@@ -42,8 +42,10 @@ data class TrackPanelState(
   val audio: List<TrackOption> = emptyList(),
   /** Ja inclui "Desativadas" na primeira posicao; o reducer a insere ao abrir. */
   val text: List<TrackOption> = emptyList(),
-  /** Indice em `rows(state)`. Sempre aponta para uma linha escolhivel. */
+  /** Indice em `rows(state)`. Aponta para uma opcao ou para a linha de lembrar; nunca cabecalho. */
   val cursor: Int = 0,
+  /** Interruptor de "Lembrar este idioma": gravar a escolha no servidor ou nao. */
+  val remember: Boolean = true,
 )
 
 /** Linha desenhada no painel. Cabecalho nunca recebe o cursor. */
@@ -51,6 +53,13 @@ sealed interface TrackRow {
   data class Header(val kind: TrackKind) : TrackRow
 
   data class Option(val kind: TrackKind, val option: TrackOption) : TrackRow
+
+  /**
+   * "Lembrar este idioma", sempre a ULTIMA linha. Entra no cursor porque o
+   * controle do Google TV nao tem MENU: sem uma linha alcancavel pela seta, o
+   * interruptor ficaria inalcancavel na maioria das salas.
+   */
+  data class Remember(val on: Boolean) : TrackRow
 }
 
 sealed interface TrackPanelEvent {
@@ -64,6 +73,8 @@ sealed interface TrackPanelEvent {
     val audio: List<TrackOption>,
     val text: List<TrackOption>,
     val offLabel: String,
+    /** Estado atual do interruptor de lembrar, que sobrevive ao painel fechado. */
+    val remember: Boolean = true,
   ) : TrackPanelEvent
 
   /** +1 desce, -1 sobe. Cabecalhos sao pulados. */
@@ -93,11 +104,14 @@ data class TrackPanelResult(
   val choose: TrackChoice? = null,
   /** true quando o painel tem que sair da frente. */
   val close: Boolean = false,
+  /** true quando o OK caiu na linha de lembrar: a Activity sincroniza o dela. */
+  val toggleRemember: Boolean = false,
 )
 
 /**
  * Linhas na ordem em que aparecem. Secao sem nenhuma opcao nao ganha cabecalho:
  * um titulo "AUDIO" sozinho so ocuparia espaco dizendo que nao ha o que fazer.
+ * "Lembrar este idioma" fecha a lista — e so existe quando ha o que lembrar.
  */
 fun rows(state: TrackPanelState): List<TrackRow> {
   val out = mutableListOf<TrackRow>()
@@ -109,6 +123,7 @@ fun rows(state: TrackPanelState): List<TrackRow> {
     out += TrackRow.Header(TrackKind.TEXT)
     state.text.forEach { out += TrackRow.Option(TrackKind.TEXT, it) }
   }
+  if (out.isNotEmpty()) out += TrackRow.Remember(state.remember)
   return out
 }
 
@@ -119,11 +134,21 @@ fun rows(state: TrackPanelState): List<TrackRow> {
  * ultima linha de audio para a primeira legenda TEM que acender a outra aba, e
  * um campo separado abriria a chance de ele discordar do cursor.
  *
+ * Na linha de lembrar vale a secao de onde o cursor veio — a opcao mais proxima
+ * ACIMA — porque apagar as duas abas faria o segmented control piscar so de o
+ * cursor chegar ao rodape.
+ *
  * @return AUDIO como padrao quando o painel esta fechado ou vazio: e a secao que
  *   sempre existe primeiro.
  */
-fun activeTab(state: TrackPanelState): TrackKind =
-  (rows(state).getOrNull(state.cursor) as? TrackRow.Option)?.kind ?: TrackKind.AUDIO
+fun activeTab(state: TrackPanelState): TrackKind {
+  val rows = rows(state)
+  for (at in minOf(state.cursor, rows.lastIndex) downTo 0) {
+    val row = rows[at]
+    if (row is TrackRow.Option) return row.kind
+  }
+  return TrackKind.AUDIO
+}
 
 fun reduceTrackPanel(state: TrackPanelState, event: TrackPanelEvent): TrackPanelResult =
   when (event) {
@@ -143,7 +168,12 @@ private fun open(event: TrackPanelEvent.Open): TrackPanelResult {
     listOf(TrackOption(TRACK_OFF, event.offLabel, event.text.none { it.selected })) + event.text
   }
 
-  val opened = TrackPanelState(open = true, audio = event.audio, text = text)
+  val opened = TrackPanelState(
+    open = true,
+    audio = event.audio,
+    text = text,
+    remember = event.remember,
+  )
   // Abre no que esta tocando: procurar a propria selecao com as setas seria
   // trabalho que o painel ja podia ter feito.
   val rows = rows(opened)
@@ -156,8 +186,9 @@ private fun move(state: TrackPanelState, delta: Int): TrackPanelResult {
   if (!state.open || delta == 0) return TrackPanelResult(state)
   val rows = rows(state)
 
+  // So o cabecalho e pulado: opcoes e a linha de lembrar recebem o cursor.
   var at = state.cursor + delta
-  while (at in rows.indices && rows[at] !is TrackRow.Option) at += delta
+  while (at in rows.indices && rows[at] is TrackRow.Header) at += delta
   // Bateu na borda: fica onde estava. Dar a volta faria a seta para baixo
   // saltar do fim das legendas para o topo do audio sem aviso nenhum.
   if (at !in rows.indices) return TrackPanelResult(state)
@@ -179,16 +210,24 @@ private fun tab(state: TrackPanelState, kind: TrackKind): TrackPanelResult {
 
 private fun select(state: TrackPanelState): TrackPanelResult {
   if (!state.open) return TrackPanelResult(state)
-  val row = rows(state).getOrNull(state.cursor) as? TrackRow.Option
-    ?: return TrackPanelResult(state)
+  return when (val row = rows(state).getOrNull(state.cursor)) {
+    is TrackRow.Option -> {
+      // A marca muda na hora, dentro da secao escolhida: esperar o player
+      // confirmar deixaria o tique atrasado em relacao ao que ja esta soando.
+      val marked = when (row.kind) {
+        TrackKind.AUDIO -> state.copy(audio = mark(state.audio, row.option.id))
+        TrackKind.TEXT -> state.copy(text = mark(state.text, row.option.id))
+      }
+      TrackPanelResult(marked, choose = TrackChoice(row.kind, row.option.id))
+    }
 
-  // A marca muda na hora, dentro da secao escolhida: esperar o player confirmar
-  // deixaria o tique atrasado em relacao ao que ja esta soando.
-  val marked = when (row.kind) {
-    TrackKind.AUDIO -> state.copy(audio = mark(state.audio, row.option.id))
-    TrackKind.TEXT -> state.copy(text = mark(state.text, row.option.id))
+    // OK na linha de lembrar alterna o interruptor SEM fechar: mudar de ideia
+    // sobre gravar nao encerra a visita ao painel.
+    is TrackRow.Remember ->
+      TrackPanelResult(state.copy(remember = !state.remember), toggleRemember = true)
+
+    else -> TrackPanelResult(state)
   }
-  return TrackPanelResult(marked, choose = TrackChoice(row.kind, row.option.id))
 }
 
 private fun mark(options: List<TrackOption>, id: String): List<TrackOption> =
@@ -204,10 +243,10 @@ private fun mark(options: List<TrackOption>, id: String): List<TrackOption> =
  */
 fun panelNote(remember: Boolean): String = if (remember) {
   "A escolha vale para a casa toda: fica gravada no servidor. " +
-    "↑ ↓ escolhem · OK confirma · ← → trocam de aba · MENU deixa de lembrar."
+    "↑ ↓ escolhem · OK confirma · ← → trocam de aba · OK alterna o lembrar."
 } else {
   "A escolha vale só nesta sessão. " +
-    "↑ ↓ escolhem · OK confirma · ← → trocam de aba · MENU volta a lembrar."
+    "↑ ↓ escolhem · OK confirma · ← → trocam de aba · OK alterna o lembrar."
 }
 
 /* --- detalhe da linha ----------------------------------------------------- */

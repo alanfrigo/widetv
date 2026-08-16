@@ -83,7 +83,7 @@ class NavTest {
 
   @Test
   fun `voltar das configuracoes cai no acervo`() {
-    val result = reduceNav(settings, NavEvent.Back)
+    val result = reduceNav(settings, NavEvent.Back(atMs = 0))
     assertEquals(ScreenId.HOME, result.state.screen)
     assertFalse(result.exit)
   }
@@ -98,48 +98,173 @@ class NavTest {
   }
 
   @Test
-  fun `voltar do player cai na serie que esta tocando, e nao na que o abriu`() {
-    val zapped = reduceNav(player, NavEvent.LiveTuned(12)).state
-    val back = reduceNav(zapped, NavEvent.Back)
-    assertEquals(ScreenId.SERIES, back.state.screen)
-    assertEquals(12, back.state.channelNumber)
-  }
-
-  @Test
   fun `zapear fora do player nao muda nada`() {
     assertEquals(series, reduceNav(series, NavEvent.LiveTuned(12)).state)
     assertEquals(home, reduceNav(home, NavEvent.LiveTuned(12)).state)
+  }
+
+  // Retrace: VOLTAR do player refaz o caminho de quem o abriu (`cameFrom`).
+  // Decisao de produto consciente: isso vence a semantica Netflix de "cair na
+  // serie do que esta tocando" quando o player veio do acervo.
+
+  @Test
+  fun `player aberto do acervo volta ao acervo`() {
+    val opened = reduceNav(home, NavEvent.OpenPlayer(7)).state
+    val zapped = reduceNav(opened, NavEvent.LiveTuned(12)).state
+    val back = reduceNav(zapped, NavEvent.Back(atMs = 0))
+    assertEquals(ScreenId.HOME, back.state.screen)
+    assertNull(back.state.channelNumber)
+  }
+
+  @Test
+  fun `player aberto da serie volta a serie mesmo apos zapear`() {
+    val opened = reduceNav(series, NavEvent.OpenPlayer(7)).state
+    val zapped = reduceNav(opened, NavEvent.LiveTuned(12)).state
+    val back = reduceNav(zapped, NavEvent.Back(atMs = 0))
+    assertEquals(ScreenId.SERIES, back.state.screen)
+    // A serie mostrada e a do canal que esta tocando agora, nao a que abriu.
+    assertEquals(12, back.state.channelNumber)
   }
 
   // Subida
 
   @Test
   fun `voltar da serie limpa o canal e volta ao acervo`() {
-    val result = reduceNav(series, NavEvent.Back)
+    val result = reduceNav(series, NavEvent.Back(atMs = 0))
     assertEquals(ScreenId.HOME, result.state.screen)
     assertNull(result.state.channelNumber)
     assertFalse(result.exit)
   }
 
   @Test
-  fun `voltar no acervo fecha o app`() {
-    val result = reduceNav(home, NavEvent.Back)
-    assertTrue(result.exit)
+  fun `primeiro VOLTAR no acervo pede confirmacao`() {
+    val result = reduceNav(home, NavEvent.Back(atMs = 1_000))
+    assertFalse(result.exit)
+    assertTrue(result.confirmExit)
     assertEquals(ScreenId.HOME, result.state.screen)
+    assertEquals(1_000L, result.state.exitArmedAtMs)
   }
 
   @Test
-  fun `voltar no portao fecha o app`() {
-    assertTrue(reduceNav(gate, NavEvent.Back).exit)
+  fun `segundo VOLTAR dentro de 2s sai`() {
+    val armed = reduceNav(home, NavEvent.Back(atMs = 1_000)).state
+    val result = reduceNav(armed, NavEvent.Back(atMs = 1_000 + EXIT_CONFIRM_WINDOW_MS))
+    assertTrue(result.exit)
+    assertFalse(result.confirmExit)
   }
 
   @Test
-  fun `tres VOLTAR levam do player ate a saida`() {
-    var state = player
-    state = reduceNav(state, NavEvent.Back).state
+  fun `VOLTAR apos janela vencida re-arma`() {
+    val armed = reduceNav(home, NavEvent.Back(atMs = 1_000)).state
+    val late = reduceNav(armed, NavEvent.Back(atMs = 1_000 + EXIT_CONFIRM_WINDOW_MS + 1))
+    assertFalse(late.exit)
+    assertTrue(late.confirmExit)
+    assertEquals(1_000 + EXIT_CONFIRM_WINDOW_MS + 1, late.state.exitArmedAtMs)
+    // E a partir do novo timestamp a janela vale de novo.
+    assertTrue(reduceNav(late.state, NavEvent.Back(atMs = late.state.exitArmedAtMs!! + 1)).exit)
+  }
+
+  @Test
+  fun `voltar no portao fecha o app sem confirmacao`() {
+    val result = reduceNav(gate, NavEvent.Back(atMs = 0))
+    assertTrue(result.exit)
+    assertFalse(result.confirmExit)
+  }
+
+  @Test
+  fun `VOLTAR desce do player ate a saida com confirmacao no acervo`() {
+    var state = reduceNav(series, NavEvent.OpenPlayer(7)).state
+    state = reduceNav(state, NavEvent.Back(atMs = 0)).state
     assertEquals(ScreenId.SERIES, state.screen)
-    state = reduceNav(state, NavEvent.Back).state
+    state = reduceNav(state, NavEvent.Back(atMs = 100)).state
     assertEquals(ScreenId.HOME, state.screen)
-    assertTrue(reduceNav(state, NavEvent.Back).exit)
+    val first = reduceNav(state, NavEvent.Back(atMs = 200))
+    assertFalse(first.exit)
+    assertTrue(first.confirmExit)
+    assertTrue(reduceNav(first.state, NavEvent.Back(atMs = 300)).exit)
+  }
+
+  // Hierarquia do VOLTAR dentro do player: cada camada engole a tecla antes de
+  // deixar a navegacao andar.
+
+  @Test
+  fun `painel de trilhas aberto vence a digitacao do tuner`() {
+    assertEquals(
+      BackLayer.CLOSE_PANEL,
+      backLayer(panelOpen = true, typingChannel = true, overlayVisible = true),
+    )
+  }
+
+  @Test
+  fun `digitacao pendente vence o overlay`() {
+    assertEquals(
+      BackLayer.CLEAR_TUNER,
+      backLayer(panelOpen = false, typingChannel = true, overlayVisible = true),
+    )
+  }
+
+  @Test
+  fun `overlay visivel vence a navegacao`() {
+    assertEquals(
+      BackLayer.HIDE_OVERLAY,
+      backLayer(panelOpen = false, typingChannel = false, overlayVisible = true),
+    )
+  }
+
+  @Test
+  fun `tela limpa deixa o VOLTAR navegar`() {
+    assertEquals(
+      BackLayer.NAVIGATE,
+      backLayer(panelOpen = false, typingChannel = false, overlayVisible = false),
+    )
+  }
+
+  // Snapshot da navegacao: sobrevive a recriacao da Activity via pack/unpack.
+
+  @Test
+  fun `round-trip preserva acervo serie e configuracoes`() {
+    for (state in listOf(home, series, settings)) {
+      assertEquals(state, unpackNav(packNav(state)))
+    }
+  }
+
+  @Test
+  fun `player salvo restaura na serie que o abriu`() {
+    val opened = reduceNav(series, NavEvent.OpenPlayer(7)).state
+    val restored = unpackNav(packNav(opened))
+    assertEquals(ScreenId.SERIES, restored!!.screen)
+    assertEquals(7, restored.channelNumber)
+  }
+
+  @Test
+  fun `player aberto do acervo restaura no acervo sem canal`() {
+    val opened = reduceNav(home, NavEvent.OpenPlayer(7)).state
+    val restored = unpackNav(packNav(opened))
+    assertEquals(ScreenId.HOME, restored!!.screen)
+    assertNull(restored.channelNumber)
+  }
+
+  @Test
+  fun `zapear antes de salvar restaura na serie do canal atual`() {
+    val opened = reduceNav(series, NavEvent.OpenPlayer(7)).state
+    val zapped = reduceNav(opened, NavEvent.LiveTuned(12)).state
+    val restored = unpackNav(packNav(zapped))
+    assertEquals(ScreenId.SERIES, restored!!.screen)
+    assertEquals(12, restored.channelNumber)
+  }
+
+  @Test
+  fun `o relogio do duplo-VOLTAR nao atravessa a recriacao`() {
+    val armed = reduceNav(home, NavEvent.Back(atMs = 1_000)).state
+    assertNull(unpackNav(packNav(armed))!!.exitArmedAtMs)
+  }
+
+  @Test
+  fun `snapshot ilegivel devolve null`() {
+    assertNull(unpackNav(null))
+    assertNull(unpackNav(""))
+    assertNull(unpackNav("HOME"))
+    assertNull(unpackNav("PALCO|7|SERIES"))
+    assertNull(unpackNav("PLAYER|7|PALCO"))
   }
 }

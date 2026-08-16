@@ -9,6 +9,9 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
+import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.annotation.OptIn
 import androidx.appcompat.app.AppCompatActivity
@@ -43,6 +46,7 @@ import com.widetv.app.tuner.TunerResult
 import com.widetv.app.tuner.TunerState
 import com.widetv.app.tuner.initialTuner
 import com.widetv.app.tuner.reduceTuner
+import com.widetv.app.ui.BackLayer
 import com.widetv.app.ui.EpisodeAdapter
 import com.widetv.app.ui.HeroModel
 import com.widetv.app.ui.NavEvent
@@ -51,6 +55,9 @@ import com.widetv.app.ui.NavState
 import com.widetv.app.ui.PosterAdapter
 import com.widetv.app.ui.PosterLoader
 import com.widetv.app.ui.ScreenId
+import com.widetv.app.ui.ScrubEvent
+import com.widetv.app.ui.ScrubResult
+import com.widetv.app.ui.ScrubState
 import com.widetv.app.ui.SeasonAdapter
 import com.widetv.app.ui.SeasonTab
 import com.widetv.app.ui.SettingsAdapter
@@ -73,6 +80,7 @@ import com.widetv.app.ui.WideCard
 import com.widetv.app.ui.WideCardAdapter
 import com.widetv.app.ui.activeTab
 import com.widetv.app.ui.applySettingsValue
+import com.widetv.app.ui.backLayer
 import com.widetv.app.ui.barProgress
 import com.widetv.app.ui.canonicalLang
 import com.widetv.app.ui.episodeItems
@@ -87,16 +95,20 @@ import com.widetv.app.ui.formatSeasonsMeta
 import com.widetv.app.ui.formatTrackDetail
 import com.widetv.app.ui.formatUpNextTime
 import com.widetv.app.ui.heroFor
+import com.widetv.app.ui.initialScrub
 import com.widetv.app.ui.initialsOf
 import com.widetv.app.ui.languageLabel
 import com.widetv.app.ui.libraryBusy
 import com.widetv.app.ui.liveRail
 import com.widetv.app.ui.metadataText
+import com.widetv.app.ui.packNav
 import com.widetv.app.ui.panelNote
 import com.widetv.app.ui.playerHint
 import com.widetv.app.ui.reduceNav
+import com.widetv.app.ui.reduceScrub
 import com.widetv.app.ui.reduceSettings
 import com.widetv.app.ui.reduceTrackPanel
+import com.widetv.app.ui.restoreSeasonAt
 import com.widetv.app.ui.resumeRail
 import com.widetv.app.ui.rows
 import com.widetv.app.ui.scanSummaryText
@@ -106,12 +118,14 @@ import com.widetv.app.ui.seasonTabs
 import com.widetv.app.ui.seriesResumeLabel
 import com.widetv.app.ui.shelfRail
 import com.widetv.app.ui.taskCard
+import com.widetv.app.ui.unpackNav
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import java.io.IOException
+import kotlin.math.abs
 
 /**
  * Unica tela do app: acesso, acervo, serie, player e configuracoes empilhados
@@ -156,6 +170,16 @@ class MainActivity : AppCompatActivity() {
   private var tuner: TunerState = initialTuner(0)
   private var panel = TrackPanelState()
 
+  /** Scrub do sob demanda: as setas movem este alvo, e o seek sai pelo tick. */
+  private var scrub: ScrubState = initialScrub(0L)
+
+  /**
+   * Tela salva em `onSaveInstanceState`, esperando o acervo carregar para ser
+   * reaberta. So da para validar o canal restaurado com a lista de canais na
+   * mao — e ela chega pela rede, depois do `Authenticated`.
+   */
+  private var pendingRestore: NavState? = null
+
   /**
    * "Lembrar este idioma" do painel de trilhas. Estado LOCAL, e nao
    * `AppSettings`: desligado, a escolha vale so nesta sessao e nada e gravado no
@@ -176,6 +200,27 @@ class MainActivity : AppCompatActivity() {
   private var episodes: List<EpisodeRef> = emptyList()
   private var seasons: List<SeasonTab> = emptyList()
   private var seasonAt: Int = 0
+
+  /** Canal dono da lista [episodes]; null enquanto nenhuma serie carregou. */
+  private var episodesChannel: Int? = null
+
+  /**
+   * Onde a tela de serie estava quando o player abriu: aba de temporada e
+   * indice (na fila inteira do canal) do episodio que saiu tocando.
+   *
+   * E o que o VOLTAR do player restaura — a serie reabre no ponto exato, e nao
+   * zerada na primeira aba. O `episodeIndex` anda junto com a maratona pelo
+   * `onVodEpisode`: quem voltou do quinto episodio quer o foco no quinto, nao
+   * no que apertou OK meia temporada atras.
+   */
+  private data class SeriesReturn(
+    val channelNumber: Int,
+    val seasonAt: Int,
+    /** -1 quando o player abriu ao vivo: nao ha linha de episodio a focar. */
+    val episodeIndex: Int,
+  )
+
+  private var seriesReturn: SeriesReturn? = null
 
   /**
    * Grupos de trilha do item que esta tocando, na mesma ordem das opcoes do
@@ -220,29 +265,82 @@ class MainActivity : AppCompatActivity() {
     wirePlayer()
     wireSettings()
 
-    // VOLTAR e uma so tecla com dois donos: fecha o painel de trilhas quando ele
-    // esta aberto e, fora disso, desce um degrau da navegacao.
+    // VOLTAR desce a hierarquia do `backLayer`: cada camada aberta no player
+    // engole a tecla (painel de trilhas, digitos do tuner, overlay) antes de a
+    // navegacao andar. A ordem mora no reducer; aqui so se descreve a tela.
     onBackPressedDispatcher.addCallback(this) {
-      if (panel.open) {
-        applyPanel(reduceTrackPanel(panel, TrackPanelEvent.Close))
-        return@addCallback
+      val typingChannel = tuner.buffer.isNotEmpty() && nav.screen == ScreenId.PLAYER
+      val overlayVisible =
+        views.overlay.visibility == View.VISIBLE && nav.screen == ScreenId.PLAYER
+      when (backLayer(panel.open, typingChannel, overlayVisible)) {
+        BackLayer.CLOSE_PANEL -> applyPanel(reduceTrackPanel(panel, TrackPanelEvent.Close))
+
+        // Cancela o "12_" digitado sem trocar o canal que esta no ar. O overlay
+        // fica: ele e a proxima camada, e o VOLTAR seguinte o esconde.
+        BackLayer.CLEAR_TUNER -> {
+          tuner = initialTuner(tuner.current)
+          views.osd.visibility = View.GONE
+        }
+
+        BackLayer.HIDE_OVERLAY -> hideOverlayNow()
+
+        BackLayer.NAVIGATE -> {
+          val result = reduceNav(nav, NavEvent.Back(now()))
+          when {
+            result.confirmExit -> {
+              applyNav(result)
+              Toast.makeText(this@MainActivity, R.string.home_exit_confirm, Toast.LENGTH_SHORT)
+                .show()
+            }
+
+            !result.exit -> applyNav(result)
+
+            else -> {
+              isEnabled = false
+              onBackPressedDispatcher.onBackPressed()
+            }
+          }
+        }
       }
-      val result = reduceNav(nav, NavEvent.Back)
-      if (!result.exit) {
-        applyNav(result)
-        return@addCallback
-      }
-      isEnabled = false
-      onBackPressedDispatcher.onBackPressed()
     }
 
     views.gateSubmit.setOnClickListener { submitGate() }
 
+    // O Enter do teclado virtual anda o fluxo do portao: do servidor para a
+    // senha, e da senha direto para o envio — sem obrigar ninguem a fechar o
+    // teclado e cacar o botao com o D-pad.
+    views.gateServer.setOnEditorActionListener { _, actionId, _ ->
+      if (actionId == EditorInfo.IME_ACTION_NEXT) {
+        views.gatePassword.requestFocus()
+        true
+      } else {
+        false
+      }
+    }
+    views.gatePassword.setOnEditorActionListener { _, actionId, _ ->
+      if (actionId == EditorInfo.IME_ACTION_DONE) {
+        submitGate()
+        true
+      } else {
+        false
+      }
+    }
+
     lifecycleScope.launch {
       val event = if (hasAccess()) NavEvent.Authenticated else NavEvent.SessionLost
+      // A tela salva so volta com sessao valida — e quem a reabre e o acervo,
+      // depois de carregar os canais e validar o que foi salvo.
+      if (event == NavEvent.Authenticated) {
+        pendingRestore = unpackNav(savedInstanceState?.getString(KEY_NAV))
+      }
       applyNav(reduceNav(nav, event))
       if (event == NavEvent.Authenticated) seedSettings()
     }
+  }
+
+  override fun onSaveInstanceState(outState: Bundle) {
+    super.onSaveInstanceState(outState)
+    outState.putString(KEY_NAV, packNav(nav))
   }
 
   /**
@@ -270,15 +368,52 @@ class MainActivity : AppCompatActivity() {
     return runCatching { api.login(password) }.getOrDefault(false)
   }
 
+  /**
+   * true enquanto um 401 ja esta sendo tratado: os demais desistem em silencio.
+   * E o que limita o relogin a UMA tentativa por evento — um servidor que aceita
+   * a senha mas segue devolvendo 401 nao pode virar um loop de login.
+   */
+  private var handling401 = false
+
+  /**
+   * 401 no meio do uso. Antes de derrubar alguem para o portao, tenta refazer a
+   * sessao em silencio com [hasAccess]: o cookie vence sozinho, e so cookie
+   * invalido E senha rejeitada merecem a tela de senha de novo.
+   *
+   * A chamada que falhou NAO e refeita: com a sessao refeita, a proxima acao ja
+   * funciona, e repetir requests por conta propria e o primeiro passo de um
+   * loop.
+   */
+  private suspend fun onUnauthorized() {
+    if (handling401) return
+    handling401 = true
+    try {
+      if (hasAccess()) return
+      applyNav(reduceNav(nav, NavEvent.SessionLost))
+    } finally {
+      handling401 = false
+    }
+  }
+
+  /**
+   * A TV acorda limpa. Retomar depois do standby nao e possivel de todo jeito:
+   * a grade andou sozinha, e um episodio sob demanda pausado no escuro por
+   * horas nao e um lugar de onde continuar.
+   *
+   * O rebaixamento acontece AQUI, e nao no `onStop`: trocar de tela com a
+   * Activity invisivel deixaria o `requestFocus` da tela de chegada falar com
+   * uma janela que nao existe, e o foco acordaria perdido.
+   */
+  override fun onStart() {
+    super.onStart()
+    if (nav.screen == ScreenId.PLAYER) applyNav(reduceNav(nav, NavEvent.Back(now())))
+  }
+
   override fun onStop() {
     super.onStop()
     stopTicker()
     stopStatusPoll()
     player.stop()
-    // A TV acorda limpa. Retomar depois do standby nao e possivel de todo jeito:
-    // a grade andou sozinha, e um episodio sob demanda pausado no escuro por
-    // horas nao e um lugar de onde continuar.
-    if (nav.screen == ScreenId.PLAYER) applyNav(reduceNav(nav, NavEvent.Back))
   }
 
   override fun onDestroy() {
@@ -335,7 +470,13 @@ class MainActivity : AppCompatActivity() {
 
   private fun openGate() {
     views.gateServer.setText(store.serverUrl)
-    views.gatePassword.requestFocus()
+    // Primeiro uso: sem servidor guardado, o endereco e o primeiro campo a
+    // preencher. Com ele na mao, so a senha falta.
+    if (store.serverUrl.isEmpty()) {
+      views.gateServer.requestFocus()
+    } else {
+      views.gatePassword.requestFocus()
+    }
   }
 
   private fun submitGate() {
@@ -418,8 +559,8 @@ class MainActivity : AppCompatActivity() {
       views.rowsScroll.smoothScrollTo(0, 0)
       views.heroPlay.requestFocus()
     }
-    views.topbarNavLive.setOnClickListener { views.railLive.requestFocus() }
-    views.topbarNavShelf.setOnClickListener { views.railShelf.requestFocus() }
+    views.topbarNavLive.setOnClickListener { focusRail(views.railLive) }
+    views.topbarNavShelf.setOnClickListener { focusRail(views.railShelf) }
 
     views.topbarSearchInput.addTextChangedListener(object : TextWatcher {
       override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
@@ -429,6 +570,23 @@ class MainActivity : AppCompatActivity() {
         renderShelf()
       }
     })
+
+    // O campo de busca nao pode virar armadilha horizontal: dentro do texto a
+    // seta move o cursor, mas com o cursor ja na ponta ela vira navegacao e sai
+    // pelos vizinhos do XML (`nextFocusLeft`/`nextFocusRight=home_settings`).
+    views.topbarSearchInput.setOnKeyListener { view, keyCode, event ->
+      if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+      val input = view as EditText
+      val atStart = input.selectionStart <= 0 && input.selectionEnd <= 0
+      val atEnd = input.selectionStart >= input.length() && input.selectionEnd >= input.length()
+      val direction = when {
+        keyCode == KeyEvent.KEYCODE_DPAD_LEFT && atStart -> View.FOCUS_LEFT
+        keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && atEnd -> View.FOCUS_RIGHT
+        else -> return@setOnKeyListener false
+      }
+      val next = input.focusSearch(direction) ?: return@setOnKeyListener false
+      next.requestFocus()
+    }
 
     // A nav do topo acende sozinha conforme o foco anda: marcar so no clique
     // faria "Ao vivo" continuar aceso depois de a seta ja ter descido ao acervo.
@@ -458,7 +616,7 @@ class MainActivity : AppCompatActivity() {
       val loaded = try {
         api.channels()
       } catch (error: UnauthorizedException) {
-        applyNav(reduceNav(nav, NavEvent.SessionLost))
+        onUnauthorized()
         return@launch
       } catch (error: IOException) {
         views.homeStatus.setText(R.string.gate_offline)
@@ -470,11 +628,37 @@ class MainActivity : AppCompatActivity() {
       views.homeStatus.visibility = if (loaded.isEmpty()) View.VISIBLE else View.GONE
       if (loaded.isEmpty()) {
         views.homeStatus.setText(R.string.home_empty)
+        consumePendingRestore()
         return@launch
       }
       renderHero()
       focusShelf(focusOn)
       loadRails()
+      consumePendingRestore()
+    }
+  }
+
+  /**
+   * Reabre a tela salva antes da recriacao da Activity, agora que os canais
+   * chegaram e da para conferir se a serie salva ainda existe: a biblioteca
+   * pode ter mudado entre uma sessao e outra, e restaurar uma tela de serie
+   * vazia seria pior que ficar no acervo, que ja esta na tela.
+   */
+  private fun consumePendingRestore() {
+    val target = pendingRestore ?: return
+    pendingRestore = null
+    when (target.screen) {
+      ScreenId.SERIES -> {
+        val channelNumber = target.channelNumber ?: return
+        if (channels.none { it.number == channelNumber }) return
+        applyNav(reduceNav(nav, NavEvent.OpenSeries(channelNumber)))
+      }
+
+      ScreenId.SETTINGS -> applyNav(reduceNav(nav, NavEvent.OpenSettings))
+
+      // HOME ja esta na tela. PLAYER nunca sai do `unpackNav` como alvo, e um
+      // GATE salvo nao tem o que restaurar: a sessao acabou de ser validada.
+      else -> Unit
     }
   }
 
@@ -590,6 +774,37 @@ class MainActivity : AppCompatActivity() {
     for (button in listOf(views.heroPlay, views.heroEpisodes, views.heroFirst)) {
       button.nextFocusDownId = first
     }
+
+    // A nav do topo espelha quais faixas existem nesta sessao: item de faixa
+    // ausente fica apagado em vez de prometer um clique para lugar nenhum.
+    // Segue focavel de proposito — desabilitar quebraria a corrente de
+    // nextFocus do topo — e o clique cai na faixa visivel mais proxima.
+    views.topbarNavLive.alpha =
+      if (views.rowLive.visibility == View.VISIBLE) 1f else NAV_DIM_ALPHA
+    views.topbarNavShelf.alpha =
+      if (views.rowShelf.visibility == View.VISIBLE) 1f else NAV_DIM_ALPHA
+  }
+
+  /**
+   * Foco na faixa pedida ou, quando ela nao existe nesta sessao, na faixa
+   * visivel mais proxima; sem faixa nenhuma, o hero. Um clique na nav nunca
+   * morre num `requestFocus` de view GONE, que falha em silencio.
+   */
+  private fun focusRail(target: RecyclerView) {
+    val ordered = listOf(
+      views.rowLive to views.railLive,
+      views.rowResume to views.railResume,
+      views.rowShelf to views.railShelf,
+    )
+    val visible = ordered.filter { (row, _) -> row.visibility == View.VISIBLE }
+    if (visible.isEmpty()) {
+      views.heroPlay.requestFocus()
+      return
+    }
+    val at = ordered.indexOfFirst { (_, rail) -> rail === target }
+    val pick = visible.firstOrNull { (_, rail) -> rail === target }
+      ?: visible.minByOrNull { pair -> abs(ordered.indexOf(pair) - at) }!!
+    pick.second.requestFocus()
   }
 
   /** Acende o item da nav correspondente a secao onde o foco esta. */
@@ -623,7 +838,20 @@ class MainActivity : AppCompatActivity() {
     }
     views.railShelf.scrollToPosition(at)
     views.railShelf.doOnPreDraw {
-      views.railShelf.findViewHolderForAdapterPosition(at)?.itemView?.requestFocus()
+      val row = views.railShelf.findViewHolderForAdapterPosition(at)?.itemView
+      if (row != null) {
+        row.requestFocus()
+        return@doOnPreDraw
+      }
+      // O card ainda nao nasceu neste quadro (o layout do RecyclerView e
+      // assincrono): espera mais um desenho. O invalidate garante que esse
+      // desenho existe. Falhando de novo, o hero e o fallback deterministico —
+      // foco perdido ao acaso e pior que foco no lugar de sempre.
+      views.railShelf.invalidate()
+      views.railShelf.doOnPreDraw {
+        views.railShelf.findViewHolderForAdapterPosition(at)?.itemView?.requestFocus()
+          ?: views.heroPlay.requestFocus()
+      }
     }
   }
 
@@ -680,20 +908,53 @@ class MainActivity : AppCompatActivity() {
     views.seriesInitials.text = initialsOf(channel.name)
     views.seriesResumeText.text = seriesResumeLabel(resumeFor(channelNumber))
 
+    loadPoster(channel)
+    loadBackdrop(channel)
+
+    // Volta do player da MESMA serie, com a lista ainda na mao: nada de zerar a
+    // aba nem esvaziar os episodios — a tela reabre no ponto exato de onde o
+    // player saiu, com o foco na linha do episodio que tocava.
+    val saved = seriesReturn?.takeIf { it.channelNumber == channelNumber }
+    if (saved != null && episodesChannel == channelNumber && episodes.isNotEmpty()) {
+      // Consumido: o estado vale para ESTA volta. Ficar vivo para sempre faria
+      // uma visita nova, dias depois, reabrir numa aba que ja nao diz nada.
+      seriesReturn = null
+      seasonAt = restoreSeasonAt(seasons, saved.seasonAt, resumeSeason(channelNumber))
+      renderSeasons()
+      focusEpisodeRow(saved.episodeIndex)
+      return
+    }
+
     // As abas nascem de `ChannelSummary.seasons`, que ja esta na mao: esperar a
     // lista de episodios faria a barra aparecer depois, empurrando a tela.
     seasons = seasonTabs(channel.seasons, emptyList())
     seasonAt = 0
     episodes = emptyList()
     renderSeasons()
-
-    loadPoster(channel)
-    loadBackdrop(channel)
     loadEpisodes(channelNumber)
 
     // O foco vai para o botao primario: e o que a maioria quer, e sair dele para
     // a lista de episodios e uma seta para baixo.
     views.seriesResume.requestFocus()
+  }
+
+  /**
+   * Scroll e foco na linha do episodio dado, esperando o RecyclerView criar a
+   * linha (mesmo protocolo do `focusShelf`). Sem a linha na aba ativa — a
+   * maratona pode ter atravessado a temporada — o botao primario e o fallback
+   * deterministico: e o `series_resume`, que ja diz de onde continuar.
+   */
+  private fun focusEpisodeRow(episodeIndex: Int) {
+    val at = episodeRows.items.indexOfFirst { it.index == episodeIndex }
+    if (at < 0) {
+      views.seriesResume.requestFocus()
+      return
+    }
+    views.seriesEpisodes.scrollToPosition(at)
+    views.seriesEpisodes.doOnPreDraw {
+      views.seriesEpisodes.findViewHolderForAdapterPosition(at)?.itemView?.requestFocus()
+        ?: views.seriesResume.requestFocus()
+    }
   }
 
   private fun resumeFor(channelNumber: Int): ResumeEntry? =
@@ -740,6 +1001,7 @@ class MainActivity : AppCompatActivity() {
     // A lista some antes da resposta chegar: um OK apressado nao pode tocar o
     // episodio da serie anterior.
     episodes = emptyList()
+    episodesChannel = null
     episodeRows.items = emptyList()
 
     episodesJob?.cancel()
@@ -747,7 +1009,7 @@ class MainActivity : AppCompatActivity() {
       val loaded = try {
         api.episodes(channelNumber)
       } catch (error: UnauthorizedException) {
-        applyNav(reduceNav(nav, NavEvent.SessionLost))
+        onUnauthorized()
         return@launch
       } catch (error: IOException) {
         return@launch
@@ -755,12 +1017,17 @@ class MainActivity : AppCompatActivity() {
 
       if (nav.channelNumber != channelNumber) return@launch
       episodes = loaded.orEmpty()
+      episodesChannel = channelNumber
       val channel = channels.firstOrNull { it.number == channelNumber }
       seasons = seasonTabs(channel?.seasons.orEmpty(), episodes)
       // A aba que abre e a da retomada: quem parou na quarta temporada nao quer
-      // rolar tres abas para achar de onde continuar.
-      seasonAt = seasons.indexOfFirst { it.season == resumeSeason(channelNumber) }
-        .coerceAtLeast(0)
+      // rolar tres abas para achar de onde continuar. Com estado salvo de uma
+      // ida ao player (a lista se esvaziou no caminho), a aba salva vence.
+      seasonAt = restoreSeasonAt(
+        seasons,
+        seriesReturn?.takeIf { it.channelNumber == channelNumber }?.seasonAt,
+        resumeSeason(channelNumber),
+      )
       renderSeasons()
     }
   }
@@ -801,6 +1068,8 @@ class MainActivity : AppCompatActivity() {
   /** ASSISTIR AO VIVO: entra na grade do canal, no ponto em que ela esta agora. */
   private fun watchLive() {
     val channelNumber = nav.channelNumber ?: return
+    // Ao vivo nao ha episodio a focar na volta, mas a aba aberta se preserva.
+    seriesReturn = SeriesReturn(channelNumber, seasonAt, episodeIndex = -1)
     enterLive(channelNumber)
   }
 
@@ -825,6 +1094,8 @@ class MainActivity : AppCompatActivity() {
     val channel = channels.firstOrNull { it.number == channelNumber } ?: return
     if (index !in episodes.indices) return
 
+    // Foto da tela antes de sair: e para ca que o VOLTAR do player devolve.
+    seriesReturn = SeriesReturn(channelNumber, seasonAt, index)
     applyNav(reduceNav(nav, NavEvent.OpenPlayer(channelNumber)))
     player.playOnDemand(channel, episodes, index, positionMs)
   }
@@ -861,7 +1132,7 @@ class MainActivity : AppCompatActivity() {
       val loaded = try {
         api.settings()
       } catch (error: UnauthorizedException) {
-        applyNav(reduceNav(nav, NavEvent.SessionLost))
+        onUnauthorized()
         return@launch
       } catch (error: IOException) {
         showSettingsMessage(getString(R.string.gate_offline), alert = true)
@@ -887,9 +1158,21 @@ class MainActivity : AppCompatActivity() {
 
   private fun handleSettingsKey(keyCode: Int, event: KeyEvent): Boolean {
     // Antes de o GET responder nao ha valor para mudar, e o reducer decide em
-    // cima do `AppSettings` de verdade — nunca de um palpite. As teclas seguem
-    // para o `super` para o VOLTAR continuar funcionando.
-    val current = settings ?: return super.onKeyDown(keyCode, event)
+    // cima do `AppSettings` de verdade — nunca de um palpite. Mas as setas e o
+    // OK morrem aqui mesmo assim: se caissem no `super`, o foco nativo vagaria
+    // durante o carregamento e a tela acordaria com dois destaques. So o
+    // VOLTAR (e as demais teclas) seguem para o `super`.
+    val current = settings ?: return when (keyCode) {
+      KeyEvent.KEYCODE_DPAD_UP,
+      KeyEvent.KEYCODE_DPAD_DOWN,
+      KeyEvent.KEYCODE_DPAD_LEFT,
+      KeyEvent.KEYCODE_DPAD_RIGHT,
+      KeyEvent.KEYCODE_DPAD_CENTER,
+      KeyEvent.KEYCODE_ENTER,
+      -> true
+
+      else -> super.onKeyDown(keyCode, event)
+    }
     val settingsEvent = when (keyCode) {
       KeyEvent.KEYCODE_DPAD_UP -> SettingsEvent.Up
       KeyEvent.KEYCODE_DPAD_DOWN -> SettingsEvent.Down
@@ -925,7 +1208,7 @@ class MainActivity : AppCompatActivity() {
       val applied = try {
         api.patchSettings(bodyOf(command))
       } catch (error: UnauthorizedException) {
-        applyNav(reduceNav(nav, NavEvent.SessionLost))
+        onUnauthorized()
         return@launch
       } catch (error: IOException) {
         // PATCH que falha nao pode deixar a tela mentindo: o valor volta ao que
@@ -973,7 +1256,7 @@ class MainActivity : AppCompatActivity() {
       val accepted = try {
         start()
       } catch (error: UnauthorizedException) {
-        applyNav(reduceNav(nav, NavEvent.SessionLost))
+        onUnauthorized()
         return@launch
       } catch (error: IOException) {
         settingsUi = settingsUi.copy(busy = null)
@@ -1099,10 +1382,6 @@ class MainActivity : AppCompatActivity() {
     views.trackList.layoutManager = LinearLayoutManager(this)
     views.trackList.adapter = trackRows
 
-    // Tela cheia nao faz sentido numa TV: o app JA ocupa o painel inteiro, e um
-    // botao que nao muda nada e um botao que mente.
-    views.fullscreen.visibility = View.GONE
-
     views.playToggle.setOnClickListener { togglePause() }
     views.seekBack.setOnClickListener { seek(-SEEK_MS) }
     views.seekFwd.setOnClickListener { seek(SEEK_MS) }
@@ -1116,11 +1395,12 @@ class MainActivity : AppCompatActivity() {
     views.tabSubs.setOnClickListener {
       applyPanel(reduceTrackPanel(panel, TrackPanelEvent.Tab(TrackKind.TEXT)))
     }
-    views.trackRemember.setOnClickListener { toggleRemember() }
   }
 
   private fun openPlayer() {
     views.root.requestFocus()
+    // Alvo de scrub de uma sessao anterior nao pode vazar para esta.
+    scrub = initialScrub(0L)
     views.overlayHint.text = playerHint(player.mode == ChannelPlayer.PlaybackMode.LIVE)
     startTicker()
     poke()
@@ -1130,7 +1410,7 @@ class MainActivity : AppCompatActivity() {
     val ok = try {
       player.tune(channelNumber)
     } catch (error: UnauthorizedException) {
-      applyNav(reduceNav(nav, NavEvent.SessionLost))
+      onUnauthorized()
       return
     } catch (error: IOException) {
       Log.w(TAG, "falha ao sintonizar $channelNumber", error)
@@ -1156,6 +1436,10 @@ class MainActivity : AppCompatActivity() {
     if (nav.screen == ScreenId.SETTINGS) return handleSettingsKey(keyCode, event)
     if (panel.open) return handlePanelKey(keyCode, event)
     if (nav.screen != ScreenId.PLAYER) return super.onKeyDown(keyCode, event)
+
+    // VOLTAR nunca reacende o overlay que ele proprio vai esconder: segue
+    // direto para o dispatcher, sem passar pelo poke().
+    if (keyCode == KeyEvent.KEYCODE_BACK) return super.onKeyDown(keyCode, event)
 
     // Qualquer tecla traz o overlay de volta. E o mesmo relogio do OSD: um
     // segundo timer daria duas contagens diferentes para a mesma inatividade.
@@ -1198,11 +1482,40 @@ class MainActivity : AppCompatActivity() {
       KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN ->
         if (live) return step(-1, event.repeatCount)
 
-      KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND ->
-        if (!live) return seek(-SEEK_MS)
+      KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> {
+        if (!live) return scrubBy(-1, event.repeatCount)
+        // Ao vivo a seta lateral nao pode cair no `super`: a focus-search
+        // acharia algum focavel fora do player e o cursor sumiria da tela.
+        // A tecla morre aqui, e o OSD explica por que nada andou.
+        showOsd(formatScrubNote(live = true, remainingMs = 0L))
+        return true
+      }
 
-      KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD ->
-        if (!live) return seek(SEEK_MS)
+      KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+        if (!live) return scrubBy(1, event.repeatCount)
+        showOsd(formatScrubNote(live = true, remainingMs = 0L))
+        return true
+      }
+
+      KeyEvent.KEYCODE_MEDIA_NEXT, KeyEvent.KEYCODE_MEDIA_SKIP_FORWARD -> {
+        // Ao vivo "proximo" e o proximo CANAL, como no zap. Sob demanda e o
+        // proximo episodio da fila, que o playOnDemand enfileirou inteira.
+        if (live) return step(1, 0)
+        skipEpisode(forward = true)
+        return true
+      }
+
+      KeyEvent.KEYCODE_MEDIA_PREVIOUS, KeyEvent.KEYCODE_MEDIA_SKIP_BACKWARD -> {
+        if (live) return step(-1, 0)
+        skipEpisode(forward = false)
+        return true
+      }
+
+      KeyEvent.KEYCODE_MEDIA_STOP -> {
+        // Parar e sair do player: a navegacao ja sabe para quem o abriu.
+        applyNav(reduceNav(nav, NavEvent.Back(now())))
+        return true
+      }
     }
 
     // Sintonia direta por digito, como num controle antigo. So ao vivo: numa
@@ -1222,10 +1535,49 @@ class MainActivity : AppCompatActivity() {
     return true
   }
 
+  /** Salto imediato dos botoes do overlay: clique nao repete, nao precisa de reducer. */
   private fun seek(deltaMs: Long): Boolean {
     player.seekBy(deltaMs)
     renderOverlay()
     return true
+  }
+
+  /**
+   * Setas laterais sob demanda passam pelo reducer de scrub, como o zap passa
+   * pelo sintonizador: a tecla presa so move um alvo na barra, e o seek de
+   * verdade sai UMA vez, pelo tick, quando a mao solta.
+   */
+  private fun scrubBy(delta: Int, repeatCount: Int): Boolean {
+    // Gesto novo parte de onde o video esta agora; no meio de um gesto o
+    // reducer ja sabe de onde continuar.
+    if (scrub.targetMs == null) {
+      scrub = initialScrub(player.exo.currentPosition.coerceAtLeast(0L))
+    }
+    applyScrub(reduceScrub(scrub, ScrubEvent.Step(delta, repeatCount, now()), scrubDurationMs()))
+    return true
+  }
+
+  private fun scrubDurationMs(): Long = player.exo.duration.coerceAtLeast(0L)
+
+  private fun applyScrub(result: ScrubResult) {
+    scrub = result.state
+    result.seekTo?.let { player.seekTo(it) }
+    // Preview e commit redesenham a barra: enquanto o gesto dura, o relogio do
+    // overlay mostra o alvo (renderOverlay le `scrub.targetMs`).
+    if (result.seekTo != null || result.preview != null) renderOverlay()
+  }
+
+  /**
+   * Pula para o episodio vizinho da fila sob demanda. So VOD: ao vivo a fila do
+   * ExoPlayer pode nem ter o `next` ainda — ele so entra depois do probe
+   * confirmar que o stream existe — e "proximo" significa outro canal.
+   */
+  private fun skipEpisode(forward: Boolean) {
+    // O alvo de scrub pendente era do episodio antigo: um commit atrasado nao
+    // pode cair no meio do episodio novo.
+    scrub = initialScrub(0L)
+    if (forward) player.exo.seekToNextMediaItem() else player.exo.seekToPreviousMediaItem()
+    renderOverlay()
   }
 
   private fun step(delta: Int, repeatCount: Int): Boolean {
@@ -1285,6 +1637,17 @@ class MainActivity : AppCompatActivity() {
     }
   }
 
+  /**
+   * Esconde overlay e OSD agora, sem esperar o timer: e o VOLTAR agindo como
+   * camada. O timer morre junto para nao apagar de novo o que ja esta apagado.
+   */
+  private fun hideOverlayNow() {
+    osdHide?.cancel()
+    views.overlay.visibility = View.GONE
+    views.osd.visibility = View.GONE
+    views.root.requestFocus()
+  }
+
   private fun showOsd(text: String, sticky: Boolean = false) {
     views.osd.text = text
     views.osd.visibility = View.VISIBLE
@@ -1312,7 +1675,9 @@ class MainActivity : AppCompatActivity() {
     views.upnextTime.text = if (live && endsAtMs != null) formatUpNextTime(endsAtMs, now()) else ""
     views.upnextTime.visibility = show(live && endsAtMs != null)
 
-    val position = exo.currentPosition.coerceAtLeast(0L)
+    // Durante o scrub a barra e o relogio mostram o ALVO do reducer, nao a
+    // posicao real: e o preview andando antes de o seek acontecer.
+    val position = scrub.targetMs ?: exo.currentPosition.coerceAtLeast(0L)
     val duration = exo.duration.coerceAtLeast(0L)
     views.scrubBar.progress = barProgress(position, duration)
     views.scrubLeft.text = formatScrubLeft(position)
@@ -1358,6 +1723,11 @@ class MainActivity : AppCompatActivity() {
       while (isActive) {
         delay(TICK_MS)
         if (views.overlay.visibility == View.VISIBLE) renderOverlay()
+        // O commit atrasado do scrub sai do MESMO pulso do sintonizador: um
+        // segundo timer daria duas contagens para a mesma ociosidade.
+        if (scrub.targetMs != null) {
+          applyScrub(reduceScrub(scrub, ScrubEvent.Tick(now()), scrubDurationMs()))
+        }
         if (tuner.buffer.isEmpty() && tuner.pending == null) continue
         applyTuner(reduceTuner(tuner, TunerEvent.Tick(now()), channelNumbers()))
       }
@@ -1391,7 +1761,12 @@ class MainActivity : AppCompatActivity() {
     applyPanel(
       reduceTrackPanel(
         panel,
-        TrackPanelEvent.Open(audio, text, getString(R.string.tracks_off)),
+        TrackPanelEvent.Open(
+          audio,
+          text,
+          getString(R.string.tracks_off),
+          remember = rememberTrack,
+        ),
       ),
     )
   }
@@ -1445,9 +1820,9 @@ class MainActivity : AppCompatActivity() {
       KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER ->
         applyPanel(reduceTrackPanel(panel, TrackPanelEvent.Select))
 
-      // O interruptor de "lembrar" nao entra no cursor: ele nao e uma escolha de
-      // faixa, e enfia-lo na lista faria a seta parar num lugar que nao toca
-      // nada. MENU e a tecla que ja abriu este painel.
+      // "Lembrar este idioma" e a ultima linha da lista, alcancavel pela seta:
+      // o OK nela alterna via reducer. MENU continua como atalho para os
+      // controles que ainda tem a tecla.
       KeyEvent.KEYCODE_MENU -> toggleRemember()
 
       else -> return super.onKeyDown(keyCode, event)
@@ -1455,18 +1830,25 @@ class MainActivity : AppCompatActivity() {
     return true
   }
 
+  /** Atalho de MENU: mesmo efeito do OK na linha de lembrar, sem mover o cursor. */
   private fun toggleRemember() {
     rememberTrack = !rememberTrack
+    if (panel.open) {
+      panel = panel.copy(remember = rememberTrack)
+      trackRows.rows = rows(panel)
+    }
     renderPanelFooter()
   }
 
   private fun renderPanelFooter() {
-    views.trackRememberSwitch.isChecked = rememberTrack
     views.panelNote.text = panelNote(rememberTrack)
   }
 
   private fun applyPanel(result: TrackPanelResult) {
     panel = result.state
+    // O OK caiu na linha de lembrar: o reducer ja alternou, a Activity so copia
+    // — `rememberTrack` sobrevive ao painel fechado e decide o pushPreference.
+    if (result.toggleRemember) rememberTrack = panel.remember
 
     result.choose?.let { choice ->
       when (choice.kind) {
@@ -1494,6 +1876,9 @@ class MainActivity : AppCompatActivity() {
     views.tracksVeil.visibility = View.VISIBLE
     views.osd.visibility = View.GONE
     views.overlay.visibility = View.GONE
+    // Dono unico de foco tambem com o painel aberto: o cursor e do reducer, e
+    // as teclas precisam continuar chegando na raiz — espelho do closePanel().
+    views.root.requestFocus()
   }
 
   private fun closePanel() {
@@ -1571,15 +1956,27 @@ class MainActivity : AppCompatActivity() {
       showOsd(getString(R.string.no_signal))
     }
 
+    override fun onPreparing() {
+      // O servidor esta gerando o remux do episodio (202). O player espera e
+      // segue sozinho; aqui e so para a tela preta ter uma explicacao.
+      showOsd(getString(R.string.preparing_stream))
+    }
+
     override fun onError(error: Throwable) {
       if (error is UnauthorizedException) {
-        applyNav(reduceNav(nav, NavEvent.SessionLost))
+        lifecycleScope.launch { onUnauthorized() }
       } else {
         Log.w(TAG, "erro no player", error)
       }
     }
 
     override fun onVodEpisode(channel: ChannelSummary, episode: EpisodeRef) {
+      // A maratona andou: o VOLTAR devolve a serie na linha do episodio que
+      // TOCAVA, nao na do que apertou OK meia temporada atras.
+      seriesReturn?.takeIf { it.channelNumber == channel.number }?.let { saved ->
+        val at = episodes.indexOfFirst { it.id == episode.id }
+        if (at >= 0) seriesReturn = saved.copy(episodeIndex = at)
+      }
       showOsd(formatNowLine(channel, episode))
       views.overlayHint.text = playerHint(live = false)
     }
@@ -1587,17 +1984,23 @@ class MainActivity : AppCompatActivity() {
     override fun onVodEnded() {
       // A maratona acabou. Volta para a serie, que e de onde ela saiu — tela
       // preta com o app aberto nao e um lugar onde deixar alguem.
-      applyNav(reduceNav(nav, NavEvent.Back))
+      applyNav(reduceNav(nav, NavEvent.Back(now())))
     }
   }
 
   private companion object {
     const val TAG = "WideTv"
+
+    /** Chave do snapshot de navegacao no `Bundle` da Activity. */
+    const val KEY_NAV = "nav"
     const val OSD_HOLD_MS = 3_000L
     const val SEEK_MS = 10_000L
 
     /** Fino o suficiente para o commit de 250ms do passo nao parecer travado. */
     const val TICK_MS = 100L
+
+    /** Item da nav do topo cuja faixa nao existe nesta sessao: apagado, nao sumido. */
+    const val NAV_DIM_ALPHA = 0.4f
 
     /**
      * Um scan mede milhares de arquivos: a contagem anda devagar e perguntar

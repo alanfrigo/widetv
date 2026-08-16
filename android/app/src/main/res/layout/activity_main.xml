@@ -216,34 +216,23 @@
                             android:textStyle="bold" />
                     </LinearLayout>
 
+                    <!--
+                      Botoes do overlay sao alvo SO de toque: no controle remoto
+                      o dono do foco e a raiz, e as teclas passam pelo reducer.
+                      Foco nativo aqui criaria um segundo cursor.
+                    -->
                     <TextView
                         android:id="@+id/tracks_open"
                         android:layout_width="wrap_content"
                         android:layout_height="36dp"
                         android:layout_marginStart="8dp"
                         android:background="@drawable/ctl_bg"
-                        android:focusable="true"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
                         android:gravity="center"
-                        android:nextFocusDown="@id/play_toggle"
-                        android:nextFocusRight="@id/fullscreen"
                         android:paddingStart="15dp"
                         android:paddingEnd="15dp"
                         android:text="@string/tracks_open"
-                        android:textColor="@color/text"
-                        android:textSize="@dimen/text_card"
-                        android:textStyle="bold" />
-
-                    <TextView
-                        android:id="@+id/fullscreen"
-                        android:layout_width="36dp"
-                        android:layout_height="36dp"
-                        android:layout_marginStart="8dp"
-                        android:background="@drawable/ctl_bg"
-                        android:focusable="true"
-                        android:gravity="center"
-                        android:nextFocusDown="@id/play_toggle"
-                        android:nextFocusLeft="@id/tracks_open"
-                        android:text="@string/glyph_fullscreen"
                         android:textColor="@color/text"
                         android:textSize="@dimen/text_card"
                         android:textStyle="bold" />
@@ -261,10 +250,9 @@
                         android:layout_width="45dp"
                         android:layout_height="45dp"
                         android:background="@drawable/play_circle"
-                        android:focusable="true"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
                         android:gravity="center"
-                        android:nextFocusUp="@id/tracks_open"
-                        android:nextFocusRight="@id/seek_back"
                         android:text="@string/glyph_play"
                         android:textColor="@color/accent_ink"
                         android:textSize="@dimen/text_card" />
@@ -334,10 +322,9 @@
                         android:layout_width="33dp"
                         android:layout_height="33dp"
                         android:background="@drawable/ctl_bg"
-                        android:focusable="true"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
                         android:gravity="center"
-                        android:nextFocusLeft="@id/play_toggle"
-                        android:nextFocusRight="@id/seek_fwd"
                         android:text="@string/player_seek_back"
                         android:textColor="@color/text"
                         android:textSize="@dimen/text_micro"
@@ -349,9 +336,9 @@
                         android:layout_height="33dp"
                         android:layout_marginStart="8dp"
                         android:background="@drawable/ctl_bg"
-                        android:focusable="true"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
                         android:gravity="center"
-                        android:nextFocusLeft="@id/seek_back"
                         android:text="@string/player_seek_fwd"
                         android:textColor="@color/text"
                         android:textSize="@dimen/text_micro"
@@ -478,7 +465,8 @@
                     android:layout_height="30dp"
                     android:layout_marginStart="10dp"
                     android:background="@drawable/btn_soft"
-                    android:focusable="true"
+                    android:focusable="false"
+                    android:focusableInTouchMode="false"
                     android:gravity="center"
                     android:text="@string/glyph_close"
                     android:textColor="@color/text_2"
@@ -504,7 +492,8 @@
                     android:layout_marginEnd="2dp"
                     android:layout_weight="1"
                     android:background="@drawable/season_tab"
-                    android:focusable="true"
+                    android:focusable="false"
+                    android:focusableInTouchMode="false"
                     android:gravity="center"
                     android:text="@string/tracks_audio"
                     android:textColor="@color/text_2"
@@ -518,7 +507,8 @@
                     android:layout_marginStart="2dp"
                     android:layout_weight="1"
                     android:background="@drawable/season_tab"
-                    android:focusable="true"
+                    android:focusable="false"
+                    android:focusableInTouchMode="false"
                     android:gravity="center"
                     android:text="@string/tracks_subtitles"
                     android:textColor="@color/text_2"
@@ -544,50 +534,16 @@
                 android:descendantFocusability="blocksDescendants"
                 android:focusable="false" />
 
+            <!--
+              "Lembrar este idioma" NAO fica mais aqui: virou a ultima linha da
+              lista (`item_track_remember.xml`), alcancavel pelo cursor — o
+              controle do Google TV nao tem MENU para alternar um rodape.
+            -->
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"
                 android:layout_marginTop="18dp"
                 android:background="@color/line" />
-
-            <LinearLayout
-                android:id="@+id/track_remember"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:background="@drawable/row_track"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingStart="12dp"
-                android:paddingTop="10dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="10dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/track_remember"
-                    android:textColor="@color/text"
-                    android:textSize="@dimen/text_card"
-                    android:textStyle="bold" />
-
-                <!--
-                  Estado do interruptor vem do Kotlin (`isChecked`); ele proprio
-                  nao recebe foco porque quem confirma e a linha inteira.
-                -->
-                <androidx.appcompat.widget.SwitchCompat
-                    android:id="@+id/track_remember_switch"
-                    android:layout_width="wrap_content"
-                    android:layout_height="22dp"
-                    android:clickable="false"
-                    android:focusable="false"
-                    android:showText="false"
-                    android:switchMinWidth="39dp"
-                    android:thumb="@drawable/switch_knob"
-                    android:track="@drawable/switch_track" />
-            </LinearLayout>
 
             <TextView
                 android:id="@+id/panel_note"
@@ -1055,10 +1011,14 @@
                 android:layout_height="1dp"
                 android:layout_weight="1" />
 
+            <!-- addStatesFromChildren: quem foca e o EditText (fundo @null),
+                 mas quem tem a pill e este container — sem herdar o estado do
+                 filho, o selector focado da pill nunca acenderia. -->
             <LinearLayout
                 android:id="@+id/topbar_search"
                 android:layout_width="195dp"
                 android:layout_height="30dp"
+                android:addStatesFromChildren="true"
                 android:background="@drawable/pill"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
@@ -1511,12 +1471,18 @@
             android:paddingStart="@dimen/page_x"
             android:paddingEnd="@dimen/page_x">
 
+            <!--
+              Alvo so de toque: no controle o degrau de sair e o BACK, e o
+              cursor das configuracoes e do reducer — foco nativo aqui seria
+              um segundo destaque disputando a mesma tela.
+            -->
             <TextView
                 android:id="@+id/settings_back"
                 android:layout_width="wrap_content"
                 android:layout_height="30dp"
                 android:background="@drawable/pill"
-                android:focusable="true"
+                android:focusable="false"
+                android:focusableInTouchMode="false"
                 android:gravity="center"
                 android:paddingStart="12dp"
                 android:paddingEnd="12dp"

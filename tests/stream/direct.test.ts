@@ -195,7 +195,7 @@ describe('copia remuxada', () => {
   });
 });
 
-describe('remuxPending: original com dolby tocaria mudo, melhor preparar', () => {
+describe('remuxPending: mudo NO NAVEGADOR - 202 so para quem se declara navegador', () => {
   let pendente: FastifyInstance;
   const avisados: string[] = [];
 
@@ -209,13 +209,15 @@ describe('remuxPending: original com dolby tocaria mudo, melhor preparar', () =>
             ? { relativePath: 'Serie/ep 02.mkv', remuxPending: true }
             : id === 'pronto'
               ? { relativePath: 'Serie/ep 02.mkv', remuxPath: remuxado, remuxPending: false }
-              : id === 'copia-sumiu'
-                ? {
-                    relativePath: 'Serie/ep 02.mkv',
-                    remuxPath: join(dir, '..', 'data', 'remux', 'nao-existe.mp4'),
-                    remuxPending: true,
-                  }
-                : null,
+              : id === 'plano-antigo'
+                ? { relativePath: 'Serie/ep 02.mkv', remuxPath: remuxado, remuxPending: true }
+                : id === 'copia-sumiu'
+                  ? {
+                      relativePath: 'Serie/ep 02.mkv',
+                      remuxPath: join(dir, '..', 'data', 'remux', 'nao-existe.mp4'),
+                      remuxPending: true,
+                    }
+                  : null,
       },
       dir,
       undefined,
@@ -228,28 +230,66 @@ describe('remuxPending: original com dolby tocaria mudo, melhor preparar', () =>
     await pendente.close();
   });
 
-  test('devolve 202 preparando em vez do MKV mudo, e avisa a fila de prioridade', async () => {
-    const r = await pendente.inject({ method: 'GET', url: '/api/stream/mudo' });
+  test('navegador (?compat=browser) recebe 202 preparando, e avisa a fila de prioridade', async () => {
+    const r = await pendente.inject({ method: 'GET', url: '/api/stream/mudo?compat=browser' });
     expect(r.statusCode).toBe(202);
     expect(r.headers['cache-control']).toBe('no-store');
     expect(JSON.parse(r.body)).toEqual({ preparing: true });
     expect(avisados).toContain('mudo');
   });
 
-  test('HEAD tambem responde 202: e o probe que o cliente usa', async () => {
-    const r = await pendente.inject({ method: 'HEAD', url: '/api/stream/mudo' });
+  test('HEAD de navegador tambem responde 202: e o probe que o web player usa', async () => {
+    const r = await pendente.inject({ method: 'HEAD', url: '/api/stream/mudo?compat=browser' });
     expect(r.statusCode).toBe(202);
   });
 
-  test('com remux pronto a flag nao interfere: sai o MP4', async () => {
-    const r = await pendente.inject({ method: 'GET', url: '/api/stream/pronto' });
+  test('cliente nativo (sem compat) recebe o original: a TV decodifica dolby', async () => {
+    // Regressao do loop de retune da TV: o 202 aqui viraria JSON no extractor
+    // do ExoPlayer e derrubaria o canal inteiro.
+    const r = await pendente.inject({ method: 'GET', url: '/api/stream/mudo' });
+    expect(r.statusCode).toBe(200);
+    expect(r.rawPayload.equals(BODY)).toBe(true);
+    expect(r.headers['content-type']).toBe('video/x-matroska');
+  });
+
+  test('cliente nativo nao fura a fila de conversao: ninguem ficou esperando', async () => {
+    avisados.length = 0;
+    await pendente.inject({ method: 'GET', url: '/api/stream/mudo' });
+    expect(avisados).toEqual([]);
+  });
+
+  test('remux de plano antigo continua servindo o nativo (bump de versao nao apaga o acervo)', async () => {
+    const r = await pendente.inject({ method: 'GET', url: '/api/stream/plano-antigo' });
     expect(r.statusCode).toBe(200);
     expect(r.rawPayload.equals(REMUXED)).toBe(true);
   });
 
-  test('copia sumida com pendencia vira 202, nunca o original mudo', async () => {
-    const r = await pendente.inject({ method: 'GET', url: '/api/stream/copia-sumiu' });
+  test('remux de plano antigo para navegador vira 202: pode ser o da gemea AAC quebrada', async () => {
+    const r = await pendente.inject({
+      method: 'GET',
+      url: '/api/stream/plano-antigo?compat=browser',
+    });
     expect(r.statusCode).toBe(202);
+  });
+
+  test('com remux pronto a flag nao interfere: sai o MP4 para todo mundo', async () => {
+    const nativo = await pendente.inject({ method: 'GET', url: '/api/stream/pronto' });
+    expect(nativo.statusCode).toBe(200);
+    expect(nativo.rawPayload.equals(REMUXED)).toBe(true);
+    const browser = await pendente.inject({ method: 'GET', url: '/api/stream/pronto?compat=browser' });
+    expect(browser.statusCode).toBe(200);
+    expect(browser.rawPayload.equals(REMUXED)).toBe(true);
+  });
+
+  test('copia sumida com pendencia: 202 para o navegador, original para o nativo', async () => {
+    const browser = await pendente.inject({
+      method: 'GET',
+      url: '/api/stream/copia-sumiu?compat=browser',
+    });
+    expect(browser.statusCode).toBe(202);
+    const nativo = await pendente.inject({ method: 'GET', url: '/api/stream/copia-sumiu' });
+    expect(nativo.statusCode).toBe(200);
+    expect(nativo.rawPayload.equals(BODY)).toBe(true);
   });
 });
 
@@ -260,7 +300,14 @@ describe('?audio=N (troca de dublagem)', () => {
     comAudio = Fastify({ maxParamLength: 2048 });
     registerStreamRoutes(
       comAudio,
-      { getEpisode: (id) => (id === 'ep' ? { relativePath: 'Serie/ep 02.mkv' } : null) },
+      {
+        getEpisode: (id) =>
+          id === 'ep'
+            ? { relativePath: 'Serie/ep 02.mkv' }
+            : id === 'ep-pendente'
+              ? { relativePath: 'Serie/ep 02.mkv', remuxPending: true }
+              : null,
+      },
       dir,
       async (_id, audioIndex) => {
         if (audioIndex === 0) return { status: 'default' };
@@ -309,6 +356,15 @@ describe('?audio=N (troca de dublagem)', () => {
     expect(r.statusCode).toBe(200);
     expect(r.headers['content-length']).toBe(String(REMUXED.length));
     expect(r.rawPayload.length).toBe(0);
+  });
+
+  test('variante pronta fura o remuxPending mesmo para navegador: a escolha ja esta feita', async () => {
+    const r = await comAudio.inject({
+      method: 'GET',
+      url: '/api/stream/ep-pendente?audio=1&compat=browser',
+    });
+    expect(r.statusCode).toBe(200);
+    expect(r.rawPayload.equals(REMUXED)).toBe(true);
   });
 });
 

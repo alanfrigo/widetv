@@ -25,7 +25,7 @@ class TrackPanelTest {
   // Montagem das linhas
 
   @Test
-  fun `abrir monta cabecalho, audios e legendas com a linha de desligar`() {
+  fun `abrir monta cabecalho, audios, legendas com desligar e a linha de lembrar`() {
     val rows = rows(open())
     assertEquals(
       listOf(
@@ -35,6 +35,7 @@ class TrackPanelTest {
         TrackRow.Header(TrackKind.TEXT),
         TrackRow.Option(TrackKind.TEXT, option(TRACK_OFF, off, selected = true)),
         TrackRow.Option(TrackKind.TEXT, option("0", "Portugues")),
+        TrackRow.Remember(on = true),
       ),
       rows,
     )
@@ -105,6 +106,57 @@ class TrackPanelTest {
   fun `painel fechado ignora as setas`() {
     val closed = TrackPanelState()
     assertEquals(closed, reduceTrackPanel(closed, TrackPanelEvent.Move(1)).state)
+  }
+
+  // Linha de lembrar
+
+  @Test
+  fun `cursor alcanca a linha de lembrar como ultima`() {
+    var state = open()
+    // 1 -> 2 -> 4 -> 5 -> 6: opcoes, Desativadas, legenda e enfim o lembrar.
+    repeat(4) { state = reduceTrackPanel(state, TrackPanelEvent.Move(1)).state }
+    val rows = rows(state)
+    assertEquals(rows.lastIndex, state.cursor)
+    assertTrue(rows[state.cursor] is TrackRow.Remember)
+    // A aba acesa segue a secao de onde o cursor veio, nao apaga no rodape.
+    assertEquals(TrackKind.TEXT, activeTab(state))
+  }
+
+  @Test
+  fun `Move alem da linha de lembrar fica parado`() {
+    var state = open()
+    repeat(4) { state = reduceTrackPanel(state, TrackPanelEvent.Move(1)).state }
+    assertEquals(rows(state).lastIndex, state.cursor)
+    assertEquals(state.cursor, reduceTrackPanel(state, TrackPanelEvent.Move(1)).state.cursor)
+  }
+
+  @Test
+  fun `OK na linha de lembrar alterna sem fechar`() {
+    var state = open()
+    repeat(4) { state = reduceTrackPanel(state, TrackPanelEvent.Move(1)).state }
+
+    val result = reduceTrackPanel(state, TrackPanelEvent.Select)
+    assertTrue(result.toggleRemember)
+    assertFalse(result.state.remember)
+    assertNull(result.choose)
+    assertFalse(result.close)
+    assertTrue(result.state.open)
+    assertEquals(TrackRow.Remember(on = false), rows(result.state).last())
+
+    // OK de novo religa: e um interruptor, nao um botao de um tiro so.
+    val again = reduceTrackPanel(result.state, TrackPanelEvent.Select)
+    assertTrue(again.toggleRemember)
+    assertTrue(again.state.remember)
+  }
+
+  @Test
+  fun `abrir carrega o interruptor que veio da Activity`() {
+    val state = reduceTrackPanel(
+      TrackPanelState(),
+      TrackPanelEvent.Open(listOf(option("0", "Portugues")), emptyList(), off, remember = false),
+    ).state
+    assertFalse(state.remember)
+    assertEquals(TrackRow.Remember(on = false), rows(state).last())
   }
 
   // Abas do segmented control
@@ -190,6 +242,14 @@ class TrackPanelTest {
   fun `a nota do rodape muda com o interruptor`() {
     assertTrue(panelNote(remember = true).startsWith("A escolha vale para a casa toda"))
     assertTrue(panelNote(remember = false).startsWith("A escolha vale só nesta sessão"))
+  }
+
+  @Test
+  fun `a nota ensina o OK, nao o MENU que o controle Google TV nao tem`() {
+    assertTrue(panelNote(remember = true).contains("OK alterna"))
+    assertTrue(panelNote(remember = false).contains("OK alterna"))
+    assertFalse(panelNote(remember = true).contains("MENU"))
+    assertFalse(panelNote(remember = false).contains("MENU"))
   }
 
   // Escolha
