@@ -756,22 +756,43 @@ export function remuxFileName(episodeId: string, mtimeMs: number, size: number):
 
 ## 11. Historico - onde o usuario parou
 
-Tabela `watch_history` (schema 6), uma linha por episodio, ON DELETE CASCADE.
-Rotas em `history/routes.ts`, atras do guard de sessao:
+Tabela `watch_history` (schema 6; coluna `watched_at` na 11), uma linha por
+episodio, ON DELETE CASCADE. Rotas em `history/routes.ts`, atras do guard de
+sessao:
 
 ```
-GET /api/history                 ->  WatchProgress[] (max 100, mais recente primeiro, no-store)
-PUT|POST /api/history/:id        ->  204   corpo: { positionMs, durationMs }
+GET    /api/history              ->  WatchProgress[] (max 100, mais recente primeiro, no-store)
+GET    /api/history/resume       ->  ResumeEntry[] (max 20, faixa pronta, no-store)
+PUT|POST /api/history/:id        ->  204   corpo: { positionMs, durationMs } OU { watched }
+DELETE /api/history/:id          ->  204   esquece um episodio
+DELETE /api/history              ->  204   limpa o historico inteiro
 ```
 
 - POST alem de PUT porque `keepalive`/`sendBeacon` na saida da pagina.
-- Posicao >= 95% da duracao APAGA a entrada: episodio assistido recomeca do
-  zero e nao polui a lista de retomadas.
-- Corpo torto 400; episodio fora do indice 404 (nada de lixo orfao).
-- Cliente web (`resume.ts` puro): retoma quando ha >= 30 s assistidos e menos
-  de 95%; grava a cada 10 s, na pausa, no fim (apaga), ao sair do player e no
-  `visibilitychange` para hidden. A lista de episodios pinta uma barra fina de
-  progresso por episodio comecado.
+- A decisao sobre o corpo mora em `history/progress.ts` (`decideProgress`),
+  pura, porque o mesmo PUT significa tres coisas diferentes.
+- Posicao >= 95% da duracao MARCA como visto (`watched_at`) e zera a posicao.
+  Ate a versao 11 do indice ela APAGAVA a linha; apagar tornava "nunca abri" e
+  "vi ate o fim" indistinguiveis, e a lista de episodios nao tinha como riscar
+  o que ja passou. Posicao antes disso desmarca - rever e assistir de novo.
+- `{ watched: true }` marca sem ter assistido (posicao zero, duracao lida do
+  indice); `{ watched: false }` APAGA a linha, que e o que "nunca vi isto"
+  significa. As duas formas do corpo sao exclusivas.
+- Corpo torto 400; episodio fora do indice 404 (nada de lixo orfao). O DELETE
+  de episodio desconhecido e 204: apagar o que nao existe entregou o pedido.
+- `GET /api/history/resume` (`history/resume.ts`) exclui os ja vistos e
+  DEDUPLICA por serie, mostrando o episodio mais recente de cada uma - sem isso
+  uma maratona de sabado ocuparia os vinte cards com o mesmo desenho.
+- Cliente web (`resume.ts` puro): retoma quando ha >= 30 s assistidos, menos de
+  95% e `watchedAt` nulo; grava a cada 10 s, na pausa, no fim, ao sair do player
+  e no `visibilitychange` para hidden. A lista de episodios pinta uma barra fina
+  de progresso por episodio comecado.
+- Cliente Android (`player/Progress.kt` puro): mesma cadencia de 10 s, mais os
+  momentos forcados (pausa, troca de episodio, saida do player, `onStop`). O
+  `onVodEpisodeFinished` do `ChannelPlayer` existe so para isto - e o unico
+  instante em que a posicao final do episodio que saiu ainda existe. A tela de
+  serie le `GET /api/history` (e nao a faixa de retomada, que vem deduplicada) e
+  o botao "Já vi" mora na fileira de acoes do player.
 
 ## 12. Rescan diario
 

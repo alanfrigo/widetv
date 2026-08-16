@@ -86,6 +86,7 @@ describe('mergeDuplicateShows', () => {
       positionMs: 5_000,
       durationMs: 60_000,
       updatedAt: 1,
+      watchedAt: null,
     });
 
     expect(mergeDuplicateShows(store)).toBe(1);

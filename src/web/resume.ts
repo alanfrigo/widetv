@@ -6,6 +6,12 @@
 export interface ProgressEntry {
   positionMs: number;
   durationMs: number;
+  /**
+   * Epoch ms em que o episodio passou a contar como visto; null enquanto nao
+   * terminou. Opcional porque as entradas montadas na tela (barra de uma linha
+   * de episodio, por exemplo) so precisam de posicao e duracao.
+   */
+  watchedAt?: number | null;
 }
 
 /**
@@ -24,6 +30,8 @@ const FINISHED_RATIO = 0.95;
 /** Posicao de partida em ms; 0 quando nao ha nada util para retomar. */
 export function resumeStartMs(entry: ProgressEntry | null | undefined): number {
   if (entry == null) return 0;
+  // Ja assistido comeca do comeco: rever e rever, nao continuar dos creditos.
+  if (entry.watchedAt != null) return 0;
   if (!Number.isFinite(entry.positionMs) || entry.positionMs < MIN_RESUME_MS) return 0;
   if (entry.durationMs > 0 && entry.positionMs >= entry.durationMs * FINISHED_RATIO) return 0;
   return entry.positionMs;
@@ -44,16 +52,18 @@ export function remainingMs(entry: ProgressEntry | null | undefined): number {
 /**
  * Estado da linha de episodio.
  *
- * O servidor APAGA a entrada quando o episodio termina, entao "sem entrada" e
- * ambiguo: pode ser nunca aberto ou ja assistido. A tela diz o que sabe -
- * `assistido` so quando a entrada existe e chegou ao fim, e nada quando nao ha
- * entrada. Chutar "assistido" no silencio riscaria metade da maratona de quem
- * acabou de instalar o servidor.
+ * A partir da versao 11 do indice o servidor MARCA em vez de apagar, e
+ * `watchedAt` responde direto. Antes disso a entrada sumia ao terminar e "sem
+ * entrada" era ambiguo (nunca aberto ou ja assistido); a comparacao por fracao
+ * fica como rede para as linhas gravadas naquela epoca. Continuar chutando
+ * "assistido" no silencio riscaria a maratona de quem acabou de instalar o
+ * servidor, entao ausencia segue significando `unseen`.
  */
 export type WatchState = 'unseen' | 'watching' | 'watched';
 
 export function watchState(entry: ProgressEntry | null | undefined): WatchState {
   if (entry == null || entry.durationMs <= 0) return 'unseen';
+  if (entry.watchedAt != null) return 'watched';
   if (entry.positionMs <= 0) return 'unseen';
   return progressRatio(entry) >= FINISHED_RATIO ? 'watched' : 'watching';
 }

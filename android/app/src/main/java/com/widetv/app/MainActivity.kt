@@ -35,12 +35,16 @@ import com.widetv.app.net.EpisodeRef
 import com.widetv.app.net.LibraryStatus
 import com.widetv.app.net.NowPlaying
 import com.widetv.app.net.ResumeEntry
+import com.widetv.app.net.WatchProgress
 import com.widetv.app.net.SettingsPatch
 import com.widetv.app.net.Store
 import com.widetv.app.net.TaskAccepted
 import com.widetv.app.net.UnauthorizedException
 import com.widetv.app.player.ChannelPlayer
+import com.widetv.app.player.ProgressSnapshot
+import com.widetv.app.player.ProgressState
 import com.widetv.app.player.TrackPrefs
+import com.widetv.app.player.decideProgress
 import com.widetv.app.tuner.TunerEvent
 import com.widetv.app.tuner.TunerResult
 import com.widetv.app.tuner.TunerState
@@ -77,12 +81,19 @@ import com.widetv.app.ui.TrackPanelEvent
 import com.widetv.app.ui.TrackPanelResult
 import com.widetv.app.ui.TrackPanelState
 import com.widetv.app.ui.WideCard
+import com.widetv.app.ui.ControlAction
+import com.widetv.app.ui.ControlId
+import com.widetv.app.ui.PlayerControlsEvent
+import com.widetv.app.ui.PlayerControlsResult
+import com.widetv.app.ui.PlayerControlsState
 import com.widetv.app.ui.WideCardAdapter
 import com.widetv.app.ui.activeTab
 import com.widetv.app.ui.applySettingsValue
 import com.widetv.app.ui.backLayer
 import com.widetv.app.ui.barProgress
 import com.widetv.app.ui.canonicalLang
+import com.widetv.app.ui.controlRail
+import com.widetv.app.ui.EpisodeProgress
 import com.widetv.app.ui.episodeItems
 import com.widetv.app.ui.formatChannelBadge
 import com.widetv.app.ui.formatChannelNumber
@@ -104,7 +115,9 @@ import com.widetv.app.ui.metadataText
 import com.widetv.app.ui.packNav
 import com.widetv.app.ui.panelNote
 import com.widetv.app.ui.playerHint
+import com.widetv.app.ui.railSticky
 import com.widetv.app.ui.reduceNav
+import com.widetv.app.ui.reducePlayerControls
 import com.widetv.app.ui.reduceScrub
 import com.widetv.app.ui.reduceSettings
 import com.widetv.app.ui.reduceTrackPanel
@@ -163,6 +176,13 @@ class MainActivity : AppCompatActivity() {
   /** `GET /api/history/resume`. Mesma regra do `live`. */
   private var resume: List<ResumeEntry> = emptyList()
 
+  /**
+   * `GET /api/history` por id de episodio: barra e marca de visto da lista de
+   * episodios. Separado do [resume] porque aquele vem deduplicado por serie e
+   * sem os ja vistos — util para a faixa, inutil para a lista.
+   */
+  private var history: Map<String, WatchProgress> = emptyMap()
+
   /** Texto da busca da topbar. Filtra so a faixa do acervo, sem rede. */
   private var query: String = ""
 
@@ -170,8 +190,21 @@ class MainActivity : AppCompatActivity() {
   private var tuner: TunerState = initialTuner(0)
   private var panel = TrackPanelState()
 
+  /**
+   * Fileira de acoes do overlay e o cursor que anda nela. E o que torna audio,
+   * legenda, episodios e mudo alcancaveis num controle que so tem D-PAD, OK e
+   * VOLTAR.
+   */
+  private var controls = PlayerControlsState()
+
   /** Scrub do sob demanda: as setas movem este alvo, e o seek sai pelo tick. */
   private var scrub: ScrubState = initialScrub(0L)
+
+  /**
+   * Ultima gravacao de "onde parei". Zerado a cada episodio: dois episodios
+   * podem parar no mesmo minuto, e o segundo tem que ser gravado.
+   */
+  private var progress = ProgressState()
 
   /**
    * Tela salva em `onSaveInstanceState`, esperando o acervo carregar para ser
@@ -272,7 +305,8 @@ class MainActivity : AppCompatActivity() {
       val typingChannel = tuner.buffer.isNotEmpty() && nav.screen == ScreenId.PLAYER
       val overlayVisible =
         views.overlay.visibility == View.VISIBLE && nav.screen == ScreenId.PLAYER
-      when (backLayer(panel.open, typingChannel, overlayVisible)) {
+      val railCursorOn = controls.cursor != null && nav.screen == ScreenId.PLAYER
+      when (backLayer(panel.open, typingChannel, railCursorOn, overlayVisible)) {
         BackLayer.CLOSE_PANEL -> applyPanel(reduceTrackPanel(panel, TrackPanelEvent.Close))
 
         // Cancela o "12_" digitado sem trocar o canal que esta no ar. O overlay
@@ -281,6 +315,11 @@ class MainActivity : AppCompatActivity() {
           tuner = initialTuner(tuner.current)
           views.osd.visibility = View.GONE
         }
+
+        // Desistiu do menu: o video volta a obedecer as setas, com a barra ainda
+        // na tela. O VOLTAR seguinte e que apaga tudo.
+        BackLayer.CLEAR_RAIL ->
+          applyControls(reducePlayerControls(controls, PlayerControlsEvent.ClearCursor))
 
         BackLayer.HIDE_OVERLAY -> hideOverlayNow()
 
@@ -411,6 +450,10 @@ class MainActivity : AppCompatActivity() {
 
   override fun onStop() {
     super.onStop()
+    // O app foi para segundo plano com o episodio no ar (botao HOME da TV, troca
+    // de entrada HDMI). Mesma razao do `applyNav`: depois do `stop` a posicao ja
+    // nao existe.
+    reportProgress(forced = true)
     stopTicker()
     stopStatusPoll()
     player.stop()
@@ -440,6 +483,9 @@ class MainActivity : AppCompatActivity() {
     // Sair do player e sempre parar de tocar: som de episodio por baixo do
     // catalogo seria um aparelho que nao obedece ao VOLTAR.
     if (previous.screen == ScreenId.PLAYER && nav.screen != ScreenId.PLAYER) {
+      // ANTES do stop: depois dele a posicao ja nao existe, e sair pelo VOLTAR
+      // e justamente o jeito mais comum de terminar uma sessao.
+      reportProgress(forced = true)
       stopTicker()
       player.stop()
       closePanel()
@@ -678,6 +724,13 @@ class MainActivity : AppCompatActivity() {
     lifecycleScope.launch {
       resume = runCatching { api.resume() }.getOrDefault(emptyList())
       renderResume()
+    }
+    // O historico cru nao alimenta faixa nenhuma: ele e o que a lista de
+    // episodios da serie consulta para desenhar a barra e a marca de visto.
+    lifecycleScope.launch {
+      history = runCatching { api.history() }.getOrDefault(emptyList())
+        .associateBy { it.episodeId }
+      if (nav.screen == ScreenId.SERIES) renderSeasons()
     }
   }
 
@@ -1056,14 +1109,14 @@ class MainActivity : AppCompatActivity() {
     seasonIndices(episodes, seasons.getOrNull(seasonAt)?.season, hasTabs = seasons.isNotEmpty())
 
   /**
-   * Onde cada episodio parou, por id.
+   * O que o historico sabe de cada episodio, por id.
    *
-   * Vem de `GET /api/history/resume`, que so guarda a ultima parada de cada
-   * canal: na pratica uma linha por serie ganha estado, e o resto da lista fica
-   * limpa. E o que o servidor sabe.
+   * Vem de `GET /api/history`, e nao da faixa de retomada: aquela chega
+   * deduplicada por serie e sem os episodios ja vistos, que e exatamente o
+   * contrario do que esta lista precisa mostrar.
    */
-  private fun progressByEpisode(): Map<String, Long> =
-    resume.associate { it.episode.id to it.positionMs }
+  private fun progressByEpisode(): Map<String, EpisodeProgress> =
+    history.mapValues { (_, row) -> EpisodeProgress(row.positionMs, row.watchedAt != null) }
 
   /** ASSISTIR AO VIVO: entra na grade do canal, no ponto em que ela esta agora. */
   private fun watchLive() {
@@ -1097,6 +1150,8 @@ class MainActivity : AppCompatActivity() {
     // Foto da tela antes de sair: e para ca que o VOLTAR do player devolve.
     seriesReturn = SeriesReturn(channelNumber, seasonAt, index)
     applyNav(reduceNav(nav, NavEvent.OpenPlayer(channelNumber)))
+    // Episodio novo, contagem de "onde parei" nova.
+    progress = ProgressState()
     player.playOnDemand(channel, episodes, index, positionMs)
   }
 
@@ -1386,6 +1441,11 @@ class MainActivity : AppCompatActivity() {
     views.seekBack.setOnClickListener { seek(-SEEK_MS) }
     views.seekFwd.setOnClickListener { seek(SEEK_MS) }
     views.tracksOpen.setOnClickListener { openPanel() }
+    views.actionEpisodes.setOnClickListener { openEpisodesFromPlayer() }
+    views.actionPrev.setOnClickListener { skipEpisode(forward = false) }
+    views.actionNext.setOnClickListener { skipEpisode(forward = true) }
+    views.actionWatched.setOnClickListener { toggleWatched() }
+    views.actionMute.setOnClickListener { toggleMute() }
     views.tracksClose.setOnClickListener {
       applyPanel(reduceTrackPanel(panel, TrackPanelEvent.Close))
     }
@@ -1401,7 +1461,8 @@ class MainActivity : AppCompatActivity() {
     views.root.requestFocus()
     // Alvo de scrub de uma sessao anterior nao pode vazar para esta.
     scrub = initialScrub(0L)
-    views.overlayHint.text = playerHint(player.mode == ChannelPlayer.PlaybackMode.LIVE)
+    // Nem o cursor da fileira: a visita comeca com o video mandando nas setas.
+    controls = PlayerControlsState()
     startTicker()
     poke()
   }
@@ -1447,14 +1508,18 @@ class MainActivity : AppCompatActivity() {
 
     val live = player.mode == ChannelPlayer.PlaybackMode.LIVE
 
-    when (keyCode) {
-      KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-        // Ao vivo nao ha pausa: o OK abre o painel, que e a unica coisa que a
-        // grade deixa escolher. Sob demanda ele pausa, como em qualquer player.
-        if (live) openPanel() else togglePause()
-        return true
-      }
+    // O D-PAD e o OK passam INTEIROS pelo `PlayerControls`. Antes daqui cada
+    // tecla decidia sozinha o que fazer, e o resultado era um painel de audio
+    // preso no MENU: uma tecla que a maioria dos controles nao tem. Agora quem
+    // sabe o que a seta faz e o reducer, que conhece o cursor.
+    controlEventOf(keyCode)?.let { controlEvent ->
+      applyControls(reducePlayerControls(controls, controlEvent), event.repeatCount)
+      return true
+    }
 
+    when (keyCode) {
+      // MENU segue abrindo o painel para quem TEM a tecla. Nao e mais o unico
+      // caminho — e por isso deixou de ser um problema.
       KeyEvent.KEYCODE_MENU -> {
         openPanel()
         return true
@@ -1471,27 +1536,21 @@ class MainActivity : AppCompatActivity() {
       }
 
       KeyEvent.KEYCODE_MUTE, KeyEvent.KEYCODE_VOLUME_MUTE -> {
-        player.volume = if (player.volume > 0f) 0f else 1f
-        renderOverlay()
+        toggleMute()
         return true
       }
 
-      KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP ->
-        if (live) return step(1, event.repeatCount)
+      KeyEvent.KEYCODE_CHANNEL_UP -> return step(1, event.repeatCount)
 
-      KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN ->
-        if (live) return step(-1, event.repeatCount)
+      KeyEvent.KEYCODE_CHANNEL_DOWN -> return step(-1, event.repeatCount)
 
-      KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> {
+      KeyEvent.KEYCODE_MEDIA_REWIND -> {
         if (!live) return scrubBy(-1, event.repeatCount)
-        // Ao vivo a seta lateral nao pode cair no `super`: a focus-search
-        // acharia algum focavel fora do player e o cursor sumiria da tela.
-        // A tecla morre aqui, e o OSD explica por que nada andou.
         showOsd(formatScrubNote(live = true, remainingMs = 0L))
         return true
       }
 
-      KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
+      KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
         if (!live) return scrubBy(1, event.repeatCount)
         showOsd(formatScrubNote(live = true, remainingMs = 0L))
         return true
@@ -1529,10 +1588,100 @@ class MainActivity : AppCompatActivity() {
     return super.onKeyDown(keyCode, event)
   }
 
+  /** As cinco teclas que o controle da sala tem de verdade. O resto e extra. */
+  private fun controlEventOf(keyCode: Int): PlayerControlsEvent? = when (keyCode) {
+    KeyEvent.KEYCODE_DPAD_UP -> PlayerControlsEvent.Up
+    KeyEvent.KEYCODE_DPAD_DOWN -> PlayerControlsEvent.Down
+    KeyEvent.KEYCODE_DPAD_LEFT -> PlayerControlsEvent.Left
+    KeyEvent.KEYCODE_DPAD_RIGHT -> PlayerControlsEvent.Right
+    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> PlayerControlsEvent.Ok
+    else -> null
+  }
+
+  /**
+   * Executa o que o reducer decidiu.
+   *
+   * @param repeatCount da tecla presa; so o zap e o salto o usam, porque so eles
+   *   tem escada de passo (`Tuner` e `Scrub`). Andar na fileira com a tecla
+   *   presa anda de um em um, que e o certo para um menu de cinco botoes.
+   */
+  private fun applyControls(result: PlayerControlsResult, repeatCount: Int = 0) {
+    controls = result.state
+    when (val action = result.action) {
+      null -> Unit
+      ControlAction.TogglePause -> togglePause()
+      is ControlAction.Seek -> scrubBy(action.delta, repeatCount)
+      ControlAction.ZapUp -> step(1, repeatCount)
+      ControlAction.ZapDown -> step(-1, repeatCount)
+      ControlAction.OpenTracks -> openPanel()
+      ControlAction.OpenEpisodes -> openEpisodesFromPlayer()
+      ControlAction.PrevEpisode -> skipEpisode(forward = false)
+      ControlAction.NextEpisode -> skipEpisode(forward = true)
+      ControlAction.ToggleMute -> toggleMute()
+      ControlAction.ToggleWatched -> toggleWatched()
+      // Sobrou so a seta lateral ao vivo com o cursor desligado, e o reducer ja
+      // a transforma em entrada na fileira. Mantido pelo `when` exaustivo.
+      ControlAction.LiveSeekRefused -> showOsd(formatScrubNote(live = true, remainingMs = 0L))
+    }
+    // `poke` ja redesenha. O cursor aceso segura o overlay na tela: reagendar o
+    // timer depois de cada tecla e o que impede o menu de apagar debaixo do dedo.
+    poke(sticky = railSticky(controls))
+  }
+
+  private fun toggleMute() {
+    player.volume = if (player.volume > 0f) 0f else 1f
+    renderOverlay()
+  }
+
+  /**
+   * Botao "Episodios" da fileira: sai do player para a tela da serie que esta
+   * tocando. Ao vivo isso e o canal sintonizado agora, e nao o que abriu o
+   * player — e a mesma regra que o VOLTAR ja segue (`NavState.channelNumber`).
+   */
+  private fun openEpisodesFromPlayer() {
+    val channelNumber = nav.channelNumber ?: return
+    applyNav(reduceNav(nav, NavEvent.OpenSeries(channelNumber)))
+  }
+
   private fun togglePause(): Boolean {
     player.togglePause()
+    // Pausar e um bom momento para gravar: quem pausa costuma sair logo depois,
+    // e ali o proximo tique pode nunca chegar.
+    reportProgress(forced = true)
     renderOverlay()
     return true
+  }
+
+  /**
+   * Grava onde o episodio parou.
+   *
+   * A DECISAO e do `decideProgress`; aqui so ha a leitura do player e a chamada
+   * de rede, que nao pode derrubar nada — `saveProgress` engole falha de rede de
+   * proposito, e a proxima gravacao conserta o atraso sozinha.
+   *
+   * @param forced momento em que perder a posicao seria irreversivel: pausa,
+   *   troca de episodio, saida do player, app indo para segundo plano.
+   */
+  private fun reportProgress(forced: Boolean = false) {
+    val episode = player.currentEpisode ?: return
+    val durationMs = player.exo.duration.coerceAtLeast(0L)
+    val decision = decideProgress(
+      progress,
+      ProgressSnapshot(
+        live = player.mode == ChannelPlayer.PlaybackMode.LIVE,
+        positionMs = player.exo.currentPosition.coerceAtLeast(0L),
+        durationMs = durationMs,
+      ),
+      now(),
+      forced,
+    )
+    progress = decision.state
+    if (!decision.send) return
+    sendProgress(episode.id, decision.state.lastPositionMs, durationMs)
+  }
+
+  private fun sendProgress(episodeId: String, positionMs: Long, durationMs: Long) {
+    lifecycleScope.launch { api.saveProgress(episodeId, positionMs, durationMs) }
   }
 
   /** Salto imediato dos botoes do overlay: clique nao repete, nao precisa de reducer. */
@@ -1573,6 +1722,8 @@ class MainActivity : AppCompatActivity() {
    * confirmar que o stream existe — e "proximo" significa outro canal.
    */
   private fun skipEpisode(forward: Boolean) {
+    // Grava a posicao do episodio que esta SAINDO, antes de a fila andar.
+    reportProgress(forced = true)
     // O alvo de scrub pendente era do episodio antigo: um commit atrasado nao
     // pode cair no meio do episodio novo.
     scrub = initialScrub(0L)
@@ -1626,14 +1777,14 @@ class MainActivity : AppCompatActivity() {
     views.overlay.visibility = View.VISIBLE
     renderOverlay()
     osdHide?.cancel()
+    // Com o cursor na fileira de acoes o overlay fica: quem esta escolhendo
+    // alguma coisa nao pode ver o menu apagar debaixo do dedo aos 3 s.
     if (sticky) return
     osdHide = lifecycleScope.launch {
       delay(OSD_HOLD_MS)
-      views.overlay.visibility = View.GONE
-      views.osd.visibility = View.GONE
-      // O overlay tem botoes focaveis. Sumindo com o foco dentro deles, a
-      // proxima tecla nao teria onde chegar: a raiz e para onde ele volta.
-      views.root.requestFocus()
+      // Sem `cancel` aqui: quem esconde por tempo E o timer, e mandar o timer
+      // cancelar a si mesmo no meio do proprio corpo e uma armadilha.
+      applyOverlayHidden()
     }
   }
 
@@ -1643,8 +1794,18 @@ class MainActivity : AppCompatActivity() {
    */
   private fun hideOverlayNow() {
     osdHide?.cancel()
+    applyOverlayHidden()
+  }
+
+  /** O que sobra na tela quando o overlay sai — pelo timer ou pelo VOLTAR. */
+  private fun applyOverlayHidden() {
     views.overlay.visibility = View.GONE
     views.osd.visibility = View.GONE
+    // O cursor nao sobrevive ao overlay: reaparecer com um botao ja aceso faria
+    // o proximo OK disparar o que ninguem escolheu nesta visita.
+    controls = reducePlayerControls(controls, PlayerControlsEvent.Hide).state
+    // O overlay tem botoes focaveis. Sumindo com o foco dentro deles, a proxima
+    // tecla nao teria onde chegar: a raiz e para onde ele volta.
     views.root.requestFocus()
   }
 
@@ -1692,8 +1853,103 @@ class MainActivity : AppCompatActivity() {
     views.seekFwd.visibility = show(!live)
     views.playToggle.isSelected = player.isPlaying
 
+    renderRail(live)
     renderVolume()
-    views.overlayHint.text = playerHint(live)
+    views.overlayHint.text = playerHint(controls)
+  }
+
+  /**
+   * Fileira de acoes: quais botoes existem neste modo e onde esta o cursor.
+   *
+   * O estado do reducer e reconciliado com o mundo AQUI, num `Sync`, porque o
+   * mundo muda sem passar por tecla nenhuma — o episodio vira sozinho no fim do
+   * arquivo, e com ele mudam "anterior" e "proximo".
+   */
+  private fun renderRail(live: Boolean) {
+    val exo = player.exo
+    controls = reducePlayerControls(
+      controls,
+      PlayerControlsEvent.Sync(
+        live = live,
+        muted = player.volume <= 0f,
+        watched = isWatched(player.currentEpisode?.id),
+        hasPrev = !live && exo.hasPreviousMediaItem(),
+        hasNext = !live && exo.hasNextMediaItem(),
+      ),
+    ).state
+
+    val rail = controlRail(controls)
+    val buttons = mapOf(
+      ControlId.TRACKS to views.tracksOpen,
+      ControlId.EPISODES to views.actionEpisodes,
+      ControlId.PREV to views.actionPrev,
+      ControlId.NEXT to views.actionNext,
+      ControlId.WATCHED to views.actionWatched,
+      ControlId.MUTE to views.actionMute,
+    )
+    for ((id, button) in buttons) {
+      val at = rail.indexOf(id)
+      button.visibility = show(at >= 0)
+      // Cursor por `isActivated`, e nao por foco: os botoes do overlay nao sao
+      // focaveis, senao o foco nativo brigaria com o reducer pelas mesmas setas.
+      button.isActivated = at >= 0 && at == controls.cursor
+    }
+
+    views.actionMute.text = getString(
+      if (controls.muted) R.string.player_action_unmute else R.string.player_action_mute,
+    )
+    // O rotulo diz o ESTADO, e nao a acao: "Já vi" aceso ao lado de um episodio
+    // ja marcado seria a unica forma de saber que ele esta marcado.
+    views.actionWatched.text = getString(
+      if (controls.watched) R.string.player_action_unwatched else R.string.player_action_watched,
+    )
+  }
+
+  private fun isWatched(episodeId: String?): Boolean =
+    episodeId != null && history[episodeId]?.watchedAt != null
+
+  /**
+   * "Ja vi" / "Nao vi" do episodio no ar.
+   *
+   * O espelho local muda ANTES da resposta: a fileira esta aberta na tela e um
+   * rotulo que so vira depois do round-trip pareceria botao que nao funciona. A
+   * releitura do historico depois confirma (ou desfaz) o palpite.
+   */
+  private fun toggleWatched() {
+    val episode = player.currentEpisode ?: return
+    val target = !isWatched(episode.id)
+
+    // A partir daqui a gravacao automatica cala para este episodio: o tique de
+    // 10 s mandaria uma posicao no meio do arquivo e o servidor desmarcaria o
+    // que a pessoa acabou de marcar. O proximo episodio zera o freio.
+    progress = progress.copy(manual = true)
+
+    val previous = history
+    history = history.toMutableMap().apply {
+      val row = previous[episode.id]
+      this[episode.id] = WatchProgress(
+        episodeId = episode.id,
+        positionMs = if (target) 0L else row?.positionMs ?: 0L,
+        durationMs = row?.durationMs ?: episode.durationMs,
+        updatedAt = now(),
+        watchedAt = if (target) now() else null,
+      )
+    }
+    showOsd(
+      getString(
+        if (target) R.string.player_marked_watched else R.string.player_marked_unwatched,
+      ),
+    )
+
+    lifecycleScope.launch {
+      if (api.setWatched(episode.id, target)) {
+        history = runCatching { api.history() }.getOrDefault(emptyList())
+          .associateBy { it.episodeId }
+      } else {
+        history = previous
+      }
+      renderOverlay()
+    }
   }
 
   /**
@@ -1723,6 +1979,9 @@ class MainActivity : AppCompatActivity() {
       while (isActive) {
         delay(TICK_MS)
         if (views.overlay.visibility == View.VISIBLE) renderOverlay()
+        // Onde parei. O `decideProgress` e que segura a cadencia; aqui so ha o
+        // pulso, o mesmo que ja move o sintonizador e o scrub.
+        reportProgress()
         // O commit atrasado do scrub sai do MESMO pulso do sintonizador: um
         // segundo timer daria duas contagens para a mesma ociosidade.
         if (scrub.targetMs != null) {
@@ -1756,7 +2015,12 @@ class MainActivity : AppCompatActivity() {
 
     val audio = audioGroups.mapIndexed { index, group -> option(index, group, forced = false) }
     val text = textGroups.mapIndexed { index, group -> option(index, group, forced = true) }
-    if (audio.isEmpty() && text.isEmpty()) return
+    // Abrir um painel vazio nao ajuda; sumir em silencio, menos ainda — quem
+    // apertou fica sem saber se o comando chegou. O OSD diz o que houve.
+    if (audio.isEmpty() && text.isEmpty()) {
+      showOsd(getString(R.string.player_no_tracks))
+      return
+    }
 
     applyPanel(
       reduceTrackPanel(
@@ -1945,7 +2209,6 @@ class MainActivity : AppCompatActivity() {
   private val playerEvents = object : ChannelPlayer.Events {
     override fun onTuned(playing: NowPlaying) {
       showOsd(formatNowLine(playing.channel, playing.episode))
-      views.overlayHint.text = playerHint(live = true)
     }
 
     override fun onEpisodeChange(playing: NowPlaying) {
@@ -1977,11 +2240,24 @@ class MainActivity : AppCompatActivity() {
         val at = episodes.indexOfFirst { it.id == episode.id }
         if (at >= 0) seriesReturn = saved.copy(episodeIndex = at)
       }
+      // Episodio novo, contagem nova: o `lastPositionMs` do anterior nao pode
+      // calar a primeira gravacao deste.
+      progress = ProgressState()
       showOsd(formatNowLine(channel, episode))
-      views.overlayHint.text = playerHint(live = false)
+    }
+
+    override fun onVodEpisodeFinished(episode: EpisodeRef, positionMs: Long) {
+      // A fila emendou sozinha. Este e o UNICO ponto em que a posicao final do
+      // episodio que acabou ainda existe — depois da transicao o player ja conta
+      // do zero, e sem esta gravacao o episodio jamais seria marcado como visto.
+      sendProgress(episode.id, positionMs, episode.durationMs)
+      progress = ProgressState()
     }
 
     override fun onVodEnded() {
+      // Ultimo da fila: nao ha transicao para o `onVodEpisodeFinished` pegar, e
+      // a posicao ainda esta no fim do arquivo. Grava antes de sair.
+      reportProgress(forced = true)
       // A maratona acabou. Volta para a serie, que e de onde ela saiu — tela
       // preta com o app aberto nao e um lugar onde deixar alguem.
       applyNav(reduceNav(nav, NavEvent.Back(now())))

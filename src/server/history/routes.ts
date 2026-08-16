@@ -4,6 +4,7 @@ import type { SaveProgressRequest, WatchProgress } from '@shared/api-types';
 
 import type { WatchHistoryEntry, WatchHistoryRow } from '../library/index-store';
 
+import { decideProgress } from './progress';
 import { listResume, RESUME_LIMIT, type ResumeSource } from './resume';
 
 /**
@@ -19,6 +20,7 @@ export interface HistorySource extends ResumeSource {
   getWatchHistory(episodeId: string): WatchHistoryRow | null;
   upsertWatchHistory(row: WatchHistoryRow): void;
   deleteWatchHistory(episodeId: string): void;
+  clearWatchHistory(): void;
   listWatchHistory(limit: number): WatchHistoryEntry[];
 }
 
@@ -30,14 +32,6 @@ export interface HistoryRoutesDeps {
 
 const LIST_LIMIT = 100;
 
-/**
- * Fracao a partir da qual o episodio conta como assistido e o progresso e
- * APAGADO: retomar dentro dos creditos finais nao ajuda ninguem, e a proxima
- * abertura deve comecar do zero. 95% de um episodio de 22 min deixa ~66 s de
- * margem - o tamanho tipico dos creditos.
- */
-const FINISHED_RATIO = 0.95;
-
 function toProgress(entry: WatchHistoryEntry): WatchProgress {
   return {
     episodeId: entry.episodeId,
@@ -45,12 +39,8 @@ function toProgress(entry: WatchHistoryEntry): WatchProgress {
     positionMs: entry.positionMs,
     durationMs: entry.durationMs,
     updatedAt: entry.updatedAt,
+    watchedAt: entry.watchedAt,
   };
-}
-
-/** Numero finito e nao-negativo; o resto e corpo torto. */
-function validMs(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 export function registerHistoryRoutes(app: FastifyInstance, deps: HistoryRoutesDeps): void {
@@ -76,27 +66,46 @@ export function registerHistoryRoutes(app: FastifyInstance, deps: HistoryRoutesD
       const { id } = request.params as { id: string };
       const body = request.body as Partial<SaveProgressRequest> | null;
 
-      if (body === null || !validMs(body.positionMs) || !validMs(body.durationMs) || body.durationMs === 0) {
-        return reply.code(400).send({ error: 'positionMs e durationMs precisam ser numeros validos' });
-      }
-
       // Episodio fora do indice: 404 em vez de gravar lixo. Acontece de verdade
-      // num rescan que removeu o arquivo com alguem assistindo.
-      if (deps.source.getEpisode(id) === null) {
+      // num rescan que removeu o arquivo com alguem assistindo. A checagem vem
+      // ANTES da decisao porque a marcacao manual le a duracao daqui.
+      const episode = deps.source.getEpisode(id);
+      if (episode === null) {
         return reply.code(404).send({ error: 'episodio desconhecido' });
       }
 
-      if (body.positionMs >= body.durationMs * FINISHED_RATIO) {
-        deps.source.deleteWatchHistory(id);
-      } else {
-        deps.source.upsertWatchHistory({
-          episodeId: id,
-          positionMs: Math.round(body.positionMs),
-          durationMs: Math.round(body.durationMs),
-          updatedAt: deps.now(),
-        });
+      const decision = decideProgress({
+        episodeId: id,
+        body,
+        episodeDurationMs: episode.durationMs,
+        nowMs: deps.now(),
+      });
+
+      switch (decision.kind) {
+        case 'invalid':
+          return reply.code(400).send({ error: decision.reason });
+        case 'forget':
+          deps.source.deleteWatchHistory(id);
+          break;
+        case 'save':
+          deps.source.upsertWatchHistory(decision.row);
+          break;
       }
       return reply.code(204).send();
     },
+  });
+
+  app.delete('/api/history/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    // Sem 404 no episodio desconhecido: apagar o que ja nao existe entregou o
+    // resultado pedido. Um erro aqui obrigaria o cliente a tratar um caso em que
+    // nao ha nada de errado.
+    deps.source.deleteWatchHistory(id);
+    return reply.code(204).send();
+  });
+
+  app.delete('/api/history', async (_request, reply) => {
+    deps.source.clearWatchHistory();
+    return reply.code(204).send();
   });
 }

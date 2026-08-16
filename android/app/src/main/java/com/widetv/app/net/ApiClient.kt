@@ -180,6 +180,61 @@ class ApiClient(private val store: Store) {
   }
 
   /**
+   * Historico cru, para a lista de episodios marcar o que ja passou.
+   *
+   * Mesma regra do `resume`: rota que um servidor anterior nao tem, e a ausencia
+   * vira lista vazia — a tela desenha sem as marcas em vez de nao desenhar.
+   */
+  suspend fun history(): List<WatchProgress> = withContext(Dispatchers.IO) {
+    val body = getBodyOrNull(url(Routes.HISTORY)) ?: return@withContext emptyList()
+    json.decodeFromString(body)
+  }
+
+  /**
+   * Grava onde o episodio parou.
+   *
+   * Nao lanca em falha de rede: quem chama esta no meio de um episodio, a cada
+   * dez segundos, e derrubar a reproducao porque o Wi-Fi piscou seria trocar o
+   * filme por um detalhe dele. A proxima gravacao conserta o atraso sozinha.
+   *
+   * @return true quando o servidor confirmou (204).
+   */
+  suspend fun saveProgress(episodeId: String, positionMs: Long, durationMs: Long): Boolean =
+    withContext(Dispatchers.IO) {
+      putHistory(
+        episodeId,
+        json.encodeToString(
+          SaveProgressRequest.serializer(),
+          SaveProgressRequest(positionMs, durationMs),
+        ),
+      )
+    }
+
+  /** Marca (ou desmarca) o episodio como visto. Mesma tolerancia a falha. */
+  suspend fun setWatched(episodeId: String, watched: Boolean): Boolean =
+    withContext(Dispatchers.IO) {
+      putHistory(
+        episodeId,
+        json.encodeToString(SetWatchedRequest.serializer(), SetWatchedRequest(watched)),
+      )
+    }
+
+  private fun putHistory(episodeId: String, body: String): Boolean {
+    // Id como segmento unico: as barras do caminho relativo viram %2F, do mesmo
+    // jeito que no `streamUrl`.
+    val target = base().newBuilder()
+      .addPathSegments(Routes.HISTORY)
+      .addPathSegment(episodeId)
+      .build()
+    val request = Request.Builder().url(target).put(body.toRequestBody(JSON_MEDIA_TYPE)).build()
+    return try {
+      http.newCall(request).execute().use { it.isSuccessful }
+    } catch (error: IOException) {
+      false
+    }
+  }
+
+  /**
    * Rota da arte 16:9 do canal, relativa como `PosterLoader` espera.
    *
    * Existe para quem so tem o numero do canal na mao (a faixa ao vivo monta o

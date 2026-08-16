@@ -217,9 +217,15 @@
                     </LinearLayout>
 
                     <!--
-                      Botoes do overlay sao alvo SO de toque: no controle remoto
-                      o dono do foco e a raiz, e as teclas passam pelo reducer.
-                      Foco nativo aqui criaria um segundo cursor.
+                      Fileira de acoes. Os botoes sao alvo SO de toque: no
+                      controle remoto o dono do foco e a raiz, e as teclas passam
+                      pelo `PlayerControls`. Foco nativo aqui criaria um segundo
+                      cursor disputando as mesmas setas — o cursor aparece como
+                      `isActivated`, do mesmo jeito que nas linhas do painel de
+                      trilhas.
+
+                      A ordem TEM que ser a de `controlRail`: a Activity indexa
+                      esta fileira pela coluna que o reducer devolve.
                     -->
                     <TextView
                         android:id="@+id/tracks_open"
@@ -233,6 +239,86 @@
                         android:paddingStart="15dp"
                         android:paddingEnd="15dp"
                         android:text="@string/tracks_open"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/action_episodes"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
+                        android:gravity="center"
+                        android:paddingStart="15dp"
+                        android:paddingEnd="15dp"
+                        android:text="@string/player_action_episodes"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/action_prev"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
+                        android:gravity="center"
+                        android:paddingStart="15dp"
+                        android:paddingEnd="15dp"
+                        android:text="@string/player_action_prev"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/action_next"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
+                        android:gravity="center"
+                        android:paddingStart="15dp"
+                        android:paddingEnd="15dp"
+                        android:text="@string/player_action_next"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/action_watched"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
+                        android:gravity="center"
+                        android:paddingStart="15dp"
+                        android:paddingEnd="15dp"
+                        android:text="@string/player_action_watched"
+                        android:textColor="@color/text"
+                        android:textSize="@dimen/text_card"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/action_mute"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/ctl_bg"
+                        android:focusable="false"
+                        android:focusableInTouchMode="false"
+                        android:gravity="center"
+                        android:paddingStart="15dp"
+                        android:paddingEnd="15dp"
+                        android:text="@string/player_action_mute"
                         android:textColor="@color/text"
                         android:textSize="@dimen/text_card"
                         android:textStyle="bold" />

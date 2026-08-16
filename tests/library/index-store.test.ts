@@ -13,17 +13,20 @@ import { openStore } from '../../src/server/library/index-store';
  * migracao afirmarem "chegou na versao mais nova", e nao um numero solto que
  * envelhece a cada coluna adicionada.
  */
-const SCHEMA_VERSION_ATUAL = 10;
+const SCHEMA_VERSION_ATUAL = 11;
 
 /**
  * Desfaz, num banco ja aberto na versao atual, tudo o que veio depois da versao
  * `alvo` - e o jeito de reencenar um indice daquela epoca sem manter um dump
  * SQL congelado por versao.
  */
+const DESFAZER_11 = 'ALTER TABLE watch_history DROP COLUMN watched_at;';
+
 const DESFAZER_10 =
   'ALTER TABLE episodes DROP COLUMN thumb_file;' +
   'ALTER TABLE episodes DROP COLUMN thumb_checked_at;' +
-  'ALTER TABLE show_metadata DROP COLUMN backdrop_source;';
+  'ALTER TABLE show_metadata DROP COLUMN backdrop_source;' +
+  DESFAZER_11;
 
 const DESFAZER_ATE: Record<number, string> = {
   6: 'DROP TABLE settings;' +
@@ -35,6 +38,7 @@ const DESFAZER_ATE: Record<number, string> = {
     DESFAZER_10,
   8: 'ALTER TABLE show_metadata DROP COLUMN backdrop_checked_at;' + DESFAZER_10,
   9: DESFAZER_10,
+  10: DESFAZER_11,
 };
 
 function rebobinar(dbPath: string, alvo: number): void {
@@ -1042,6 +1046,7 @@ describe('indexVersion', () => {
       positionMs: 1,
       durationMs: 2,
       updatedAt: 3,
+      watchedAt: null,
     });
     expect(store.indexVersion()).toBe(antes);
 
@@ -1130,6 +1135,7 @@ describe('arte 16:9 (schema 8)', () => {
       positionMs: 600_000,
       durationMs: 1_320_000,
       updatedAt: 7,
+      watchedAt: null,
     });
     sete.setSetting('audio_lang', 'por');
     sete.close();
@@ -1362,6 +1368,7 @@ describe('historico de onde parou (schema 6)', () => {
     positionMs: 600_000,
     durationMs: 1_320_000,
     updatedAt: 42,
+    watchedAt: null,
   };
 
   it('roundtrip com upsert sobrescrevendo a posicao anterior', () => {
@@ -1481,6 +1488,7 @@ describe('preferencias (schema 7)', () => {
       positionMs: 600_000,
       durationMs: 1_320_000,
       updatedAt: 42,
+      watchedAt: null,
     });
     seis.close();
 
@@ -1645,6 +1653,7 @@ describe('quadro do episodio (schema 10)', () => {
       positionMs: 600_000,
       durationMs: 1_320_000,
       updatedAt: 7,
+      watchedAt: null,
     });
     nove.upsertShowMetadata({
       showId,
@@ -1691,6 +1700,82 @@ describe('quadro do episodio (schema 10)', () => {
     expect(store.getShowMetadata(showId)?.backdropSource).toBeNull();
     expect(store.listThumbCandidates({ all: false })).toHaveLength(1);
 
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('ja vi este episodio (schema 11)', () => {
+  const LINHA = {
+    episodeId: 'serie/ep01.mp4',
+    positionMs: 600_000,
+    durationMs: 1_320_000,
+    updatedAt: 42,
+    watchedAt: null,
+  };
+
+  it('a marca sobrevive ao roundtrip e pode ser desfeita', () => {
+    const store = openStore(':memory:');
+    store.upsertEpisodes(makeShow(store), [makeEpisode()]);
+
+    store.upsertWatchHistory(LINHA);
+    expect(store.getWatchHistory('serie/ep01.mp4')?.watchedAt).toBeNull();
+
+    store.upsertWatchHistory({ ...LINHA, positionMs: 0, watchedAt: 99 });
+    expect(store.getWatchHistory('serie/ep01.mp4')?.watchedAt).toBe(99);
+    expect(store.listWatchHistory(10)[0]?.watchedAt).toBe(99);
+
+    // Rever desmarca; o upsert tem que APAGAR a marca, e nao so ignora-la.
+    store.upsertWatchHistory({ ...LINHA, watchedAt: null });
+    expect(store.getWatchHistory('serie/ep01.mp4')?.watchedAt).toBeNull();
+
+    store.close();
+  });
+
+  it('limpar apaga o historico inteiro sem tocar nos episodios', () => {
+    const store = openStore(':memory:');
+    const showId = makeShow(store);
+    store.upsertEpisodes(showId, [
+      makeEpisode(),
+      makeEpisode({ id: 'serie/ep02.mp4', orderIndex: 1 }),
+    ]);
+    store.upsertWatchHistory(LINHA);
+    store.upsertWatchHistory({ ...LINHA, episodeId: 'serie/ep02.mp4' });
+
+    store.clearWatchHistory();
+
+    expect(store.listWatchHistory(10)).toEqual([]);
+    expect(store.getEpisode('serie/ep01.mp4')).not.toBeNull();
+    store.close();
+  });
+
+  it('indice na versao 10 ganha a coluna, e o historico velho entra como nao visto', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v10-'));
+    const dbPath = join(base, 'library.db');
+
+    const dez = openStore(dbPath);
+    const showId = makeShow(dez, 'serie');
+    dez.upsertEpisodes(showId, [makeEpisode()]);
+    dez.upsertWatchHistory(LINHA);
+    dez.close();
+
+    rebobinar(dbPath, 10);
+
+    const store = openStore(dbPath);
+    // O que estava gravado continua ali...
+    expect(store.getWatchHistory('serie/ep01.mp4')?.positionMs).toBe(600_000);
+    // ...e a coluna nova comeca nula, que e a verdade: as linhas que tinham
+    // terminado ja haviam sido APAGADAS pela regra antiga, e nao ha o que
+    // recuperar.
+    expect(store.getWatchHistory('serie/ep01.mp4')?.watchedAt).toBeNull();
     store.close();
 
     const conferencia = new Database(dbPath);

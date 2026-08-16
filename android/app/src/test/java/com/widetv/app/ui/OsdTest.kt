@@ -167,14 +167,34 @@ class OsdTest {
   }
 
   @Test
-  fun `a dica de teclado nao anuncia tecla que o modo recusa`() {
+  fun `a dica nao anuncia tecla que o modo recusa`() {
     // Ao vivo nao ha pausa nem salto; ensinar o gesto errado e pior que calar.
-    val live = playerHint(live = true)
+    val live = playerHint(PlayerControlsState(visible = true, live = true))
     assertTrue(live.contains("trocar de canal"))
     assertFalse(live.contains("pausar"))
 
-    val vod = playerHint(live = false)
+    val vod = playerHint(PlayerControlsState(visible = true, live = false))
     assertTrue(vod.contains("pausar"))
     assertFalse(vod.contains("trocar de canal"))
+  }
+
+  @Test
+  fun `a dica nunca manda apertar MENU`() {
+    // O controle da sala nao tem MENU: era a instrucao apontando para um gesto
+    // impossivel que motivou a fileira de acoes.
+    val states = listOf(
+      PlayerControlsState(visible = true, live = true),
+      PlayerControlsState(visible = true, live = true, cursor = 0),
+      PlayerControlsState(visible = true, live = false),
+      PlayerControlsState(visible = true, live = false, cursor = 0),
+    )
+    for (state in states) assertFalse(playerHint(state).contains("MENU"))
+  }
+
+  @Test
+  fun `com o cursor aceso a dica fala da fileira`() {
+    val hint = playerHint(PlayerControlsState(visible = true, live = false, cursor = 0))
+    assertTrue(hint.contains("escolhem"))
+    assertTrue(hint.contains("confirma"))
   }
 }

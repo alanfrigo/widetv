@@ -95,21 +95,28 @@ data class NavResult(
 
 /**
  * O que um VOLTAR consome dentro do player, na ordem: painel de trilhas aberto,
- * digitacao de canal pendente, overlay/OSD visivel e, por fim, a navegacao.
+ * digitacao de canal pendente, cursor aceso na fileira de acoes, overlay/OSD
+ * visivel e, por fim, a navegacao.
  */
-enum class BackLayer { CLOSE_PANEL, CLEAR_TUNER, HIDE_OVERLAY, NAVIGATE }
+enum class BackLayer { CLOSE_PANEL, CLEAR_TUNER, CLEAR_RAIL, HIDE_OVERLAY, NAVIGATE }
 
 /**
  * Hierarquia pura do VOLTAR no player: cada camada aberta engole a tecla antes
  * de deixar a navegacao andar. A Activity so descreve o que esta na tela.
+ *
+ * O cursor da fileira entra ANTES do overlay porque ele e uma camada de escolha
+ * por cima da informacao: quem abriu o menu e desistiu quer o video de volta com
+ * a barra ainda na tela, e nao a tela toda limpa de uma vez.
  */
 fun backLayer(
   panelOpen: Boolean,
   typingChannel: Boolean,
+  railCursorOn: Boolean,
   overlayVisible: Boolean,
 ): BackLayer = when {
   panelOpen -> BackLayer.CLOSE_PANEL
   typingChannel -> BackLayer.CLEAR_TUNER
+  railCursorOn -> BackLayer.CLEAR_RAIL
   overlayVisible -> BackLayer.HIDE_OVERLAY
   else -> BackLayer.NAVIGATE
 }
