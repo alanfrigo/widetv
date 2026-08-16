@@ -2326,18 +2326,19 @@ function reportProgress(): void {
   saveProgress(episode.id, positionMs, durationMs);
 
   // Espelho local na hora: a barra da lista e a retomada nao esperam refetch.
-  if (positionMs >= durationMs * FINISHED_RATIO) {
-    history.delete(episode.id);
-  } else {
-    const channel = screen.name === 'player' || screen.name === 'series' ? screen.channel : 0;
-    history.set(episode.id, {
-      episodeId: episode.id,
-      channelNumber: channel,
-      positionMs,
-      durationMs,
-      updatedAt: Date.now(),
-    });
-  }
+  // A regra e a MESMA do servidor (`decideProgress`): terminar marca e zera a
+  // posicao, em vez de apagar a linha — e o que deixa a lista de episodios
+  // riscar o que ja passou.
+  const finished = positionMs >= durationMs * FINISHED_RATIO;
+  const channel = screen.name === 'player' || screen.name === 'series' ? screen.channel : 0;
+  history.set(episode.id, {
+    episodeId: episode.id,
+    channelNumber: channel,
+    positionMs: finished ? 0 : positionMs,
+    durationMs,
+    updatedAt: Date.now(),
+    watchedAt: finished ? Date.now() : null,
+  });
 }
 
 function startProgressReporter(): void {

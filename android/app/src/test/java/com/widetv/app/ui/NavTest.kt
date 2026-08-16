@@ -191,15 +191,40 @@ class NavTest {
   fun `painel de trilhas aberto vence a digitacao do tuner`() {
     assertEquals(
       BackLayer.CLOSE_PANEL,
-      backLayer(panelOpen = true, typingChannel = true, overlayVisible = true),
+      backLayer(
+        panelOpen = true,
+        typingChannel = true,
+        railCursorOn = true,
+        overlayVisible = true,
+      ),
     )
   }
 
   @Test
-  fun `digitacao pendente vence o overlay`() {
+  fun `digitacao pendente vence o cursor da fileira`() {
     assertEquals(
       BackLayer.CLEAR_TUNER,
-      backLayer(panelOpen = false, typingChannel = true, overlayVisible = true),
+      backLayer(
+        panelOpen = false,
+        typingChannel = true,
+        railCursorOn = true,
+        overlayVisible = true,
+      ),
+    )
+  }
+
+  @Test
+  fun `cursor da fileira vence o overlay`() {
+    // Desistir do menu devolve o video com a barra ainda na tela; limpar tudo de
+    // uma vez cobraria dois VOLTAR para voltar ao mesmo lugar.
+    assertEquals(
+      BackLayer.CLEAR_RAIL,
+      backLayer(
+        panelOpen = false,
+        typingChannel = false,
+        railCursorOn = true,
+        overlayVisible = true,
+      ),
     )
   }
 
@@ -207,7 +232,12 @@ class NavTest {
   fun `overlay visivel vence a navegacao`() {
     assertEquals(
       BackLayer.HIDE_OVERLAY,
-      backLayer(panelOpen = false, typingChannel = false, overlayVisible = true),
+      backLayer(
+        panelOpen = false,
+        typingChannel = false,
+        railCursorOn = false,
+        overlayVisible = true,
+      ),
     )
   }
 
@@ -215,7 +245,12 @@ class NavTest {
   fun `tela limpa deixa o VOLTAR navegar`() {
     assertEquals(
       BackLayer.NAVIGATE,
-      backLayer(panelOpen = false, typingChannel = false, overlayVisible = false),
+      backLayer(
+        panelOpen = false,
+        typingChannel = false,
+        railCursorOn = false,
+        overlayVisible = false,
+      ),
     )
   }
 

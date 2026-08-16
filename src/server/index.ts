@@ -245,6 +245,9 @@ async function main(): Promise<void> {
       deleteWatchHistory: (id) => {
         store.deleteWatchHistory(id);
       },
+      clearWatchHistory: () => {
+        store.clearWatchHistory();
+      },
       listWatchHistory: (limit) => store.listWatchHistory(limit),
     },
     now,

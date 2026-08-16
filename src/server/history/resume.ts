@@ -32,23 +32,49 @@ export interface ResumeSource {
 export const RESUME_LIMIT = 20;
 
 /**
+ * Quantas linhas cruas ler para conseguir montar `limit` cards.
+ *
+ * A consulta traz o historico inteiro, e daqui saem os vistos e os episodios
+ * repetidos da mesma serie. Numa maratona, as vinte linhas mais recentes sao
+ * facilmente vinte episodios do MESMO desenho - ler so `limit` devolveria uma
+ * faixa com um card. A folga e generosa porque a leitura e local e barata.
+ */
+const SCAN_FACTOR = 10;
+
+/**
  * As ultimas posicoes salvas, da mais recente para a mais antiga.
  *
- * Entrada cujo episodio ou canal sumiu num rescan e OMITIDA, e nao devolvida
- * com campos nulos: retomar um arquivo que nao existe mais nao significa nada,
- * e um card sem titulo na faixa parece falha do servidor. O `limit` e cortado
- * dos dois lados (na consulta e no laco) porque a fonte e uma interface: quem a
- * implementar diferente nao pode estourar o contrato da rota.
+ * Tres coisas ficam de fora:
+ *
+ * - entrada cujo episodio ou canal sumiu num rescan, porque retomar um arquivo
+ *   que nao existe mais nao significa nada e um card sem titulo parece falha do
+ *   servidor;
+ * - episodio ja marcado como visto, que e o que "continuar" exclui por
+ *   definicao;
+ * - segunda linha da MESMA serie. A faixa responde "onde eu estou em cada
+ *   serie", e sem isto uma maratona de sabado ocuparia os vinte cards com o
+ *   mesmo desenho e esconderia todo o resto.
+ *
+ * O `limit` e cortado dos dois lados (na consulta e no laco) porque a fonte e
+ * uma interface: quem a implementar diferente nao pode estourar o contrato.
  */
 export function listResume(source: ResumeSource, limit: number = RESUME_LIMIT): ResumeEntry[] {
   const entries: ResumeEntry[] = [];
+  const seenShows = new Set<number>();
 
-  for (const row of source.listWatchHistory(limit)) {
+  for (const row of source.listWatchHistory(limit * SCAN_FACTOR)) {
+    if (row.watchedAt !== null) continue;
+
     const episode = source.getEpisode(row.episodeId);
     if (episode === null) continue;
 
     const show = source.getShowByChannel(row.channelNumber);
     if (show === null) continue;
+
+    // A lista chega ordenada por `updated_at` desc, entao a primeira linha de
+    // cada serie ja e a mais recente dela: basta ignorar as seguintes.
+    if (seenShows.has(show.id)) continue;
+    seenShows.add(show.id);
 
     const metadata = source.getShowMetadata(show.id);
     entries.push({

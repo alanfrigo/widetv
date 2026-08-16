@@ -69,7 +69,8 @@
     <string name="tracks_hint">OK aplica   VOLTAR fecha</string>
     <string name="tracks_open">CC  Áudio e legendas</string>
     <string name="track_remember">Lembrar este idioma</string>
-    <string name="panel_note">A escolha vale para toda a casa: fica gravada no servidor, não no navegador. ↑ ↓ escolhem · Enter confirma · Esc fecha.</string>
+    <!-- Valor inicial; o texto de verdade vem do `panelNote` de `ui/TrackPanel.kt`. -->
+    <string name="panel_note">A escolha vale para a casa toda: fica gravada no servidor. ↑ ↓ escolhem · OK confirma · ← → trocam de aba · OK alterna o lembrar.</string>
     <!-- Trilha sem `title` e sem idioma marcado no container. -->
     <string name="tracks_unnamed">Faixa %1$d</string>
     <string name="tracks_forced">%1$s (forcada)</string>
@@ -79,8 +80,23 @@
     <string name="player_upnext">A seguir</string>
     <string name="player_seek_back">−10</string>
     <string name="player_seek_fwd">+10</string>
-    <string name="player_hint_vod">Espaço pausar · ← → 10 s · S áudio e legendas · M mudo · Esc voltar</string>
-    <string name="player_hint_live">↑ ↓ trocar de canal · S áudio e legendas · M mudo · Esc voltar</string>
+    <!--
+      Só o valor inicial do XML: quem escreve a dica de verdade é o
+      `playerHint` do `ui/Osd.kt`, que a monta a partir do estado da fileira.
+    -->
+    <string name="player_hint_vod">OK pausar · ← → 10 s · ↑ mais opções · VOLTAR sair</string>
+
+    <!-- Fileira de ações do overlay. A ordem é a de `controlRail`. -->
+    <string name="player_action_episodes">Episódios</string>
+    <string name="player_action_prev">Anterior</string>
+    <string name="player_action_next">Próximo</string>
+    <string name="player_action_mute">Mudo</string>
+    <string name="player_action_unmute">Som</string>
+    <string name="player_action_watched">Já vi</string>
+    <string name="player_action_unwatched">Não vi</string>
+    <string name="player_no_tracks">Este episódio tem uma faixa só e nenhuma legenda.</string>
+    <string name="player_marked_watched">Marcado como visto.</string>
+    <string name="player_marked_unwatched">Marcado como não visto.</string>
 
     <!-- Configuracoes. Rotulo e valor de cada linha vem de `ui/Settings.kt`. -->
     <string name="settings_open">Configurações</string>

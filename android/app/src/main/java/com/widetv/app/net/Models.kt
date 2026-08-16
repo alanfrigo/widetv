@@ -149,6 +149,25 @@ data class ResumeEntry(
   val updatedAt: Long = 0,
 )
 
+/**
+ * Uma linha crua do historico, como `GET /api/history` devolve.
+ *
+ * Diferente do [ResumeEntry], que e a FAIXA pronta: aquela vem deduplicada por
+ * serie e sem os episodios ja vistos, porque e disso que "Continuar assistindo"
+ * e feito. A lista de episodios de uma serie precisa do contrario — todos, com
+ * o que ja passou marcado — e por isso le esta rota.
+ */
+@Serializable
+data class WatchProgress(
+  val episodeId: String,
+  val channelNumber: Int = 0,
+  val positionMs: Long = 0,
+  val durationMs: Long = 0,
+  val updatedAt: Long = 0,
+  /** Epoch ms em que virou "ja vi"; null enquanto o episodio nao terminou. */
+  val watchedAt: Long? = null,
+)
+
 /* --- configuracoes -------------------------------------------------------- */
 
 /**
@@ -349,6 +368,20 @@ data class MetadataRefreshRequest(val reset: Boolean = false)
 @Serializable
 data class ThumbsRequest(val reset: Boolean = false)
 
+/**
+ * Corpo do PUT de progresso, na forma do player: onde o video esta.
+ *
+ * Duas classes em vez de uma com campos nulaveis porque o servidor distingue
+ * "campo ausente" de "campo nulo": um `"watched": null` no corpo viraria 400, e
+ * o kotlinx serializa null por padrao.
+ */
+@Serializable
+data class SaveProgressRequest(val positionMs: Long, val durationMs: Long)
+
+/** Corpo do PUT de progresso, na forma do botao: "ja vi" / "nunca vi". */
+@Serializable
+data class SetWatchedRequest(val watched: Boolean)
+
 /** Resposta de quem dispara tarefa de fundo: 202 quando aceitou, 409 se ja rodava. */
 @Serializable
 data class TaskAccepted(
@@ -374,6 +407,16 @@ object Routes {
 
   /** Onde cada canal parou, para a faixa "Continuar assistindo". */
   const val HISTORY_RESUME = "api/history/resume"
+
+  /**
+   * Prefixo do progresso. O id do episodio entra como UM segmento
+   * percent-encoded, pela mesma razao do `STREAM`.
+   *
+   * Ate esta versao o app so LIA a retomada: a faixa "Continuar assistindo"
+   * aparecia na TV alimentada pelo cliente web, e quem assistia na sala nunca
+   * voltava para onde tinha parado.
+   */
+  const val HISTORY = "api/history"
 
   fun episodes(channelNumber: Int): String = "api/channels/$channelNumber/episodes"
 

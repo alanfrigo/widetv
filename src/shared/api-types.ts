@@ -108,12 +108,29 @@ export interface WatchProgress {
   durationMs: number;
   /** Epoch ms da ultima gravacao. */
   updatedAt: number;
+  /**
+   * Epoch ms em que o episodio passou a contar como visto; null enquanto nao
+   * terminou. Chegar ao fim MARCA em vez de apagar a linha - so assim "ja vi
+   * este" sobrevive a proxima abertura da serie.
+   */
+  watchedAt: number | null;
 }
 
-/** Corpo do PUT/POST de progresso. Posicao perto do fim APAGA a entrada. */
+/**
+ * Corpo do PUT/POST de progresso.
+ *
+ * Duas formas, nunca as duas juntas:
+ *
+ * - `{positionMs, durationMs}` - o player gravando onde parou. Posicao perto do
+ *   fim marca como visto e zera a posicao, para a proxima abertura comecar do
+ *   comeco; qualquer posicao antes disso desmarca (rever e assistir de novo).
+ * - `{watched}` - a pessoa marcando na mao. `true` marca como visto sem ter
+ *   assistido; `false` APAGA a linha, que e o que "nunca vi isto" significa.
+ */
 export interface SaveProgressRequest {
-  positionMs: number;
-  durationMs: number;
+  positionMs?: number;
+  durationMs?: number;
+  watched?: boolean;
 }
 
 /**

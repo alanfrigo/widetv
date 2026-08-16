@@ -74,6 +74,17 @@ class ChannelPlayer(
     fun onError(error: Throwable)
     /** Comecou um episodio sob demanda: o escolhido, ou o proximo da maratona. */
     fun onVodEpisode(channel: ChannelSummary, episode: EpisodeRef) {}
+
+    /**
+     * A fila emendou sozinha e [episode] acabou em [positionMs].
+     *
+     * Existe porque este e o UNICO instante em que a posicao final do episodio
+     * que saiu ainda existe: no `onMediaItemTransition` o player ja conta do
+     * zero no item novo. Sem este aviso, nenhum episodio de uma maratona seria
+     * marcado como visto — so o ultimo, que para de tocar e fica onde parou.
+     */
+    fun onVodEpisodeFinished(episode: EpisodeRef, positionMs: Long) {}
+
     /** A maratona chegou ao fim da fila. */
     fun onVodEnded() {}
   }
@@ -133,6 +144,22 @@ class ChannelPlayer(
     applyPrefs()
 
     exo.addListener(object : Player.Listener {
+      /**
+       * A fila andou sozinha. `oldPosition` e a ULTIMA posicao do episodio que
+       * saiu — o `onMediaItemTransition`, que roda logo depois, ja nao a tem.
+       */
+      override fun onPositionDiscontinuity(
+        oldPosition: Player.PositionInfo,
+        newPosition: Player.PositionInfo,
+        reason: Int,
+      ) {
+        if (mode != PlaybackMode.ON_DEMAND) return
+        if (reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION) return
+        val id = oldPosition.mediaItem?.mediaId ?: return
+        val episode = vodQueue.firstOrNull { it.id == id } ?: return
+        events.onVodEpisodeFinished(episode, oldPosition.positionMs.coerceAtLeast(0L))
+      }
+
       override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         // Item novo, grupos de trilha novos: o override fixado no episodio
         // anterior aponta para grupos que nao existem mais. Reaplicar a

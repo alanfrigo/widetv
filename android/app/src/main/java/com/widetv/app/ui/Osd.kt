@@ -122,9 +122,23 @@ fun formatUpNextTime(endsAtMs: Long, nowMs: Long): String {
 }
 
 /**
- * Dica de teclado do rodape. Ao vivo nao ha pausa nem salto: anunciar teclas que
- * o player recusa seria ensinar o gesto errado.
+ * Dica do rodape, montada a partir do estado da fileira de acoes.
+ *
+ * Anuncia SO o que a tecla faz agora. Antes daqui a dica era fixa e mandava
+ * apertar MENU para trocar de audio — tecla que a maioria dos controles de
+ * Google TV nao tem, o que deixava a instrucao na tela apontando para um gesto
+ * impossivel. Ao vivo continua sem pausa e sem salto: anunciar tecla que o
+ * player recusa seria ensinar o gesto errado.
  */
-fun playerHint(live: Boolean): String =
-  if (live) "↑ ↓ trocar de canal · OK áudio e legendas · VOLTAR sair"
-  else "OK pausar · ← → 10 s · MENU áudio e legendas · VOLTAR sair"
+fun playerHint(state: PlayerControlsState): String = when {
+  // Cursor aceso: a fileira mandou, e as setas laterais pertencem a ela. Ao
+  // vivo as verticais seguem zapeando, porque o zap nunca sai do ar.
+  state.cursor != null && state.live ->
+    "← → escolhem · OK confirma · ↑ ↓ trocam de canal · VOLTAR fecha"
+
+  state.cursor != null -> "← → escolhem · OK confirma · ↓ volta ao vídeo · VOLTAR fecha"
+
+  state.live -> "↑ ↓ trocar de canal · OK áudio e legendas · ← → mais opções · VOLTAR sair"
+
+  else -> "OK pausar · ← → 10 s · ↑ mais opções · VOLTAR sair"
+}

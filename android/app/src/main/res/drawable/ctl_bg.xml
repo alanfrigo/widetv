@@ -3,11 +3,24 @@
   Botões redondos/quadrados do OSD do player (áudio e legendas, tela cheia, ±10).
   Focado ganha a borda de acento (mesma linguagem de card_frame); o corpo escuro
   fica como está para o glifo continuar legível sobre o vídeo.
+
+  `state_activated` é o cursor do controle remoto na fileira de ações — os botões
+  do overlay não são focáveis (o foco nativo criaria um segundo cursor), então o
+  destaque vem do reducer, como nas linhas do painel de trilhas. Desenha igual ao
+  focado de propósito: é a mesma ideia na tela, e duas molduras diferentes para
+  "aqui está o cursor" só confundiriam.
 -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:state_focused="true">
         <shape android:shape="rectangle">
             <solid android:color="@color/ctl_bg" />
+            <stroke android:width="@dimen/stroke_focus_card" android:color="@color/accent" />
+            <corners android:radius="@dimen/radius_14" />
+        </shape>
+    </item>
+    <item android:state_activated="true">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/accent_12" />
             <stroke android:width="@dimen/stroke_focus_card" android:color="@color/accent" />
             <corners android:radius="@dimen/radius_14" />
         </shape>

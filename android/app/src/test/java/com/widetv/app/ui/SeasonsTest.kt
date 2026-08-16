@@ -16,6 +16,9 @@ import org.junit.Test
  */
 class SeasonsTest {
 
+  /** Episodio comecado e nao terminado, que e o caso comum da lista. */
+  private fun parado(positionMs: Long) = EpisodeProgress(positionMs = positionMs)
+
   private fun ep(
     id: String,
     season: Int? = 1,
@@ -211,21 +214,36 @@ class SeasonsTest {
 
   @Test
   fun `episodio no meio mostra quanto falta e a barra na fracao certa`() {
-    val items = episodeItems(library, listOf(0), mapOf("s1e1" to 12 * 60_000L))
+    val items = episodeItems(library, listOf(0), mapOf("s1e1" to parado(12 * 60_000L)))
     assertEquals("faltam 12 min", items[0].state)
     assertEquals(BAR_MAX / 2, items[0].progress)
   }
 
   @Test
   fun `parar perto do fim conta como assistido`() {
-    // Ninguem assiste os creditos: 23 de 24 minutos e ter terminado.
-    val items = episodeItems(library, listOf(0), mapOf("s1e1" to 23 * 60_000L + 30_000L))
+    // Ninguem assiste os creditos: 23 de 24 minutos e ter terminado. Vale para
+    // as linhas gravadas antes de o servidor marcar "visto" numa coluna propria.
+    val items = episodeItems(library, listOf(0), mapOf("s1e1" to parado(23 * 60_000L + 30_000L)))
     assertEquals("assistido", items[0].state)
   }
 
   @Test
+  fun `a marca do servidor vale mesmo com posicao zero`() {
+    // Terminar zera a posicao (a proxima abertura comeca do comeco) e marca a
+    // coluna. Deduzir "visto" da posicao diria "nunca abriu" justamente aqui.
+    val items = episodeItems(
+      library,
+      listOf(0),
+      mapOf("s1e1" to EpisodeProgress(positionMs = 0L, watched = true)),
+    )
+    assertEquals("assistido", items[0].state)
+    // Barra vazia ao lado de "assistido" se contradiria na tela.
+    assertEquals(BAR_MAX, items[0].progress)
+  }
+
+  @Test
   fun `episodio nunca aberto nao ganha estado nem barra`() {
-    val items = episodeItems(library, listOf(1), mapOf("s1e1" to 12 * 60_000L))
+    val items = episodeItems(library, listOf(1), mapOf("s1e1" to parado(12 * 60_000L)))
     assertEquals("", items[0].state)
     assertEquals(0, items[0].progress)
   }

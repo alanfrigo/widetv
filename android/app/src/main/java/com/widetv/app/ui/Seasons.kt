@@ -148,28 +148,43 @@ data class EpisodeItem(
 )
 
 /**
- * Acima disto o episodio conta como visto.
+ * Acima disto o episodio conta como visto MESMO SEM a marca do servidor.
  *
- * Nao e 100% porque ninguem assiste os creditos: parar a 30 segundos do fim e
- * ter terminado, e oferecer "faltam 0 min" ali seria mandar a pessoa de volta
- * para a tela final.
+ * Rede para as linhas gravadas antes da versao 11 do indice, quando terminar um
+ * episodio apagava o progresso em vez de marca-lo. Nao e 100% porque ninguem
+ * assiste os creditos: parar a 30 segundos do fim e ter terminado, e oferecer
+ * "faltam 0 min" ali seria mandar a pessoa de volta para a tela final.
  */
 private const val WATCHED_PERCENT = 95
 
 /**
+ * O que o historico sabe de um episodio.
+ *
+ * `watched` e um campo, e nao uma conta sobre a posicao, porque as duas coisas
+ * deixaram de andar juntas: quem terminou tem `watched` e posicao ZERO (para a
+ * proxima abertura comecar do comeco), e quem marcou na mao nunca teve posicao
+ * nenhuma. Deduzir "visto" da posicao diria "nunca abriu" nos dois casos.
+ */
+data class EpisodeProgress(
+  val positionMs: Long = 0L,
+  val watched: Boolean = false,
+)
+
+/**
  * As linhas de uma aba.
  *
- * @param progress posicao guardada por id de episodio, de
- *   `GET /api/history/resume`. O que nao esta no mapa nunca foi assistido.
+ * @param progress o que o historico sabe, por id de episodio, de
+ *   `GET /api/history`. O que nao esta no mapa nunca foi aberto.
  */
 fun episodeItems(
   episodes: List<EpisodeRef>,
   indices: List<Int>,
-  progress: Map<String, Long> = emptyMap(),
+  progress: Map<String, EpisodeProgress> = emptyMap(),
 ): List<EpisodeItem> = indices.mapNotNull { index ->
   val episode = episodes.getOrNull(index) ?: return@mapNotNull null
-  val position = progress[episode.id] ?: 0L
-  val percent = percentOf(position, episode.durationMs)
+  val entry = progress[episode.id]
+  val position = entry?.positionMs ?: 0L
+  val watched = entry?.watched == true || percentOf(position, episode.durationMs) >= WATCHED_PERCENT
 
   EpisodeItem(
     index = index,
@@ -180,11 +195,13 @@ fun episodeItems(
     badge = formatResolutionBadge(episode.height),
     tracks = formatAudioCount(episode.audioTracks.size),
     state = when {
-      percent >= WATCHED_PERCENT -> "assistido"
+      watched -> "assistido"
       position > 0 -> formatRemaining(episode.durationMs - position)
       else -> ""
     },
-    progress = barProgress(position, episode.durationMs),
+    // Visto pinta a barra INTEIRA mesmo com posicao zero: e a unica marca que a
+    // linha tem, e uma barra vazia ao lado de "assistido" se contradiria.
+    progress = if (watched) BAR_MAX else barProgress(position, episode.durationMs),
     thumbUrl = episode.thumbUrl,
   )
 }

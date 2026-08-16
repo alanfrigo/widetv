@@ -177,6 +177,8 @@ export interface WatchHistoryRow {
   positionMs: number;
   durationMs: number;
   updatedAt: number;
+  /** Epoch ms em que virou "ja vi"; null enquanto o episodio nao terminou. */
+  watchedAt: number | null;
 }
 
 /** Linha do historico enriquecida com o canal, para o cliente montar o retorno. */
@@ -330,12 +332,15 @@ export interface Store {
   /** Nomes de arquivo das variantes; entram na mesma coleta de `remux/`. */
   listAudioVariantFiles(): string[];
 
-  /** Posicao salva do episodio; null quando nunca foi assistido (ou terminou). */
+  /** Posicao salva do episodio; null quando ele nunca foi aberto. */
   getWatchHistory(episodeId: string): WatchHistoryRow | null;
 
   upsertWatchHistory(row: WatchHistoryRow): void;
 
   deleteWatchHistory(episodeId: string): void;
+
+  /** Esquece o acervo inteiro. E o "limpar historico" do painel. */
+  clearWatchHistory(): void;
 
   /** Historico com canal, do mais recente para o mais antigo. */
   listWatchHistory(limit: number): WatchHistoryEntry[];
@@ -408,7 +413,7 @@ interface ShowMetadataRecord {
   not_found: number;
 }
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 const MIGRATIONS: readonly string[] = [
   // versao 1
@@ -590,6 +595,20 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE episodes ADD COLUMN thumb_file TEXT;
   ALTER TABLE episodes ADD COLUMN thumb_checked_at INTEGER;
   ALTER TABLE show_metadata ADD COLUMN backdrop_source TEXT;
+  `,
+  // versao 11: "ja vi este episodio".
+  //
+  // Ate aqui, chegar ao fim APAGAVA a linha do historico. Funcionava para
+  // "continuar assistindo" - o que acabou sai da faixa - e nao funcionava para
+  // mais nada: sem linha, "nunca abri" e "vi ate o fim" ficam identicos, e a
+  // lista de episodios da serie nao tem como marcar o que ja passou.
+  //
+  // Coluna nulavel em vez de booleano porque a HORA e o dado util: e ela que
+  // permite, depois, ordenar por "visto recentemente" sem uma segunda coluna.
+  // Linha antiga entra como NULL, que e exatamente o que ela significa - as que
+  // tinham terminado ja haviam sido apagadas e nao ha o que recuperar.
+  `
+  ALTER TABLE watch_history ADD COLUMN watched_at INTEGER;
   `,
 ];
 
@@ -957,16 +976,19 @@ export function openStore(dbPath: string): Store {
 
   const selectWatchHistory = db.prepare('SELECT * FROM watch_history WHERE episode_id = ?');
   const insertWatchHistory = db.prepare(
-    `INSERT INTO watch_history (episode_id, position_ms, duration_ms, updated_at)
-     VALUES (@episodeId, @positionMs, @durationMs, @updatedAt)
+    `INSERT INTO watch_history (episode_id, position_ms, duration_ms, updated_at, watched_at)
+     VALUES (@episodeId, @positionMs, @durationMs, @updatedAt, @watchedAt)
      ON CONFLICT(episode_id) DO UPDATE SET
        position_ms = excluded.position_ms,
        duration_ms = excluded.duration_ms,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at,
+       watched_at = excluded.watched_at`,
   );
   const deleteWatchHistoryStmt = db.prepare('DELETE FROM watch_history WHERE episode_id = ?');
+  const clearWatchHistoryStmt = db.prepare('DELETE FROM watch_history');
   const selectWatchHistoryList = db.prepare(
-    `SELECT h.episode_id, h.position_ms, h.duration_ms, h.updated_at, s.channel_number
+    `SELECT h.episode_id, h.position_ms, h.duration_ms, h.updated_at, h.watched_at,
+            s.channel_number
      FROM watch_history h
      JOIN episodes e ON e.id = h.episode_id
      JOIN shows s ON s.id = e.show_id
@@ -1340,7 +1362,13 @@ export function openStore(dbPath: string): Store {
 
     getWatchHistory(episodeId): WatchHistoryRow | null {
       const record = selectWatchHistory.get(episodeId) as
-        | { episode_id: string; position_ms: number; duration_ms: number; updated_at: number }
+        | {
+            episode_id: string;
+            position_ms: number;
+            duration_ms: number;
+            updated_at: number;
+            watched_at: number | null;
+          }
         | undefined;
       if (record === undefined) return null;
       return {
@@ -1348,6 +1376,7 @@ export function openStore(dbPath: string): Store {
         positionMs: record.position_ms,
         durationMs: record.duration_ms,
         updatedAt: record.updated_at,
+        watchedAt: record.watched_at,
       };
     },
 
@@ -1357,11 +1386,16 @@ export function openStore(dbPath: string): Store {
         positionMs: row.positionMs,
         durationMs: row.durationMs,
         updatedAt: row.updatedAt,
+        watchedAt: row.watchedAt,
       });
     },
 
     deleteWatchHistory(episodeId): void {
       deleteWatchHistoryStmt.run(episodeId);
+    },
+
+    clearWatchHistory(): void {
+      clearWatchHistoryStmt.run();
     },
 
     listWatchHistory(limit): WatchHistoryEntry[] {
@@ -1370,6 +1404,7 @@ export function openStore(dbPath: string): Store {
         position_ms: number;
         duration_ms: number;
         updated_at: number;
+        watched_at: number | null;
         channel_number: number;
       }[];
       return records.map((record) => ({
@@ -1377,6 +1412,7 @@ export function openStore(dbPath: string): Store {
         positionMs: record.position_ms,
         durationMs: record.duration_ms,
         updatedAt: record.updated_at,
+        watchedAt: record.watched_at,
         channelNumber: record.channel_number,
       }));
     },
