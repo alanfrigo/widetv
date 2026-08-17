@@ -54,6 +54,9 @@ let versaoDoIndice = 1;
 
 const SOURCE: ChannelSource = {
   listShows: () => SHOWS,
+  // Nenhum teste aqui exercita curadoria: mesma lista de `listShows`, so o
+  // metodo precisa existir para bater com o contrato de `ChannelSource`.
+  listVisibleShows: () => SHOWS,
   getShowByChannel: (n) => SHOWS.find((s) => s.channelNumber === n) ?? null,
   listEpisodes: (showId) => (showId === 1 ? EPISODES : []),
   // Como o GROUP BY do Store: o canal 9 ("Vazia") nao aparece no mapa.

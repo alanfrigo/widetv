@@ -16,6 +16,8 @@ import { readGrid, type TimelineCache } from './timeline-cache';
  */
 export interface ChannelSource {
   listShows(): ShowRow[];
+  /** Catalogo publico: `listShows` menos as series ocultas no painel. */
+  listVisibleShows(): ShowRow[];
   getShowByChannel(channelNumber: number): ShowRow | null;
   listEpisodes(showId: number): EpisodeRow[];
   /** Quantos episodios cada serie tem, de uma vez, para a listagem do catalogo. */
@@ -131,7 +133,7 @@ export function listChannels(source: ChannelSource): ChannelSummary[] {
   const counts = source.countEpisodesByShow();
   const seasons = source.listSeasonsByShow();
   return source
-    .listShows()
+    .listVisibleShows()
     .map((show) =>
       toSummary(
         show,
@@ -203,7 +205,7 @@ export function listNowPlaying(
   nowMs: number,
   cache?: TimelineCache,
 ): NowPlaying[] {
-  const shows = [...source.listShows()].sort((a, b) => a.channelNumber - b.channelNumber);
+  const shows = [...source.listVisibleShows()].sort((a, b) => a.channelNumber - b.channelNumber);
   const playing: NowPlaying[] = [];
   for (const show of shows) {
     const now = resolveNowPlaying(source, show.channelNumber, epochMs, nowMs, cache);

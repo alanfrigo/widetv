@@ -1,0 +1,205 @@
+import Fastify, { type FastifyInstance } from 'fastify';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+
+import { registerAdminRoutes, type AdminDeps } from '../../src/server/admin/routes';
+import { openStore, type Store } from '../../src/server/library/index-store';
+import type { AdminShow, MetadataCandidate } from '../../src/shared/api-types';
+
+/**
+ * As rotas nao decidem curadoria: elas validam o corpo e chamam o indice. O
+ * que elas guardam sozinhas e a porta - o PUT de metadata baixa uma URL que
+ * veio do cliente, e host fora da lista tem de morrer aqui.
+ */
+
+let app: FastifyInstance;
+let store: Store;
+
+const CANDIDATE: MetadataCandidate = {
+  source: 'tmdb',
+  externalId: '1',
+  title: 'Serie',
+  year: 1989,
+  overview: 'sinopse',
+  posterUrl: 'https://image.tmdb.org/t/p/w500/p.jpg',
+  backdropUrl: null,
+};
+
+beforeEach(async () => {
+  store = openStore(':memory:');
+  app = Fastify();
+  const deps: AdminDeps = {
+    store,
+    dataDir: '/tmp/widetv-teste',
+    tmdbApiKey: null,
+    startScan: () => ({ started: true }),
+    searchCandidates: async () => [CANDIDATE],
+    applyMetadata: async () => undefined,
+  };
+  registerAdminRoutes(app, deps);
+  await app.ready();
+});
+
+afterEach(async () => {
+  await app.close();
+  store.close();
+});
+
+function createShow(slug: string, name: string): number {
+  const row = store.upsertShow({ slug, name, absolutePath: `/lib/${name}` });
+  store.upsertEpisodes(row.id, [
+    {
+      id: `${slug}/e1.mkv`,
+      absolutePath: `/lib/${name}/e1.mkv`,
+      title: 'e1',
+      season: 1,
+      episode: 1,
+      orderIndex: 0,
+      durationMs: 1000,
+      videoCodec: 'h264',
+      audioCodec: 'aac',
+      width: 1280,
+      height: 720,
+      faststart: true,
+      audioTracks: [],
+      subtitleTracks: [],
+      mtimeMs: 1,
+      size: 1,
+    },
+  ]);
+  return row.id;
+}
+
+describe('GET /api/admin/shows', () => {
+  test('devolve a serie com pasta, contagem e selos', async () => {
+    const id = createShow('serie', 'Serie');
+    store.setShowOverride({ slug: 'serie', name: 'Outro', hidden: true, channelNumber: null });
+
+    const response = await app.inject({ method: 'GET', url: '/api/admin/shows' });
+
+    expect(response.statusCode).toBe(200);
+    const shows = response.json<AdminShow[]>();
+    expect(shows).toHaveLength(1);
+    expect(shows[0]).toMatchObject({
+      id,
+      slug: 'serie',
+      folderName: 'Serie',
+      episodeCount: 1,
+      hidden: true,
+      renamed: true,
+      manual: false,
+    });
+  });
+});
+
+describe('PATCH /api/admin/shows/:id', () => {
+  test('renomeia agora e grava o override', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/shows/${String(id)}`,
+      payload: { name: 'Os Simpsons' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.listShows()[0]?.name).toBe('Os Simpsons');
+    expect(store.getShowOverride('serie')?.name).toBe('Os Simpsons');
+  });
+
+  test('numero de canal ocupado troca com o ocupante', async () => {
+    const first = createShow('a', 'A');
+    const second = createShow('b', 'B');
+    const channelOfFirst = store.listShows().find((s) => s.id === first)!.channelNumber;
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/shows/${String(second)}`,
+      payload: { channelNumber: channelOfFirst },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.getShowByChannel(channelOfFirst)?.id).toBe(second);
+  });
+
+  test('tipo errado e 400', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/shows/${String(id)}`,
+      payload: { hidden: 'sim' },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  test('serie inexistente e 404', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/shows/999',
+      payload: { hidden: true },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
+
+describe('POST /api/admin/shows/:id/merge', () => {
+  test('funde a fonte no alvo e grava o alias', async () => {
+    const target = createShow('serie', 'Serie');
+    const source = createShow('serie-extra', 'Serie Extra');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/admin/shows/${String(target)}/merge`,
+      payload: { sourceIds: [source] },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie']);
+    expect(store.listShowAliases()).toEqual([
+      { slug: 'serie-extra', targetSlug: 'serie', createdAt: expect.any(Number) },
+    ]);
+  });
+
+  test('fundir a serie nela mesma e 400', async () => {
+    const target = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/admin/shows/${String(target)}/merge`,
+      payload: { sourceIds: [target] },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+});
+
+describe('PUT /api/admin/shows/:id/metadata', () => {
+  test('host fora da lista e 400', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/admin/shows/${String(id)}/metadata`,
+      payload: {
+        candidate: { ...CANDIDATE, posterUrl: 'https://169.254.169.254/latest/meta-data/' },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  test('candidato valido responde a serie atualizada', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/admin/shows/${String(id)}/metadata`,
+      payload: { candidate: CANDIDATE },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<AdminShow>().id).toBe(id);
+  });
+});

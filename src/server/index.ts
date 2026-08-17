@@ -4,6 +4,7 @@ import cookie from '@fastify/cookie';
 import staticFiles from '@fastify/static';
 import Fastify from 'fastify';
 
+import { registerAdminRoutes } from './admin/routes';
 import { registerAuthGuard, registerAuthRoutes } from './auth/routes';
 import { registerChannelRoutes } from './channels/routes';
 import { loadConfig } from './config';
@@ -19,7 +20,8 @@ import { remuxFileName } from './library/remux-job';
 import { createRemuxQueue } from './library/remux-queue';
 import { defaultAudioNeedsCompat } from './library/remux-plan';
 import { createVariantQueue } from './library/variant-queue';
-import { createEnricher } from './metadata/service';
+import { applyManualMetadata, clearManualMetadata, createEnricher } from './metadata/service';
+import { searchShowCandidates } from './metadata/providers';
 import { registerSettingsRoutes } from './settings/routes';
 import { createSettingsService } from './settings/store';
 import { registerStreamRoutes, type AudioResolution } from './stream/direct';
@@ -213,6 +215,17 @@ async function main(): Promise<void> {
   });
   registerSettingsRoutes(app, { settings });
   registerLibraryRoutes(app, { controller });
+  registerAdminRoutes(app, {
+    store,
+    dataDir: config.dataDir,
+    tmdbApiKey: config.tmdbApiKey,
+    startScan: () => controller.startScan('incremental'),
+    searchCandidates: (term) => searchShowCandidates(term, { tmdbApiKey: config.tmdbApiKey }),
+    applyMetadata: (show, candidate) => applyManualMetadata(store, config.dataDir, show, candidate),
+    clearMetadata: (show) => {
+      clearManualMetadata(store, show);
+    },
+  });
 
   // Fila das variantes de dublagem, uma por processo: e ela que impede dois
   // pedidos iguais de gerar o mesmo MP4 duas vezes.

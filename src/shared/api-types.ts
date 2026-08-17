@@ -339,6 +339,67 @@ export interface TaskAccepted {
   reason?: string;
 }
 
+/* --- administracao do acervo ---------------------------------------------- */
+
+/** Uma serie como o painel de administracao a ve: indice + curadoria. */
+export interface AdminShow {
+  id: number;
+  slug: string;
+  name: string;
+  /** Nome REAL da pasta em disco, para a pessoa se achar no acervo. */
+  folderName: string;
+  channelNumber: number;
+  episodeCount: number;
+  seasons: number[];
+  hidden: boolean;
+  /** true quando o nome exibido veio do painel, e nao da pasta. */
+  renamed: boolean;
+  year: number | null;
+  overview: string | null;
+  source: string | null;
+  /** Capa e sinopse escolhidas a mao: a rodada automatica nao toca. */
+  manual: boolean;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+  /** Pastas fundidas nesta serie. `[]` quando nao houve fusao. */
+  mergedSlugs: string[];
+}
+
+export interface MergeSuggestion {
+  reason: 'nome-identico' | 'slug-parecido';
+  /** Alvo sugerido primeiro (o de mais episodios). */
+  showIds: number[];
+}
+
+export interface MetadataCandidate {
+  source: 'tmdb' | 'tvmaze' | 'itunes';
+  externalId: string;
+  title: string;
+  year: number | null;
+  overview: string | null;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+}
+
+/** Campo ausente = nao mexer. `name: null` volta ao nome da pasta. */
+export interface AdminShowPatch {
+  name?: string | null;
+  hidden?: boolean;
+  channelNumber?: number;
+}
+
+export interface MergeRequest {
+  sourceIds: number[];
+}
+
+export interface UnmergeRequest {
+  slug: string;
+}
+
+export interface ApplyMetadataRequest {
+  candidate: MetadataCandidate;
+}
+
 export const API = {
   login: '/api/auth/login',
   logout: '/api/auth/logout',
@@ -395,4 +456,18 @@ export const API = {
    * roda.
    */
   libraryThumbs: '/api/library/thumbs',
+  /** Acervo inteiro como o painel o ve (`AdminShow[]`). Nunca cacheado. */
+  adminShows: '/api/admin/shows',
+  /** Candidatos a fusao (`MergeSuggestion[]`). */
+  adminMergeSuggestions: '/api/admin/merge-suggestions',
+  /** PATCH com `AdminShowPatch`: nome, oculto e numero de canal. */
+  adminShow: (showId: number) => `/api/admin/shows/${String(showId)}`,
+  /** POST `MergeRequest`: funde as fontes nesta serie. 202. */
+  adminMerge: (showId: number) => `/api/admin/shows/${String(showId)}/merge`,
+  /** POST `UnmergeRequest`: solta a pasta e dispara um scan incremental. 202. */
+  adminUnmerge: (showId: number) => `/api/admin/shows/${String(showId)}/unmerge`,
+  /** GET `?q=`: candidatos de capa/sinopse (`MetadataCandidate[]`). */
+  adminMetadataSearch: (showId: number) => `/api/admin/shows/${String(showId)}/metadata/search`,
+  /** PUT `ApplyMetadataRequest` aplica; DELETE volta ao automatico. */
+  adminMetadata: (showId: number) => `/api/admin/shows/${String(showId)}/metadata`,
 } as const;

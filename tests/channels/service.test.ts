@@ -59,9 +59,13 @@ function source(
   shows: ShowRow[],
   episodes: Record<number, EpisodeRow[]>,
   metadata: Record<number, ShowMetadataRow> = {},
+  hiddenSlugs: string[] = [],
 ): ChannelSource {
   return {
     listShows: () => shows,
+    // Como `Store.listVisibleShows`: o catalogo publico e `listShows` menos o
+    // que o painel marcou como oculto.
+    listVisibleShows: () => shows.filter((s) => !hiddenSlugs.includes(s.slug)),
     getShowByChannel: (n) => shows.find((s) => s.channelNumber === n) ?? null,
     listEpisodes: (showId) => episodes[showId] ?? [],
     // Como o GROUP BY do Store: serie sem episodio nao aparece no mapa.
@@ -122,6 +126,16 @@ describe('listChannels', () => {
   test('serie sem episodio nao vira canal', () => {
     const vazio = source([THUNDER, show(9, 20, 'Vazia')], { 1: [episode(1, 1, MIN)] });
     expect(listChannels(vazio).map((c) => c.number)).toEqual([7]);
+  });
+
+  test('serie oculta some do catalogo', () => {
+    const comOculta = source(
+      [THUNDER, HEMAN],
+      { 1: [episode(1, 1, 20 * MIN)], 2: [episode(2, 1, 10 * MIN)] },
+      {},
+      [HEMAN.slug],
+    );
+    expect(listChannels(comOculta).map((c) => c.name)).not.toContain('He-Man');
   });
 
   test('sem metadata, os campos de capa vem null em vez de sumirem', () => {
