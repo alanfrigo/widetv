@@ -494,6 +494,10 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
         // caminho de SOBRESCRITA: sem nada para preservar, a fusao do
         // enriquecimento vira substituicao, que e exatamente o pedido aqui.
         for (const show of deps.store.listShows()) {
+          // A escolha manual e imune ao "refazer tudo": ela existe justamente
+          // porque a busca automatica errou nesta serie, e apaga-la aqui faria
+          // do botao de manutencao um apagador de curadoria.
+          if (deps.store.getShowMetadata(show.id)?.manual === true) continue;
           deps.store.upsertShowMetadata({
             showId: show.id,
             posterFile: null,

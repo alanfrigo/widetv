@@ -129,10 +129,10 @@ export interface ShowMetadataRow {
   notFound: boolean;
   /**
    * Capa e sinopse escolhidas a mao no painel. A protecao vem de fora desta
-   * tabela: a fila de enriquecimento e o reset de "refazer tudo" tem que
-   * pular toda serie marcada, senao as duas selariam a curadoria por cima.
-   * Esse pulo ainda nao existe - ate ele entrar, a flag e so um marcador, e
-   * nada no codigo a faz valer.
+   * tabela: `listShowsMissingMetadata` pula toda linha marcada, em qualquer
+   * escopo, e o reset de "refazer tudo" (`scan-controller.ts`) pula a linha
+   * inteira antes de regravar - as duas rotas que, sem isto, selariam a
+   * curadoria por cima.
    */
   manual: boolean;
 }
