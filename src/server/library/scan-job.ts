@@ -6,6 +6,7 @@ import type { EpisodeInput, Store } from './index-store';
 import { probeFile } from './probe';
 import type { ProbeResult } from './probe-types';
 import { scanLibrary, type ScannedEpisode } from './scanner';
+import { applyShowOverrides, channelNumberFixes } from './overrides.js';
 
 /**
  * Orquestracao do scan: caminha o acervo, mede o que mudou e grava o indice.
@@ -128,7 +129,11 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
   // Aqui ela morre mesmo no scan que vai falhar dez linhas abaixo.
   const mergedShows = mergeDuplicateShows(store);
 
-  const shows = await scanLibrary(root, { smartGrouping: options.smartGrouping ?? true });
+  // A curadoria entra ANTES da gravacao: alias funde as pastas, o nome manual
+  // substitui o derivado. Depois deste ponto o resto do job nao sabe que
+  // existe painel nenhum - ele so grava a lista de series que recebeu.
+  const scanned = await scanLibrary(root, { smartGrouping: options.smartGrouping ?? true });
+  const shows = applyShowOverrides(scanned, store.listShowAliases(), store.listShowOverrides());
   const total = shows.reduce((sum, show) => sum + show.episodes.length, 0);
 
   const failed: ScanFailure[] = [];
@@ -209,6 +214,12 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
   // Um canal fundido na limpeza de duplicatas e um canal que sumiu do painel:
   // conta como removido, que e o que a pessoa ve.
   const removedShows = mergedShows + store.pruneShows([...keptSlugs, ...protectedSlugs]);
+
+  // Serie apagada e recriada (pasta que sumiu e voltou) renasce num canal
+  // qualquer: o contador nunca recicla numero. Isto devolve o numero escolhido.
+  for (const fix of channelNumberFixes(store.listShows(), store.listShowOverrides())) {
+    store.setChannelNumber(fix.showId, fix.channelNumber);
+  }
 
   return {
     shows: keptSlugs.length,
