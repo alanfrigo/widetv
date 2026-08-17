@@ -598,6 +598,7 @@ describe('refreshMetadata', () => {
       source: 'tvmaze',
       fetchedAt: AGORA,
       notFound: false,
+      manual: false,
     });
 
     expect(harness.controller.refreshMetadata(true)).toEqual({ started: true });

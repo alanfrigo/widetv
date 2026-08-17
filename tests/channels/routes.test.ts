@@ -78,6 +78,7 @@ function metadataRow(showId: number, over: Partial<ShowMetadataRow> = {}): ShowM
     source: 'tvmaze',
     fetchedAt: EPOCH,
     notFound: false,
+    manual: false,
     ...over,
   };
 }

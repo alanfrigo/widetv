@@ -127,6 +127,34 @@ export interface ShowMetadataRow {
   /** Epoch ms da tentativa; e o que o TTL de re-tentativa mede. */
   fetchedAt: number;
   notFound: boolean;
+  /**
+   * Capa e sinopse escolhidas a mao no painel. A rodada automatica nao entra
+   * nesta linha, e o "refazer tudo" tambem nao: as duas selariam a curadoria.
+   */
+  manual: boolean;
+}
+
+/**
+ * Decisao humana sobre uma serie do catalogo, chaveada pelo SLUG da pasta.
+ *
+ * Slug e nao `show_id`: o id morre no prune e renasce outro quando a pasta
+ * volta, e uma curadoria que nao atravessa um volume desmontado nao serve.
+ */
+export interface ShowOverrideRow {
+  slug: string;
+  /** null = usa o nome derivado da pasta. */
+  name: string | null;
+  hidden: boolean;
+  /** null = numero automatico, atribuido pelo contador do indice. */
+  channelNumber: number | null;
+  updatedAt: number;
+}
+
+/** Pasta fundida a mao noutra serie. O scan le isto ANTES de gravar. */
+export interface ShowAliasRow {
+  slug: string;
+  targetSlug: string;
+  createdAt: number;
 }
 
 /**
@@ -314,6 +342,41 @@ export interface Store {
    */
   mergeShows(sourceId: number, targetId: number): void;
 
+  /** Series visiveis no catalogo: `listShows` menos as ocultas no painel. */
+  listVisibleShows(): ShowRow[];
+
+  listShowOverrides(): ShowOverrideRow[];
+  getShowOverride(slug: string): ShowOverrideRow | null;
+  /**
+   * Grava a curadoria da pasta. Linha totalmente neutra (sem nome, visivel,
+   * canal automatico) e APAGADA em vez de gravada: assim "desfiz tudo" volta
+   * ao estado de quem nunca mexeu, e a tabela nao acumula linha morta.
+   */
+  setShowOverride(input: {
+    slug: string;
+    name: string | null;
+    hidden: boolean;
+    channelNumber: number | null;
+  }): void;
+
+  listShowAliases(): ShowAliasRow[];
+  /**
+   * Registra que `slug` foi fundido em `targetSlug`. O alvo e resolvido ate o
+   * slug FINAL na escrita - alias de alias viraria uma cadeia que todo leitor
+   * teria de reandar, e um ciclo (`a`->`b`->`a`) travaria o scan. Lanca no
+   * ciclo em vez de gravar.
+   */
+  addShowAlias(slug: string, targetSlug: string): void;
+  removeShowAlias(slug: string): void;
+
+  /**
+   * Fixa o numero de canal da serie, trocando com quem ja o ocupa.
+   *
+   * `channel_number` e UNIQUE, entao a troca passa por um valor temporario
+   * negativo: um UPDATE direto violaria a constraint no meio da transacao.
+   */
+  setChannelNumber(showId: number, channelNumber: number): void;
+
   /** Probe cacheado, valido apenas se mtime e size baterem. */
   getCachedProbe(id: string, mtimeMs: number, size: number): ProbeResult | null;
 
@@ -458,9 +521,26 @@ interface ShowMetadataRecord {
   source: string | null;
   fetched_at: number;
   not_found: number;
+  /** DEFAULT 0 na coluna: linha gravada antes da versao 13 vira 0, nunca NULL. */
+  manual: number;
 }
 
-const SCHEMA_VERSION = 12;
+/** Formato das linhas de `show_override` como o SQLite devolve. */
+interface ShowOverrideRecord {
+  slug: string;
+  name: string | null;
+  hidden: number;
+  channel_number: number | null;
+  updated_at: number;
+}
+
+interface ShowAliasRecord {
+  slug: string;
+  target_slug: string;
+  created_at: number;
+}
+
+const SCHEMA_VERSION = 13;
 
 const MIGRATIONS: readonly string[] = [
   // versao 1
@@ -680,6 +760,33 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE remux ADD COLUMN last_access_at INTEGER;
   ALTER TABLE audio_variant ADD COLUMN size_bytes INTEGER;
   ALTER TABLE audio_variant ADD COLUMN last_access_at INTEGER;
+  `,
+  // versao 13: curadoria humana do catalogo.
+  //
+  // Sem FK para `shows` DE PROPOSITO. A linha de `shows` morre no prune quando
+  // uma raiz fica sem permissao ou um volume desmonta, e um ON DELETE CASCADE
+  // levaria a curadoria junto - justamente no acidente que a curadoria precisa
+  // atravessar. A chave e o slug de pasta, o unico id estavel entre rodadas.
+  //
+  // `show_alias` e o que faz a fusao manual sobreviver: o scan consulta a
+  // tabela antes de gravar, e a pasta fundida nunca volta a virar canal.
+  `
+  CREATE TABLE IF NOT EXISTS show_override (
+    slug TEXT PRIMARY KEY,
+    name TEXT,
+    hidden INTEGER NOT NULL DEFAULT 0,
+    channel_number INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS show_alias (
+    slug TEXT PRIMARY KEY,
+    target_slug TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_show_alias_target ON show_alias (target_slug);
+
+  ALTER TABLE show_metadata ADD COLUMN manual INTEGER NOT NULL DEFAULT 0;
   `,
 ];
 
@@ -1184,11 +1291,11 @@ export function openStore(dbPath: string): Store {
   const insertShowMetadata = db.prepare(
     `INSERT INTO show_metadata (
        show_id, poster_file, backdrop_file, backdrop_checked_at, backdrop_source,
-       year, overview, source, fetched_at, not_found
+       year, overview, source, fetched_at, not_found, manual
      )
      VALUES (
        @showId, @posterFile, @backdropFile, @backdropCheckedAt, @backdropSource,
-       @year, @overview, @source, @fetchedAt, @notFound
+       @year, @overview, @source, @fetchedAt, @notFound, @manual
      )
      ON CONFLICT(show_id) DO UPDATE SET
        poster_file = excluded.poster_file,
@@ -1199,7 +1306,8 @@ export function openStore(dbPath: string): Store {
        overview = excluded.overview,
        source = excluded.source,
        fetched_at = excluded.fetched_at,
-       not_found = excluded.not_found`,
+       not_found = excluded.not_found,
+       manual = excluded.manual`,
   );
   // Linha nova nasce com `fetched_at = 0` e `not_found = 1`: e "ninguem
   // procurou metadata para esta serie ainda", que e a verdade - quem escreveu
@@ -1249,6 +1357,82 @@ export function openStore(dbPath: string): Store {
     const { next } = selectNextOrderIndex.get(targetId) as { next: number };
     moveEpisodesToShow.run({ sourceId, targetId, offset: next });
     deleteShowById.run(sourceId);
+  });
+
+  const selectShowById = db.prepare(
+    'SELECT id, slug, name, channel_number, absolute_path FROM shows WHERE id = ?',
+  );
+  const selectVisibleShows = db.prepare(
+    `SELECT shows.id, shows.slug, shows.name, shows.channel_number, shows.absolute_path
+     FROM shows
+     LEFT JOIN show_override ON show_override.slug = shows.slug
+     WHERE COALESCE(show_override.hidden, 0) = 0
+     ORDER BY shows.channel_number`,
+  );
+  const updateChannelNumber = db.prepare(
+    'UPDATE shows SET channel_number = @channelNumber WHERE id = @id',
+  );
+
+  const selectOverrides = db.prepare('SELECT * FROM show_override ORDER BY slug');
+  const selectOverride = db.prepare('SELECT * FROM show_override WHERE slug = ?');
+  const upsertOverride = db.prepare(
+    `INSERT INTO show_override (slug, name, hidden, channel_number, updated_at)
+     VALUES (@slug, @name, @hidden, @channelNumber, @updatedAt)
+     ON CONFLICT(slug) DO UPDATE SET
+       name = excluded.name,
+       hidden = excluded.hidden,
+       channel_number = excluded.channel_number,
+       updated_at = excluded.updated_at`,
+  );
+  const deleteOverride = db.prepare('DELETE FROM show_override WHERE slug = ?');
+
+  const selectAliases = db.prepare('SELECT * FROM show_alias ORDER BY slug');
+  const insertAlias = db.prepare(
+    `INSERT INTO show_alias (slug, target_slug, created_at)
+     VALUES (@slug, @targetSlug, @createdAt)
+     ON CONFLICT(slug) DO UPDATE SET target_slug = excluded.target_slug`,
+  );
+  const deleteAlias = db.prepare('DELETE FROM show_alias WHERE slug = ?');
+
+  function toOverrideRow(record: ShowOverrideRecord): ShowOverrideRow {
+    return {
+      slug: record.slug,
+      name: record.name,
+      hidden: record.hidden !== 0,
+      channelNumber: record.channel_number,
+      updatedAt: record.updated_at,
+    };
+  }
+
+  /** Segue a cadeia gravada ate o slug final; para em ciclo em vez de girar. */
+  function resolveAliasChain(slug: string): string {
+    const map = new Map(
+      (selectAliases.all() as ShowAliasRecord[]).map((row) => [row.slug, row.target_slug] as const),
+    );
+    const visto = new Set<string>([slug]);
+    let atual = slug;
+    for (;;) {
+      const proximo = map.get(atual);
+      if (proximo === undefined) return atual;
+      if (visto.has(proximo)) return proximo;
+      visto.add(proximo);
+      atual = proximo;
+    }
+  }
+
+  const setChannelNumberTx = db.transaction((showId: number, channelNumber: number): void => {
+    const atual = selectShowById.get(showId) as ShowRecord | undefined;
+    if (atual === undefined) throw new Error(`serie ${String(showId)} nao existe`);
+    if (atual.channel_number === channelNumber) return;
+
+    const ocupante = selectShowByChannel.get(channelNumber) as ShowRecord | undefined;
+    // Numero negativo como estacionamento: fora do espaco de numeros reais
+    // (o contador so emite positivos), entao nao colide com ninguem.
+    updateChannelNumber.run({ id: showId, channelNumber: -showId });
+    if (ocupante !== undefined) {
+      updateChannelNumber.run({ id: ocupante.id, channelNumber: atual.channel_number });
+    }
+    updateChannelNumber.run({ id: showId, channelNumber });
   });
 
   return {
@@ -1321,6 +1505,7 @@ export function openStore(dbPath: string): Store {
         source: record.source,
         fetchedAt: record.fetched_at,
         notFound: record.not_found !== 0,
+        manual: record.manual !== 0,
       };
     },
 
@@ -1348,6 +1533,7 @@ export function openStore(dbPath: string): Store {
         source: row.source,
         fetchedAt: row.fetchedAt,
         notFound: row.notFound ? 1 : 0,
+        manual: row.manual ? 1 : 0,
       });
     },
 
@@ -1376,6 +1562,56 @@ export function openStore(dbPath: string): Store {
 
     mergeShows(sourceId, targetId): void {
       mergeShowsTx(sourceId, targetId);
+      bumpIndexVersion();
+    },
+
+    listVisibleShows(): ShowRow[] {
+      return (selectVisibleShows.all() as ShowRecord[]).map(toShowRow);
+    },
+
+    listShowOverrides(): ShowOverrideRow[] {
+      return (selectOverrides.all() as ShowOverrideRecord[]).map(toOverrideRow);
+    },
+
+    getShowOverride(slug): ShowOverrideRow | null {
+      const record = selectOverride.get(slug) as ShowOverrideRecord | undefined;
+      return record === undefined ? null : toOverrideRow(record);
+    },
+
+    setShowOverride(input): void {
+      if (input.name === null && !input.hidden && input.channelNumber === null) {
+        deleteOverride.run(input.slug);
+        return;
+      }
+      upsertOverride.run({
+        slug: input.slug,
+        name: input.name,
+        hidden: input.hidden ? 1 : 0,
+        channelNumber: input.channelNumber,
+        updatedAt: Date.now(),
+      });
+    },
+
+    listShowAliases(): ShowAliasRow[] {
+      return (selectAliases.all() as ShowAliasRecord[]).map((record) => ({
+        slug: record.slug,
+        targetSlug: record.target_slug,
+        createdAt: record.created_at,
+      }));
+    },
+
+    addShowAlias(slug, targetSlug): void {
+      const alvo = resolveAliasChain(targetSlug);
+      if (alvo === slug) throw new Error(`alias circular: ${slug} -> ${targetSlug}`);
+      insertAlias.run({ slug, targetSlug: alvo, createdAt: Date.now() });
+    },
+
+    removeShowAlias(slug): void {
+      deleteAlias.run(slug);
+    },
+
+    setChannelNumber(showId, channelNumber): void {
+      setChannelNumberTx(showId, channelNumber);
       bumpIndexVersion();
     },
 

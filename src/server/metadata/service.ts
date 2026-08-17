@@ -263,6 +263,7 @@ async function enrichOne(
       store.upsertShowMetadata({
         ...keep,
         backdropCheckedAt: backdropCapable ? now() : keep.backdropCheckedAt,
+        manual: false,
       });
       return;
     }
@@ -280,6 +281,7 @@ async function enrichOne(
       source: null,
       fetchedAt: now(),
       notFound: true,
+      manual: false,
     });
     return;
   }
@@ -368,6 +370,7 @@ async function enrichOne(
     source: keep?.source ?? metadata.source,
     fetchedAt: now(),
     notFound: false,
+    manual: false,
   });
 }
 

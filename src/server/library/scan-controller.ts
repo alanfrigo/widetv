@@ -509,6 +509,7 @@ export function createLibraryController(deps: LibraryControllerDeps): LibraryCon
             source: null,
             fetchedAt: 0,
             notFound: true,
+            manual: false,
           });
         }
         log(`metadata apagada de ${deps.store.listShows().length} canais, buscando de novo`);

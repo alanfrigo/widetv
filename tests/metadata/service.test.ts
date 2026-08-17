@@ -76,6 +76,7 @@ function row(showId: number, over: Partial<ShowMetadataRow> = {}): ShowMetadataR
     source: 'tvmaze',
     fetchedAt: AGORA,
     notFound: false,
+    manual: false,
     ...over,
   };
 }
@@ -191,6 +192,7 @@ describe('enrichMissing', () => {
       source: 'tvmaze',
       fetchedAt: AGORA,
       notFound: false,
+      manual: false,
     });
     expect(Array.from(await readFile(join(dataDir, 'posters', '1.jpg')))).toEqual([
       0xff, 0xd8, 0xff,
@@ -382,6 +384,7 @@ describe('enrichMissing', () => {
       source: null,
       fetchedAt: AGORA,
       notFound: true,
+      manual: false,
     });
   });
 

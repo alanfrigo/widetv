@@ -80,6 +80,7 @@ describe('mergeDuplicateShows', () => {
       source: 'tvmaze',
       fetchedAt: 1,
       notFound: false,
+      manual: false,
     });
     store.upsertWatchHistory({
       episodeId: 'Temporada 37/The.Simpsons.S37E01.mkv',

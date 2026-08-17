@@ -308,6 +308,7 @@ describe('GET /api/history/resume', () => {
       source: 'tmdb',
       fetchedAt: 1,
       notFound: false,
+      manual: false,
     };
     rows.set(EP, {
       episodeId: EP,
