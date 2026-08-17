@@ -685,8 +685,14 @@ function pickTitle(group: readonly ShowFolder[], first: ShowFolder): string {
   return best.title;
 }
 
-/** Temporada, depois episodio, e o que nao tem numero nenhum vai para o fim. */
-function compareEpisodes(a: ScannedEpisode, b: ScannedEpisode): number {
+/**
+ * Ordem da grade: temporada, episodio, e o caminho como desempate.
+ *
+ * Exportada porque a fusao MANUAL (library/overrides.ts) tem de reordenar
+ * exatamente como a automatica: concatenar duas pastas sem reordenar estrearia
+ * a S02 antes da S01, dependendo so da ordem de leitura do filesystem.
+ */
+export function compareEpisodes(a: ScannedEpisode, b: ScannedEpisode): number {
   const seasonA = a.season ?? Number.POSITIVE_INFINITY;
   const seasonB = b.season ?? Number.POSITIVE_INFINITY;
   if (seasonA !== seasonB) return seasonA - seasonB;
