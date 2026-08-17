@@ -127,7 +127,8 @@ export interface AdminShow {
 
 export interface MergeSuggestion {
   /** Por que o agrupamento foi sugerido, para a pessoa julgar. */
-  reason: 'nome-identico' | 'digest' | 'temporada-solta';
+  reason: 'nome-identico' | 'slug-parecido';
+  /** Alvo sugerido primeiro (o de mais episodios). */
   showIds: number[];
 }
 
@@ -279,11 +280,13 @@ Três guardas para a escolha manual não ser atropelada:
 `DELETE /api/admin/shows/:id/metadata` é a saída: zera `manual`, marca
 `not_found` e devolve a série para a fila automática.
 
-**Cache-bust.** `posterUrlOf` e `backdropUrlOf` passam a emitir
-`/api/channels/:n/poster?v=<fetchedAt>`. A rota de arte responde
-`cache-control: private, max-age=86400`, então sem isso a capa nova só
-apareceria 24 h depois — inclusive na TV Android, que consome o mesmo campo de
-`ChannelSummary`.
+**Cache-bust: nada a fazer.** `posterUrlOf` já emite
+`/api/channels/:n/poster?v=<fetchedAt>` e `backdropUrlOf` usa
+`backdropCheckedAt ?? fetchedAt`, justamente porque a rota de arte responde
+`cache-control: private, max-age=86400`. `applyManualMetadata` grava
+`fetchedAt` e `backdropCheckedAt` com o relógio da escolha, então a URL muda
+sozinha e a capa nova aparece na hora — inclusive na TV Android, que consome o
+mesmo campo de `ChannelSummary`.
 
 ## 5. Página /admin
 
@@ -326,15 +329,24 @@ DOM — mesmo desenho de `settings.ts` e `tracks.ts`, e testável sem browser.
 
 ## 6. Sugestão de duplicados
 
-Módulo puro `src/server/library/merge-suggest.ts`. Agrupa por chave
-normalizada: slug sem o sufixo de digest de `disambiguateSlugs`, nome sem
-sufixo de ano e sem prefixo de temporada solta. Grupo com mais de uma série
-vira sugestão, ordenada por número de episódios (o maior é o alvo padrão).
+Módulo puro `src/server/library/merge-suggest.ts`, com duas chaves de
+agrupamento sobre as séries já indexadas:
 
-Sugestão é sugestão: "Doctor Who (1963)" e "Doctor Who (2005)" caem no mesmo
-nome normalizado e NÃO podem ser fundidos automaticamente. A regra de anos
-diferentes de `dedupe.ts` vale aqui como filtro — anos explícitos e distintos
-tiram o par da lista.
+1. **`nome-identico`** — `groupingKey(parseFolderTitle(show.name))`, que já
+   existe em `title-parser.ts` e produz `slug-ascii` ou `slug-ascii@ano`. Anos
+   explícitos e diferentes caem em chaves diferentes, então "Doctor Who (1963)"
+   e "Doctor Who (2005)" nunca são sugeridos juntos — é a mesma regra
+   conservadora de `dedupe.ts`.
+2. **`slug-parecido`** — slug sem o sufixo de digest de `disambiguateSlugs`
+   (`-<6 hex>` com o `-<n>` opcional). Pega o par cujo nome divergiu mas cuja
+   pasta é claramente a mesma série desambiguada.
+
+Grupo com mais de uma série vira sugestão. `showIds` sai ordenado por número de
+episódios decrescente: o primeiro é o alvo padrão na tela. Um par que caia nas
+duas chaves aparece uma vez só, com `reason: 'nome-identico'`.
+
+Sugestão é sugestão: nada aqui funde sozinho. A fusão automática continua sendo
+só a de `dedupe.ts`, que exige prova verificável sem olhar o disco.
 
 ## 7. Testes
 
@@ -363,7 +375,7 @@ Cada fatia verde antes da seguinte:
 4. `library/merge-suggest.ts`.
 5. `metadata/providers.ts` (`searchShowCandidates`) e
    `metadata/service.ts` (`applyManualMetadata` mais os três guardas do
-   `manual`); cache-bust em `channels/service.ts`.
+   `manual`).
 6. `admin/routes.ts` e os tipos em `@shared/api-types`; filtro de ocultos em
    `listChannels`/`listNowPlaying`.
 7. Página `/admin` (vite multi-entry, ramo do `setNotFoundHandler`, UI).
