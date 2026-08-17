@@ -376,3 +376,198 @@ export async function downloadImage(
   }
   return bytes;
 }
+
+/**
+ * Um resultado de busca, ainda NAO aplicado a nenhuma serie.
+ *
+ * Diferente de `ShowMetadata`, que e o veredito da cadeia automatica, isto e
+ * uma opcao numa lista: quem escolhe e a pessoa no painel.
+ */
+export interface ShowCandidate {
+  source: ProviderName;
+  /** Id no provedor. So identifica a linha na tela; nada aqui o persiste. */
+  externalId: string;
+  title: string;
+  year: number | null;
+  overview: string | null;
+  posterUrl: string | null;
+  backdropUrl: string | null;
+}
+
+/** Teto por provedor: a tela mostra uma grade, nao um catalogo. */
+const MAX_CANDIDATES = 10;
+
+export async function searchTmdbCandidates(
+  name: string,
+  apiKey: string,
+  options?: ProviderOptions,
+): Promise<ShowCandidate[]> {
+  const url =
+    'https://api.themoviedb.org/3/search/tv' +
+    `?query=${encodeURIComponent(name)}&api_key=${encodeURIComponent(apiKey)}&language=pt-BR`;
+  const body = await readJson(await request(url, options), 'tmdb');
+  if (body === null || typeof body !== 'object') return [];
+
+  const results = (body as { results?: unknown[] }).results ?? [];
+  return results.slice(0, MAX_CANDIDATES).flatMap((raw) => {
+    if (typeof raw !== 'object' || raw === null) return [];
+    const item = raw as {
+      id?: unknown;
+      name?: unknown;
+      poster_path?: unknown;
+      backdrop_path?: unknown;
+      overview?: unknown;
+      first_air_date?: unknown;
+    };
+    const title = nonEmptyString(item.name);
+    if (title === null) return [];
+    const posterPath = nonEmptyString(item.poster_path);
+    const backdropPath = nonEmptyString(item.backdrop_path);
+    return [
+      {
+        source: 'tmdb' as const,
+        externalId: String(item.id ?? ''),
+        title,
+        year: toYear(item.first_air_date),
+        overview: toOverview(item.overview),
+        posterUrl: posterPath === null ? null : `https://image.tmdb.org/t/p/w500${posterPath}`,
+        backdropUrl:
+          backdropPath === null ? null : `https://image.tmdb.org/t/p/w1280${backdropPath}`,
+      },
+    ];
+  });
+}
+
+/**
+ * `/search/shows` e nao `singlesearch`: o segundo ja escolhe por conta propria,
+ * e a escolha e justamente o que o painel devolve para a pessoa.
+ */
+export async function searchTvmazeCandidates(
+  name: string,
+  options?: ProviderOptions,
+): Promise<ShowCandidate[]> {
+  const url = `https://api.tvmaze.com/search/shows?q=${encodeURIComponent(name)}`;
+  const body = await readJson(await request(url, options), 'tvmaze');
+  if (!Array.isArray(body)) return [];
+
+  return body.slice(0, MAX_CANDIDATES).flatMap((raw) => {
+    if (typeof raw !== 'object' || raw === null) return [];
+    const show = (raw as { show?: unknown }).show;
+    if (typeof show !== 'object' || show === null) return [];
+    const item = show as {
+      id?: unknown;
+      name?: unknown;
+      premiered?: unknown;
+      summary?: unknown;
+      image?: { original?: unknown; medium?: unknown } | null;
+    };
+    const title = nonEmptyString(item.name);
+    if (title === null) return [];
+    return [
+      {
+        source: 'tvmaze' as const,
+        externalId: String(item.id ?? ''),
+        title,
+        year: toYear(item.premiered),
+        overview: toOverview(item.summary),
+        posterUrl: nonEmptyString(item.image?.original) ?? nonEmptyString(item.image?.medium),
+        backdropUrl: null,
+      },
+    ];
+  });
+}
+
+export async function searchItunesCandidates(
+  name: string,
+  options?: ProviderOptions,
+): Promise<ShowCandidate[]> {
+  const candidates: ShowCandidate[] = [];
+  for (const media of ['tvShow', 'movie'] as const) {
+    const url =
+      `https://itunes.apple.com/search?term=${encodeURIComponent(name)}` +
+      `&media=${media}&limit=${String(MAX_CANDIDATES)}`;
+    const body = await readJson(await request(url, options), 'itunes');
+    if (body === null || typeof body !== 'object') continue;
+
+    for (const raw of (body as { results?: unknown[] }).results ?? []) {
+      if (typeof raw !== 'object' || raw === null) continue;
+      const item = raw as {
+        trackId?: unknown;
+        collectionId?: unknown;
+        trackName?: unknown;
+        collectionName?: unknown;
+        artworkUrl100?: unknown;
+        releaseDate?: unknown;
+        longDescription?: unknown;
+        description?: unknown;
+      };
+      const title = nonEmptyString(item.trackName) ?? nonEmptyString(item.collectionName);
+      if (title === null) continue;
+      const artwork = nonEmptyString(item.artworkUrl100);
+      candidates.push({
+        source: 'itunes',
+        externalId: String(item.trackId ?? item.collectionId ?? ''),
+        title,
+        year: toYear(item.releaseDate),
+        overview: toOverview(item.longDescription) ?? toOverview(item.description),
+        // O `100x100` da URL e template: trocar devolve a arte grande.
+        posterUrl: artwork === null ? null : artwork.replace('100x100', '600x600'),
+        backdropUrl: null,
+      });
+    }
+  }
+  return candidates.slice(0, MAX_CANDIDATES);
+}
+
+/**
+ * Todos os provedores, em PARALELO.
+ *
+ * A serializacao de duas buscas em voo do enriquecimento existe por etiqueta
+ * com API publica ao varrer 460 series de uma vez. Aqui sao tres requisicoes
+ * disparadas por um clique, com a pessoa olhando a tela esperando - a mesma
+ * cautela viraria so lentidao.
+ *
+ * Provedor que falha some da lista em vez de derrubar a busca: meia lista e
+ * infinitamente melhor que um erro quando o objetivo e escolher uma capa.
+ */
+export async function searchShowCandidates(
+  term: string,
+  options?: ChainOptions,
+): Promise<ShowCandidate[]> {
+  const query = term.trim();
+  if (query === '') return [];
+
+  const key = options?.tmdbApiKey;
+  const tasks: Promise<ShowCandidate[]>[] = [];
+  if (typeof key === 'string' && key.trim() !== '') {
+    tasks.push(searchTmdbCandidates(query, key.trim(), options));
+  }
+  tasks.push(searchTvmazeCandidates(query, options));
+  tasks.push(searchItunesCandidates(query, options));
+
+  const results = await Promise.allSettled(tasks);
+  return results.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+}
+
+/** Hosts de imagem dos provedores. Fora desta lista, nada e baixado. */
+const IMAGE_HOSTS = new Set(['image.tmdb.org', 'static.tvmaze.com']);
+
+/**
+ * A URL da capa vem do CLIENTE no `PUT` do painel, e quem a busca e o
+ * SERVIDOR: sem esta trava, um corpo forjado faz o servidor requisitar
+ * qualquer endereco alcancavel da rede dele (o metadata da nuvem, um servico
+ * interno sem autenticacao). A sessao unica nao substitui a checagem - cookie
+ * vaza mais facil que rede interna.
+ */
+export function imageUrlAllowed(raw: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') return false;
+  if (IMAGE_HOSTS.has(url.hostname)) return true;
+  // A arte da Apple sai de varios `is<N>-ssl.mzstatic.com`.
+  return url.hostname === 'mzstatic.com' || url.hostname.endsWith('.mzstatic.com');
+}

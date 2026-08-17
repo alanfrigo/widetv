@@ -6,7 +6,9 @@ import {
   fetchFromItunes,
   fetchFromTmdb,
   fetchFromTvmaze,
+  imageUrlAllowed,
   lookupShowMetadata,
+  searchShowCandidates,
   stripHtml,
 } from '../../src/server/metadata/providers';
 
@@ -382,5 +384,118 @@ describe('downloadImage', () => {
   test('corpo vazio lanca em vez de gravar um arquivo de 0 byte', async () => {
     vi.stubGlobal('fetch', () => Promise.resolve(new Response(new Uint8Array([]))));
     await expect(downloadImage('https://img/a.jpg')).rejects.toThrow(/vazia/);
+  });
+});
+
+describe('searchShowCandidates', () => {
+  test('junta os tres provedores e mantem a ordem da cadeia', async () => {
+    const fetchDouble = vi.fn(async (url: string) => {
+      if (url.includes('themoviedb')) {
+        return json({
+          results: [
+            {
+              id: 1,
+              name: 'Serie TMDB',
+              first_air_date: '1989-12-17',
+              overview: 'a',
+              poster_path: '/p.jpg',
+              backdrop_path: '/b.jpg',
+            },
+          ],
+        });
+      }
+      if (url.includes('tvmaze')) {
+        return json([
+          {
+            show: {
+              id: 2,
+              name: 'Serie TVMaze',
+              premiered: '1990-01-01',
+              summary: '<p>b</p>',
+              image: { original: 'https://static.tvmaze.com/x.jpg' },
+            },
+          },
+        ]);
+      }
+      return json({ results: [] });
+    });
+
+    const candidates = await searchShowCandidates('serie', {
+      fetch: fetchDouble,
+      tmdbApiKey: 'chave',
+    });
+
+    expect(candidates.map((c) => c.source)).toEqual(['tmdb', 'tvmaze']);
+    expect(candidates[0]?.posterUrl).toBe('https://image.tmdb.org/t/p/w500/p.jpg');
+    expect(candidates[0]?.backdropUrl).toBe('https://image.tmdb.org/t/p/w1280/b.jpg');
+    expect(candidates[1]?.overview).toBe('b');
+    expect(candidates[1]?.year).toBe(1990);
+  });
+
+  test('provedor que cai nao zera a lista dos outros', async () => {
+    const fetchDouble = vi.fn(async (url: string) => {
+      if (url.includes('tvmaze')) throw new Error('rede fora');
+      if (url.includes('themoviedb')) {
+        return json({ results: [{ id: 1, name: 'Serie', first_air_date: '2000-01-01' }] });
+      }
+      return json({ results: [] });
+    });
+
+    const candidates = await searchShowCandidates('serie', {
+      fetch: fetchDouble,
+      tmdbApiKey: 'chave',
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.source).toBe('tmdb');
+  });
+
+  test('termo vazio nao chama provedor nenhum', async () => {
+    const fetchDouble = vi.fn();
+    expect(await searchShowCandidates('   ', { fetch: fetchDouble })).toEqual([]);
+    expect(fetchDouble).not.toHaveBeenCalled();
+  });
+});
+
+describe('imageUrlAllowed', () => {
+  test('aceita so os hosts dos provedores, em https', () => {
+    expect(imageUrlAllowed('https://image.tmdb.org/t/p/w500/x.jpg')).toBe(true);
+    expect(imageUrlAllowed('https://static.tvmaze.com/uploads/x.jpg')).toBe(true);
+    expect(imageUrlAllowed('https://is1-ssl.mzstatic.com/image/x.jpg')).toBe(true);
+  });
+
+  test('recusa host interno, http e lixo', () => {
+    expect(imageUrlAllowed('http://image.tmdb.org/x.jpg')).toBe(false);
+    expect(imageUrlAllowed('https://169.254.169.254/latest/meta-data/')).toBe(false);
+    expect(imageUrlAllowed('https://evil.com/image.tmdb.org/x.jpg')).toBe(false);
+    expect(imageUrlAllowed('file:///etc/passwd')).toBe(false);
+    expect(imageUrlAllowed('nao e url')).toBe(false);
+  });
+
+  // Casos abaixo nao vem do brief original: cobrem truques classicos de host
+  // parecido, que sao exatamente o que a allowlist existe para barrar.
+  test('recusa host com o nome do provedor colado como sufixo ou subdominio falso', () => {
+    // Subdominio de um dominio que o atacante controla.
+    expect(imageUrlAllowed('https://image.tmdb.org.evil.com/x.jpg')).toBe(false);
+    // Sufixo colado sem ponto: nao pode casar com o `.mzstatic.com`.
+    expect(imageUrlAllowed('https://evilmzstatic.com/x.jpg')).toBe(false);
+  });
+
+  test('recusa truque de userinfo com o host de verdade antes do arroba', () => {
+    // O host real desta URL e "evil.com"; "image.tmdb.org" aqui e so o
+    // usuario do Basic Auth, nunca o destino da requisicao.
+    expect(imageUrlAllowed('https://image.tmdb.org@evil.com/x.jpg')).toBe(false);
+  });
+
+  test('host em maiusculas ainda e o provedor de verdade: aceita', () => {
+    // DNS e case-insensitive e o parser de URL normaliza para minusculas;
+    // recusar aqui so quebraria uma URL legitima sem ganhar seguranca nenhuma.
+    expect(imageUrlAllowed('https://IMAGE.TMDB.ORG/t/p/w500/x.jpg')).toBe(true);
+  });
+
+  test('ponto final no host nao bate com a allowlist: recusa', () => {
+    // "image.tmdb.org." e o mesmo host em DNS, mas a comparacao e exata e por
+    // texto - fica de fora por seguranca, nao ha motivo pratico para aceitar.
+    expect(imageUrlAllowed('https://image.tmdb.org./x.jpg')).toBe(false);
   });
 });
