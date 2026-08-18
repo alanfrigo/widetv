@@ -87,6 +87,13 @@ body {
   border-left: 1px solid var(--adm-border);
 }
 
+/* Primeiro filho do painel, flutuando a direita: fica no canto de sempre sem
+   empurrar o campo de busca para baixo. */
+.adm-close {
+  float: right;
+  margin-left: 8px;
+}
+
 .adm-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

@@ -40,6 +40,19 @@ function showError(message: string): void {
 }
 
 /**
+ * Apaga a faixa de erro.
+ *
+ * Chamada no INICIO de cada mutacao e de cada carga: sem isso a faixa vermelha
+ * do erro anterior fica na tela por cima de dez acoes que deram certo, e a
+ * pessoa continua lendo um problema que ja passou.
+ */
+function clearError(): void {
+  if (error === null) return;
+  error.textContent = '';
+  error.hidden = true;
+}
+
+/**
  * Roda uma mutacao, recarrega do servidor e mostra erro se falhar.
  *
  * `clearMergeSelection` zera a selecao de fusao (alvo e fontes) depois de a
@@ -54,6 +67,7 @@ async function runMutation(
   action: () => Promise<unknown>,
   clearMergeSelection = false,
 ): Promise<void> {
+  clearError();
   try {
     await action();
     if (clearMergeSelection) {
@@ -94,6 +108,17 @@ async function openMetadataPanel(show: AdminShow): Promise<void> {
   const grid = document.createElement('div');
   grid.className = 'adm-grid';
 
+  // Fechar e obrigatorio: o painel ocupa meia tela e, sem este botao, mudar de
+  // ideia deixava a tabela coberta ate recarregar a pagina - so aplicar um
+  // candidato o fechava.
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'adm-close';
+  closeButton.textContent = 'Fechar';
+  closeButton.addEventListener('click', () => {
+    panel.hidden = true;
+  });
+
   const resetButton = document.createElement('button');
   resetButton.type = 'button';
   resetButton.textContent = 'Voltar ao automático';
@@ -102,6 +127,7 @@ async function openMetadataPanel(show: AdminShow): Promise<void> {
   });
 
   const search = async (): Promise<void> => {
+    clearError();
     grid.replaceChildren();
     try {
       for (const candidate of await searchMetadata(show.id, searchInput.value)) {
@@ -141,7 +167,7 @@ async function openMetadataPanel(show: AdminShow): Promise<void> {
   searchInput.addEventListener('change', () => {
     void search();
   });
-  panel.append(searchInput, resetButton);
+  panel.append(closeButton, searchInput, resetButton);
 
   // Desfazer fusao: uma linha por pasta que foi fundida nesta serie. O efeito
   // real vem do scan que a rota dispara, entao a lista so muda na recarga.
@@ -320,6 +346,7 @@ async function loadSuggestions(): Promise<void> {
 }
 
 async function load(): Promise<void> {
+  clearError();
   try {
     state = { ...state, shows: await fetchAdminShows() };
     render();

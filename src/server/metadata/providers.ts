@@ -363,7 +363,15 @@ export async function downloadImage(
 ): Promise<Uint8Array> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const doFetch: FetchLike = options?.fetch ?? ((u, init) => fetch(u, init));
-  const response = await doFetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  // `redirect: 'error'` porque a URL da imagem pode vir do painel: a allowlist
+  // de host so consegue conferir o PRIMEIRO salto, e seguir redirecionamento
+  // devolveria ao cliente um jeito de apontar o servidor para a rede interna
+  // usando um redirect aberto no proprio provedor. Nenhuma das tres APIs
+  // redireciona a arte.
+  const response = await doFetch(url, {
+    signal: AbortSignal.timeout(timeoutMs),
+    redirect: 'error',
+  });
   if (response.status === 404) {
     throw new ImageGoneError(url);
   }

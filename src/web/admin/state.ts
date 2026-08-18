@@ -19,11 +19,17 @@ export function initialAdminState(): AdminUiState {
   return { shows: [], filter: '', mergeTargetId: null, mergeSourceIds: [] };
 }
 
-/** Acento e caixa fora: quem digita "magicos" procura "Magicos". */
+/**
+ * Acento e caixa fora: quem digita "magicos" procura "Magicos".
+ *
+ * A faixa combinante vai escapada (`\u0300-\u036f`) e nao com os bytes
+ * literais: o caractere combinante e invisivel na maioria dos editores, e uma
+ * passada de "tirar acentos" sobre o fonte quebraria o filtro calada.
+ */
 function normalize(value: string): string {
   return value
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase();
 }
 
