@@ -67,9 +67,9 @@ Métodos novos em `Store`:
 | `getShowOverride(slug)` | `ShowOverrideRow \| null` |
 | `setShowOverride(row)` | upsert; linha totalmente neutra (name null, hidden 0, channel null) é DELETADA em vez de gravada |
 | `listShowAliases()` | `ShowAliasRow[]` |
-| `addShowAlias(slug, targetSlug)` | grava com o alvo já resolvido ao slug final |
+| `addShowAlias(slug, targetSlug)` | grava com o alvo já resolvido ao slug final e reaponta, na mesma transação, os aliases que miravam o slug recém-fundido |
 | `removeShowAlias(slug)` | desfaz a fusão |
-| `setChannelNumber(showId, n)` | transação com swap; `channel_number` é UNIQUE, então a troca passa por um valor temporário negativo |
+| `setChannelNumber(showId, n)` | transação com swap; `channel_number` é UNIQUE, então a troca passa por um valor temporário negativo. Quem chama (o PATCH) precisa reconciliar o override da série DESLOCADA: sem isso as duas reivindicam o mesmo número e `channelNumberFixes` inverte a dupla a cada scan, para sempre |
 | `listVisibleShows()` | `listShows()` menos os slugs com `hidden = 1` |
 
 `ShowMetadataRow` ganha `manual: boolean`.
@@ -160,9 +160,31 @@ checagem — um cookie vaza mais fácil que a rede interna.
 
 `merge` grava o alias de cada fonte e chama o `store.mergeShows` que já existe,
 então o catálogo fica correto na hora. `unmerge` apaga o alias e dispara scan
-incremental: `upsertEpisodes` já faz `ON CONFLICT(id) DO UPDATE SET show_id`,
-então o episódio volta sozinho para o show recriado. Por isso as duas
-respondem 202 e o painel acompanha por `GET /api/library/status`.
+incremental, e o desfazer real acontece lá: `upsertEpisodes` faz
+`ON CONFLICT(id) DO UPDATE SET show_id`, então o arquivo volta para o show
+recriado.
+
+**O invariante que isso exige do scan.** Não basta o upsert: depois de uma
+fusão, os episódios da pasta fonte estão gravados sob o `show_id` do ALVO, e o
+scan percorre as séries em ordem de nome. Quando o alvo vem primeiro — o caso
+comum, `Serie` antes de `Serie Extra` — o `pruneEpisodes` DELE roda enquanto as
+linhas da fonte ainda apontam para ele, e o `DELETE ... WHERE show_id = ? AND
+id NOT IN keep_ids` as apaga. Como `watch_history.episode_id` tem
+`ON DELETE CASCADE`, some junto a posição de retomada e a marca de "já vi" (e
+também remux, variante de áudio e o quadro do episódio). As linhas são
+reinseridas logo depois, então o catálogo parece certo e nada aparece no log.
+Por isso `runScan` acumula `{ showId, keptEpisodeIds }` durante o laço e roda
+TODOS os `pruneEpisodes` depois dele: só quando todo `upsertEpisodes` já
+aconteceu é que cada arquivo em disco está sob o `show_id` final, e aí o prune
+só alcança o que sumiu de verdade.
+
+`merge` responde 202 e o painel acompanha por `GET /api/library/status`.
+`unmerge` responde 202 quando o scan começou e **409 quando já havia um scan
+rodando** — e, nesse caso, devolve o alias que tinha acabado de apagar: dizer
+"recusei" e deixar a tabela sem o alias faria o scan seguinte (o noturno, sem
+ninguém olhando) desfazer a fusão assim mesmo. Recolocar é melhor que
+reordenar, porque `startScan` retorna antes de `runScan` ler a tabela de
+alias.
 
 ## 3. Transform do scan
 
@@ -219,6 +241,12 @@ e, no fim da rodada, `reconcileChannelNumbers(store)`, que reaplica
 `channel_number` fixado para série que foi apagada e recriada. `keptSlugs` só
 recebe slug resolvido: o slug fonte precisa ficar de fora para a linha dele
 morrer no prune.
+
+E a poda de episódios sai de dentro do laço: o laço só acumula
+`{ showId, keptEpisodeIds }` e todos os `pruneEpisodes` rodam depois dele, pelo
+invariante da §2 — desfazer uma fusão move episódios entre séries dentro da
+mesma rodada. Série protegida (todos os arquivos ilegíveis) continua saindo
+antes do upsert e nunca entra nessa lista.
 
 Mutação pelo painel não espera scan: renomear faz `UPDATE shows.name` mais o
 override; fundir chama `store.mergeShows` mais o alias.
@@ -358,10 +386,10 @@ depois o código mínimo.
 | `tests/library/overrides.test.ts` | resolução de alias, ciclo, alvo ausente, concat com reindex de temporadas, nome override |
 | `tests/library/merge-suggest.test.ts` | agrupa gêmeo de digest; "(1963)" vs "(2005)" não agrupa |
 | `tests/library/index-store.test.ts` | migração 13 sobre banco v12; override sobrevive a `pruneShows`; swap de canal com a UNIQUE |
-| `tests/library/scan-job.test.ts` | scan com alias funde e não recria a fonte; `keptSlugs` sem o slug fonte |
+| `tests/library/scan-job.test.ts` | scan com alias funde e não recria a fonte; `keptSlugs` sem o slug fonte; histórico sobrevive ao scan que desfaz a fusão (com o alvo ordenado primeiro) |
 | `tests/metadata/providers.test.ts` | parsing de candidatos dos três provedores com `fetch` dublê; provedor que cai não zera a lista |
 | `tests/metadata/service.test.ts` | `manual` fora da fila do enricher; `reset` não apaga linha manual |
-| `tests/admin/routes.test.ts` | validação de corpo, allowlist de host da imagem, 409 em canal ocupado, 404 em série inexistente |
+| `tests/admin/routes.test.ts` | validação de corpo, allowlist de host da imagem, troca de canal ocupado (com o override do deslocado reconciliado), 409 do `unmerge` devolvendo o alias, 404 em série inexistente |
 | `tests/web/admin-state.test.ts` | filtro, seleção de fusão, validação de número de canal |
 
 ## 8. Ordem de implementação
