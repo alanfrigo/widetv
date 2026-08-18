@@ -1995,6 +1995,77 @@ describe('orcamento de disco das copias geradas (schema 12)', () => {
   });
 });
 
+describe('curadoria do acervo (schema 13)', () => {
+  it('indice na versao 12 ganha as tabelas de curadoria sem perder o acervo', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v12-'));
+    const dbPath = join(base, 'library.db');
+
+    const doze = openStore(dbPath);
+    const showId = makeShow(doze, 'serie');
+    doze.upsertEpisodes(showId, [makeEpisode()]);
+    doze.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tvmaze',
+      fetchedAt: 42,
+      notFound: false,
+      manual: false,
+    });
+    doze.setSetting('audio_lang', 'por');
+    doze.close();
+
+    // Um banco exatamente como o schema 12 deixava: sem override, sem alias e
+    // sem a coluna `manual`. E o estado do acervo de verdade que vai migrar.
+    rebobinar(dbPath, 12);
+
+    const store = openStore(dbPath);
+
+    // Migrou sem tocar no que ja existia...
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie']);
+    expect(store.getEpisode('serie/ep01.mp4')?.title).toBe('ep01');
+    expect(store.getSetting('audio_lang')).toBe('por');
+    expect(store.getShowMetadata(showId)).toMatchObject({
+      posterFile: '1.jpg',
+      year: 1985,
+      source: 'tvmaze',
+      fetchedAt: 42,
+    });
+    // ...a coluna nova entra como "escolha automatica", que e a verdade: nada
+    // no banco velho foi escolhido a mao.
+    expect(store.getShowMetadata(showId)?.manual).toBe(false);
+
+    // As tabelas novas nascem vazias e funcionando.
+    expect(store.listShowOverrides()).toEqual([]);
+    expect(store.listShowAliases()).toEqual([]);
+    store.setShowOverride({ slug: 'serie', name: 'Outro', hidden: true, channelNumber: 9 });
+    store.addShowAlias('serie-extra', 'serie');
+    expect(store.getShowOverride('serie')).toMatchObject({
+      name: 'Outro',
+      hidden: true,
+      channelNumber: 9,
+    });
+    expect(store.listShowAliases().map((row) => row.targetSlug)).toEqual(['serie']);
+    // A serie oculta sai do catalogo publico, mas continua na lista do painel.
+    expect(store.listVisibleShows()).toEqual([]);
+    expect(store.listShows()).toHaveLength(1);
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
 describe('show_override', () => {
   it('sobrevive ao prune que apaga a serie', () => {
     const store = openStore(':memory:');
