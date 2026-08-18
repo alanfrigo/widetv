@@ -299,3 +299,37 @@ describe('curadoria manual sobrevive ao scan', () => {
     expect(store.listShows()[0]?.channelNumber).toBe(42);
   });
 });
+
+describe('desfazer fusao', () => {
+  test('historico do episodio solto sobrevive ao scan que desfaz a fusao', async () => {
+    // A ordem importa: o scanner itera as series por nome, entao 'Serie' e
+    // processada ANTES de 'Serie Extra'. Com o prune dentro do laco, o prune
+    // do ALVO roda enquanto os episodios da fonte ainda estao pendurados nele,
+    // e o CASCADE de watch_history leva a posicao junto.
+    await makeEpisode('Serie', 'S01E01.mp4');
+    await makeEpisode('Serie Extra', 'S02E01.mp4');
+    await runScan({ root, store, probe: fakeProbe().probe });
+
+    const alvo = store.listShows().find((s) => s.slug === 'serie')!;
+    const fonte = store.listShows().find((s) => s.slug === 'serie-extra')!;
+    store.addShowAlias('serie-extra', 'serie');
+    store.mergeShows(fonte.id, alvo.id);
+
+    const episodio = 'Serie Extra/S02E01.mp4';
+    store.upsertWatchHistory({
+      episodeId: episodio,
+      positionMs: 600_000,
+      durationMs: 1_320_000,
+      updatedAt: 1,
+      watchedAt: null,
+    });
+
+    store.removeShowAlias('serie-extra');
+    const report = await runScan({ root, store, probe: fakeProbe().probe });
+
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie', 'serie-extra']);
+    // Nenhum arquivo saiu do disco: o prune nao tinha o que remover.
+    expect(report.removedEpisodes).toBe(0);
+    expect(store.getWatchHistory(episodio)?.positionMs).toBe(600_000);
+  });
+});
