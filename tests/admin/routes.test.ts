@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import { registerAdminRoutes, type AdminDeps } from '../../src/server/admin/routes';
 import { openStore, type ShowRow, type Store } from '../../src/server/library/index-store';
+import { channelNumberFixes } from '../../src/server/library/overrides';
 import type { AdminShow, MergeSuggestion, MetadataCandidate, TaskAccepted } from '../../src/shared/api-types';
 
 /**
@@ -139,6 +140,33 @@ describe('PATCH /api/admin/shows/:id', () => {
     expect(response.json<AdminShow>().channelNumber).toBe(channelOfFirst);
   });
 
+  test('trocar o canal de duas series fixadas nao deixa a grade oscilando', async () => {
+    // O swap move a OUTRA serie de canal. Sem reconciliar o override dela, as
+    // duas passam a reivindicar o mesmo numero e `channelNumberFixes` inverte
+    // a dupla a cada scan, para sempre.
+    const first = createShow('a', 'A');
+    const second = createShow('b', 'B');
+    const canalDeB = store.listShows().find((s) => s.id === second)!.channelNumber;
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/shows/${String(first)}`,
+      payload: { channelNumber: 900 },
+    });
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/admin/shows/${String(second)}`,
+      payload: { channelNumber: 900 },
+    });
+
+    // 'a' foi empurrada para o canal que era de 'b': o override dela precisa
+    // dizer isso, senao o proximo scan a traz de volta para o 900.
+    expect(store.getShowOverride('a')?.channelNumber).toBe(canalDeB);
+    expect(store.getShowByChannel(900)?.id).toBe(second);
+    // O scan nao tem nada a corrigir: a grade ja esta onde os overrides mandam.
+    expect(channelNumberFixes(store.listShows(), store.listShowOverrides())).toEqual([]);
+  });
+
   test('tipo errado e 400', async () => {
     const id = createShow('serie', 'Serie');
 
@@ -178,6 +206,30 @@ describe('POST /api/admin/shows/:id/merge', () => {
     expect(store.listShowAliases()).toEqual([
       { slug: 'serie-extra', targetSlug: 'serie', createdAt: expect.any(Number) },
     ]);
+  });
+
+  test('fusao encadeada mantem a primeira pasta solta-vel pelo painel', async () => {
+    // A -> B e, depois, B -> C. As duas pastas fundidas tem de aparecer em C:
+    // sem isso a primeira some da tela e nao ha por onde desfazer a fusao.
+    const first = createShow('a', 'A');
+    const second = createShow('b', 'B');
+    const third = createShow('c', 'C');
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/shows/${String(second)}/merge`,
+      payload: { sourceIds: [first] },
+    });
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/shows/${String(third)}/merge`,
+      payload: { sourceIds: [second] },
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/admin/shows' });
+    const shows = response.json<AdminShow[]>();
+    expect(shows.map((show) => show.slug)).toEqual(['c']);
+    expect(shows[0]?.mergedSlugs).toEqual(['a', 'b']);
   });
 
   test('fundir a serie nela mesma e 400', async () => {
@@ -264,6 +316,24 @@ describe('POST /api/admin/shows/:id/unmerge', () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json<TaskAccepted>()).toEqual(scanResult);
+  });
+
+  test('409 devolve o alias para a tabela: o scan da madrugada nao pode desfazer o que foi recusado', async () => {
+    // Sem isto o alias sai antes do `startScan`, a rota responde "recusei" e o
+    // proximo scan - sem ninguem olhando - desfaz a fusao mesmo assim.
+    const target = createShow('serie', 'Serie');
+    store.addShowAlias('serie-extra', 'serie');
+    scanResult = { started: false, reason: 'scan ja esta em andamento' };
+
+    await app.inject({
+      method: 'POST',
+      url: `/api/admin/shows/${String(target)}/unmerge`,
+      payload: { slug: 'serie-extra' },
+    });
+
+    expect(store.listShowAliases().map((a) => [a.slug, a.targetSlug])).toEqual([
+      ['serie-extra', 'serie'],
+    ]);
   });
 });
 

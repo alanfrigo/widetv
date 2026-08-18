@@ -2037,6 +2037,21 @@ describe('show_alias', () => {
     store.close();
   });
 
+  it('fusao encadeada nao perde a primeira: quem apontava para o slug fundido segue o alvo novo', () => {
+    // Funde A em B e, depois, B em C. Sem repontar, a tabela guarda 'a -> b'
+    // com B ja fundida: o painel mostra C com apenas ['b'] e A some da tela
+    // sem nenhum jeito de solta-la.
+    const store = openStore(':memory:');
+    store.addShowAlias('a', 'b');
+    store.addShowAlias('b', 'c');
+
+    expect(store.listShowAliases().map((row) => [row.slug, row.targetSlug])).toEqual([
+      ['a', 'c'],
+      ['b', 'c'],
+    ]);
+    store.close();
+  });
+
   it('recusa ciclo', () => {
     const store = openStore(':memory:');
     store.addShowAlias('b', 'a');

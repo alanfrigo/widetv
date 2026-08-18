@@ -207,7 +207,24 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): void
 
     // Numero primeiro: se a troca falhar (constraint), nada mais foi gravado.
     if (patch.channelNumber !== undefined && patch.channelNumber !== show.channelNumber) {
+      const displaced = store.getShowByChannel(patch.channelNumber);
       store.setChannelNumber(show.id, patch.channelNumber);
+      // A troca move a OUTRA serie para o canal que esta saiu. Se ela tambem
+      // tinha numero fixado, o override dela ficaria reivindicando um canal que
+      // agora e de outra pessoa - e `channelNumberFixes` inverteria a dupla a
+      // cada scan, para sempre. Reconciliar aqui e o que faz a troca ser uma
+      // troca, e nao um pingue-pongue noturno.
+      if (displaced !== null && displaced.id !== show.id) {
+        const displacedOverride = store.getShowOverride(displaced.slug);
+        if (displacedOverride !== null && displacedOverride.channelNumber !== null) {
+          store.setShowOverride({
+            slug: displaced.slug,
+            name: displacedOverride.name,
+            hidden: displacedOverride.hidden,
+            channelNumber: show.channelNumber,
+          });
+        }
+      }
     }
     // O nome vale AGORA no indice; o override e o que o faz sobreviver ao scan.
     if (patch.name !== undefined) {
@@ -270,13 +287,23 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): void
       return reply.code(400).send({ error: 'slug precisa ser string' });
     }
 
+    const previous = store.listShowAliases().find((alias) => alias.slug === body.slug);
     store.removeShowAlias(body.slug);
     // O desfazer real acontece no scan: `upsertEpisodes` move o episodio de
     // volta para a serie recriada pelo `ON CONFLICT(id) DO UPDATE`.
     // 409 quando ja ha um scan rodando, igual as outras rotas de tarefa de
     // fundo (`library/routes.ts`) - "aceitei" seria mentira aqui.
     const result = deps.startScan();
-    return reply.code(result.started ? 202 : 409).send(result);
+    if (!result.started) {
+      // O alias volta: a resposta diz que a operacao foi RECUSADA, e deixar a
+      // tabela sem ele faria o scan seguinte - o noturno, sem ninguem olhando -
+      // desfazer a fusao assim mesmo. Apagar depois do `startScan` nao serve:
+      // ele volta antes de `runScan` ler a tabela, entao "dispara e apaga"
+      // seria corrida com a rodada que acabou de comecar.
+      if (previous !== undefined) store.addShowAlias(previous.slug, previous.targetSlug);
+      return reply.code(409).send(result);
+    }
+    return reply.code(202).send(result);
   });
 
   app.get<{ Params: { id: string }; Querystring: { q?: unknown } }>(

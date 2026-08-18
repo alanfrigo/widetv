@@ -1396,6 +1396,9 @@ export function openStore(dbPath: string): Store {
      ON CONFLICT(slug) DO UPDATE SET target_slug = excluded.target_slug`,
   );
   const deleteAlias = db.prepare('DELETE FROM show_alias WHERE slug = ?');
+  const repointAliases = db.prepare(
+    'UPDATE show_alias SET target_slug = @target WHERE target_slug = @slug',
+  );
 
   function toOverrideRow(record: ShowOverrideRecord): ShowOverrideRow {
     return {
@@ -1422,6 +1425,17 @@ export function openStore(dbPath: string): Store {
       atual = proximo;
     }
   }
+
+  const addShowAliasTx = db.transaction((slug: string, targetSlug: string): void => {
+    const target = resolveAliasChain(targetSlug);
+    if (target === slug) throw new Error(`alias circular: ${slug} -> ${targetSlug}`);
+    insertAlias.run({ slug, targetSlug: target, createdAt: Date.now() });
+    // A pasta que acabou de ser fundida deixa de ser alvo valido: quem
+    // apontava para ela passa a apontar para o alvo final. Sem isto, fundir A
+    // em B e depois B em C deixa 'a -> b' orfao - o painel lista C com apenas
+    // ['b'] e A some da tela sem nenhum jeito de solta-la.
+    repointAliases.run({ slug, target });
+  });
 
   const setChannelNumberTx = db.transaction((showId: number, channelNumber: number): void => {
     const atual = selectShowById.get(showId) as ShowRecord | undefined;
@@ -1604,9 +1618,7 @@ export function openStore(dbPath: string): Store {
     },
 
     addShowAlias(slug, targetSlug): void {
-      const alvo = resolveAliasChain(targetSlug);
-      if (alvo === slug) throw new Error(`alias circular: ${slug} -> ${targetSlug}`);
-      insertAlias.run({ slug, targetSlug: alvo, createdAt: Date.now() });
+      addShowAliasTx(slug, targetSlug);
     },
 
     removeShowAlias(slug): void {
