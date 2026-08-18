@@ -273,16 +273,26 @@ export function registerAdminRoutes(app: FastifyInstance, deps: AdminDeps): void
     store.removeShowAlias(body.slug);
     // O desfazer real acontece no scan: `upsertEpisodes` move o episodio de
     // volta para a serie recriada pelo `ON CONFLICT(id) DO UPDATE`.
-    return reply.code(202).send(deps.startScan());
+    // 409 quando ja ha um scan rodando, igual as outras rotas de tarefa de
+    // fundo (`library/routes.ts`) - "aceitei" seria mentira aqui.
+    const result = deps.startScan();
+    return reply.code(result.started ? 202 : 409).send(result);
   });
 
-  app.get<{ Params: { id: string }; Querystring: { q?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { q?: unknown } }>(
     '/api/admin/shows/:id/metadata/search',
     async (request, reply) => {
       const show = findShow(deps, request.params.id);
       if (show === null) return notFound(reply);
 
-      const term = request.query.q ?? show.name;
+      const rawTerm = request.query.q;
+      // Querystring nao passa por validacao de tipo do Fastify: `?q=a&q=b`
+      // chega como array, e mandar isso para os provedores quebraria dentro
+      // deles (`.trim()` num array) - 500 por causa de uma URL repetida.
+      if (rawTerm !== undefined && typeof rawTerm !== 'string') {
+        return reply.code(400).send({ error: 'q precisa ser uma unica string' });
+      }
+      const term = rawTerm ?? show.name;
       reply.header('cache-control', 'no-store');
       return deps.searchCandidates(term);
     },

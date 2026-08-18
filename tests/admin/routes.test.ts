@@ -2,8 +2,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 import { registerAdminRoutes, type AdminDeps } from '../../src/server/admin/routes';
-import { openStore, type Store } from '../../src/server/library/index-store';
-import type { AdminShow, MetadataCandidate } from '../../src/shared/api-types';
+import { openStore, type ShowRow, type Store } from '../../src/server/library/index-store';
+import type { AdminShow, MergeSuggestion, MetadataCandidate, TaskAccepted } from '../../src/shared/api-types';
 
 /**
  * As rotas nao decidem curadoria: elas validam o corpo e chamam o indice. O
@@ -13,6 +13,12 @@ import type { AdminShow, MetadataCandidate } from '../../src/shared/api-types';
 
 let app: FastifyInstance;
 let store: Store;
+/** O que o `startScan` de mentira devolve no proximo disparo. */
+let scanResult: TaskAccepted;
+/** Termos que chegaram em `searchCandidates`, na ordem das chamadas. */
+let searchTerms: string[];
+/** Series que passaram por `clearMetadata`, na ordem das chamadas. */
+let clearedShows: ShowRow[];
 
 const CANDIDATE: MetadataCandidate = {
   source: 'tmdb',
@@ -27,13 +33,22 @@ const CANDIDATE: MetadataCandidate = {
 beforeEach(async () => {
   store = openStore(':memory:');
   app = Fastify();
+  scanResult = { started: true };
+  searchTerms = [];
+  clearedShows = [];
   const deps: AdminDeps = {
     store,
     dataDir: '/tmp/widetv-teste',
     tmdbApiKey: null,
-    startScan: () => ({ started: true }),
-    searchCandidates: async () => [CANDIDATE],
+    startScan: () => scanResult,
+    searchCandidates: async (term) => {
+      searchTerms.push(term);
+      return [CANDIDATE];
+    },
     applyMetadata: async () => undefined,
+    clearMetadata: (show) => {
+      clearedShows.push(show);
+    },
   };
   registerAdminRoutes(app, deps);
   await app.ready();
@@ -119,6 +134,9 @@ describe('PATCH /api/admin/shows/:id', () => {
 
     expect(response.statusCode).toBe(200);
     expect(store.getShowByChannel(channelOfFirst)?.id).toBe(second);
+    // O handler rele a serie DEPOIS da troca: sem isto, o corpo mostraria o
+    // numero de canal de antes do swap.
+    expect(response.json<AdminShow>().channelNumber).toBe(channelOfFirst);
   });
 
   test('tipo errado e 400', async () => {
@@ -201,5 +219,103 @@ describe('PUT /api/admin/shows/:id/metadata', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json<AdminShow>().id).toBe(id);
+  });
+});
+
+describe('GET /api/admin/merge-suggestions', () => {
+  test('devolve os grupos de duplicata obvia', async () => {
+    const first = createShow('os-simpsons', 'Os Simpsons');
+    const second = createShow('os-simpsons-2', 'Os Simpsons');
+
+    const response = await app.inject({ method: 'GET', url: '/api/admin/merge-suggestions' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<MergeSuggestion[]>()).toEqual([
+      { reason: 'nome-identico', showIds: [first, second] },
+    ]);
+  });
+});
+
+describe('POST /api/admin/shows/:id/unmerge', () => {
+  test('solta o alias e dispara o scan', async () => {
+    const target = createShow('serie', 'Serie');
+    store.addShowAlias('serie-extra', 'serie');
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/admin/shows/${String(target)}/unmerge`,
+      payload: { slug: 'serie-extra' },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(store.listShowAliases()).toEqual([]);
+  });
+
+  test('scan ja rodando devolve 409, nao 202 mentiroso', async () => {
+    const target = createShow('serie', 'Serie');
+    store.addShowAlias('serie-extra', 'serie');
+    scanResult = { started: false, reason: 'scan ja esta em andamento' };
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/admin/shows/${String(target)}/unmerge`,
+      payload: { slug: 'serie-extra' },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json<TaskAccepted>()).toEqual(scanResult);
+  });
+});
+
+describe('GET /api/admin/shows/:id/metadata/search', () => {
+  test('busca pelo termo enviado em q', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/admin/shows/${String(id)}/metadata/search?q=${encodeURIComponent('Outro Termo')}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json<MetadataCandidate[]>()).toEqual([CANDIDATE]);
+    expect(searchTerms).toEqual(['Outro Termo']);
+  });
+
+  test('sem q, cai no nome da serie', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/admin/shows/${String(id)}/metadata/search`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(searchTerms).toEqual(['Serie']);
+  });
+
+  test('q repetido e 400, nunca 500', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/admin/shows/${String(id)}/metadata/search?q=a&q=b`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(searchTerms).toEqual([]);
+  });
+});
+
+describe('DELETE /api/admin/shows/:id/metadata', () => {
+  test('chama clearMetadata para a serie certa e responde 202', async () => {
+    const id = createShow('serie', 'Serie');
+
+    const response = await app.inject({
+      method: 'DELETE',
+      url: `/api/admin/shows/${String(id)}/metadata`,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(clearedShows.map((show) => show.id)).toEqual([id]);
   });
 });
