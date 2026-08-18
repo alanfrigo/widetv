@@ -1,7 +1,23 @@
-import type { AdminShow } from '@shared/api-types';
+import type { AdminShow, AdminShowPatch } from '@shared/api-types';
 
-import { fetchAdminShows } from './api';
-import { initialAdminState, visibleShows, type AdminUiState } from './state';
+import {
+  applyMetadata,
+  clearMetadata,
+  fetchAdminShows,
+  fetchMergeSuggestions,
+  mergeShows,
+  patchShow,
+  searchMetadata,
+  unmergeSlug,
+} from './api';
+import {
+  canMerge,
+  candidateLabel,
+  initialAdminState,
+  toggleMergeSource,
+  visibleShows,
+  type AdminUiState,
+} from './state';
 import './admin.css';
 
 /**
@@ -15,11 +31,123 @@ const list = document.querySelector<HTMLElement>('#adm-list');
 const filter = document.querySelector<HTMLInputElement>('#adm-filter');
 const count = document.querySelector<HTMLElement>('#adm-count');
 const error = document.querySelector<HTMLElement>('#adm-error');
+const mergeButton = document.querySelector<HTMLButtonElement>('#adm-fundir');
 
 function showError(message: string): void {
   if (error === null) return;
   error.textContent = message;
   error.hidden = false;
+}
+
+/** Aplica o patch e recarrega: o servidor e a verdade, nao o DOM. */
+async function applyPatch(showId: number, patch: AdminShowPatch): Promise<void> {
+  try {
+    await patchShow(showId, patch);
+    await load();
+  } catch (err) {
+    showError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function mergeSelected(): Promise<void> {
+  if (!canMerge(state) || state.mergeTargetId === null) return;
+  try {
+    await mergeShows(state.mergeTargetId, state.mergeSourceIds);
+    // Limpa a selecao antes de recarregar: as series fundidas somem do
+    // acervo, e um segundo clique com a selecao antiga tentaria fundir ids
+    // que nao existem mais.
+    state = { ...state, mergeTargetId: null, mergeSourceIds: [] };
+    await load();
+  } catch (err) {
+    showError(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** Painel lateral de capa/sinopse: busca nos provedores e aplica ao clicar. */
+async function openMetadataPanel(show: AdminShow): Promise<void> {
+  const panel = document.querySelector<HTMLElement>('#adm-panel');
+  if (panel === null) return;
+  panel.hidden = false;
+  panel.replaceChildren();
+
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search';
+  searchInput.value = show.name;
+
+  const grid = document.createElement('div');
+  grid.className = 'adm-grid';
+
+  const resetButton = document.createElement('button');
+  resetButton.type = 'button';
+  resetButton.textContent = 'Voltar ao automático';
+  resetButton.addEventListener('click', () => {
+    void clearMetadata(show.id)
+      .then(load)
+      .catch((err: unknown) => {
+        showError(err instanceof Error ? err.message : String(err));
+      });
+  });
+
+  const search = async (): Promise<void> => {
+    grid.replaceChildren();
+    try {
+      for (const candidate of await searchMetadata(show.id, searchInput.value)) {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'adm-card';
+
+        if (candidate.posterUrl !== null) {
+          const poster = document.createElement('img');
+          poster.src = candidate.posterUrl;
+          poster.alt = '';
+          card.append(poster);
+        }
+        const label = document.createElement('span');
+        label.textContent = candidateLabel(candidate);
+        const overview = document.createElement('small');
+        overview.textContent = candidate.overview ?? '';
+        card.append(label, overview);
+
+        card.addEventListener('click', () => {
+          void applyMetadata(show.id, candidate)
+            .then(() => {
+              panel.hidden = true;
+              return load();
+            })
+            .catch((err: unknown) => {
+              showError(err instanceof Error ? err.message : String(err));
+            });
+        });
+        grid.append(card);
+      }
+    } catch (err) {
+      showError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  searchInput.addEventListener('change', () => {
+    void search();
+  });
+  panel.append(searchInput, resetButton);
+
+  // Desfazer fusao: uma linha por pasta que foi fundida nesta serie. O efeito
+  // real vem do scan que a rota dispara, entao a lista so muda na recarga.
+  for (const slug of show.mergedSlugs) {
+    const unmergeButton = document.createElement('button');
+    unmergeButton.type = 'button';
+    unmergeButton.textContent = `Soltar ${slug}`;
+    unmergeButton.addEventListener('click', () => {
+      void unmergeSlug(show.id, slug)
+        .then(load)
+        .catch((err: unknown) => {
+          showError(err instanceof Error ? err.message : String(err));
+        });
+    });
+    panel.append(unmergeButton);
+  }
+
+  panel.append(grid);
+  await search();
 }
 
 function row(show: AdminShow): HTMLElement {
@@ -32,17 +160,30 @@ function row(show: AdminShow): HTMLElement {
   cover.alt = '';
   if (show.posterUrl !== null) cover.src = show.posterUrl;
 
-  const name = document.createElement('span');
-  name.className = 'adm-name';
-  name.textContent = show.name;
+  const nameInput = document.createElement('input');
+  nameInput.className = 'adm-name-input';
+  nameInput.value = show.name;
+  nameInput.addEventListener('change', () => {
+    void applyPatch(show.id, { name: nameInput.value });
+  });
 
   const folder = document.createElement('span');
   folder.className = 'adm-folder';
   folder.textContent = show.folderName;
 
-  const channel = document.createElement('span');
-  channel.className = 'adm-channel';
-  channel.textContent = String(show.channelNumber);
+  const channelInput = document.createElement('input');
+  channelInput.type = 'number';
+  channelInput.min = '1';
+  channelInput.className = 'adm-channel-input';
+  channelInput.value = String(show.channelNumber);
+  channelInput.addEventListener('change', () => {
+    const channelNumber = Number(channelInput.value);
+    if (!Number.isInteger(channelNumber) || channelNumber < 1) {
+      channelInput.value = String(show.channelNumber);
+      return;
+    }
+    void applyPatch(show.id, { channelNumber });
+  });
 
   const episodes = document.createElement('span');
   episodes.className = 'adm-eps';
@@ -62,7 +203,57 @@ function row(show: AdminShow): HTMLElement {
     badges.append(badge);
   }
 
-  el.append(cover, channel, name, folder, episodes, badges);
+  const hideButton = document.createElement('button');
+  hideButton.type = 'button';
+  hideButton.textContent = show.hidden ? 'Mostrar' : 'Ocultar';
+  hideButton.addEventListener('click', () => {
+    void applyPatch(show.id, { hidden: !show.hidden });
+  });
+
+  const artButton = document.createElement('button');
+  artButton.type = 'button';
+  artButton.textContent = 'Capa/Sinopse';
+  artButton.addEventListener('click', () => {
+    void openMetadataPanel(show);
+  });
+
+  const sourceCheckbox = document.createElement('input');
+  sourceCheckbox.type = 'checkbox';
+  sourceCheckbox.className = 'adm-source';
+  sourceCheckbox.checked = state.mergeSourceIds.includes(show.id);
+  sourceCheckbox.addEventListener('change', () => {
+    state = toggleMergeSource(state, show.id);
+    render();
+  });
+
+  const targetRadio = document.createElement('input');
+  targetRadio.type = 'radio';
+  targetRadio.name = 'adm-target';
+  targetRadio.className = 'adm-target';
+  targetRadio.checked = state.mergeTargetId === show.id;
+  targetRadio.addEventListener('change', () => {
+    state = {
+      ...state,
+      mergeTargetId: show.id,
+      // Quem virou alvo sai da lista de fontes: fundir a serie nela mesma e o
+      // unico jeito de este painel apagar episodio sem querer.
+      mergeSourceIds: state.mergeSourceIds.filter((id) => id !== show.id),
+    };
+    render();
+  });
+
+  el.append(
+    targetRadio,
+    sourceCheckbox,
+    cover,
+    channelInput,
+    nameInput,
+    folder,
+    episodes,
+    badges,
+    hideButton,
+    artButton,
+  );
   return el;
 }
 
@@ -73,6 +264,7 @@ function render(): void {
   if (count !== null) {
     count.textContent = `${String(visible.length)} de ${String(state.shows.length)}`;
   }
+  if (mergeButton !== null) mergeButton.disabled = !canMerge(state);
 }
 
 filter?.addEventListener('input', () => {
@@ -80,10 +272,51 @@ filter?.addEventListener('input', () => {
   render();
 });
 
+mergeButton?.addEventListener('click', () => {
+  void mergeSelected();
+});
+
+/** Sugestoes de duplicados. Nada aqui funde sozinho: e uma lista de atalhos. */
+async function loadSuggestions(): Promise<void> {
+  const suggestionsEl = document.querySelector<HTMLElement>('#adm-suggestions');
+  if (suggestionsEl === null) return;
+  try {
+    const suggestions = await fetchMergeSuggestions();
+    const namesById = new Map(state.shows.map((show) => [show.id, show.name] as const));
+    suggestionsEl.replaceChildren(
+      ...suggestions.map((suggestion) => {
+        const suggestionRow = document.createElement('div');
+        suggestionRow.className = 'adm-suggestion';
+        suggestionRow.textContent = suggestion.showIds
+          .map((id) => namesById.get(id) ?? String(id))
+          .join('  +  ');
+
+        const mergeSuggestionButton = document.createElement('button');
+        mergeSuggestionButton.type = 'button';
+        mergeSuggestionButton.textContent = 'Fundir no primeiro';
+        mergeSuggestionButton.addEventListener('click', () => {
+          const [first, ...sources] = suggestion.showIds;
+          if (first === undefined || sources.length === 0) return;
+          void mergeShows(first, sources)
+            .then(load)
+            .catch((err: unknown) => {
+              showError(err instanceof Error ? err.message : String(err));
+            });
+        });
+        suggestionRow.append(mergeSuggestionButton);
+        return suggestionRow;
+      }),
+    );
+  } catch (err) {
+    showError(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function load(): Promise<void> {
   try {
     state = { ...state, shows: await fetchAdminShows() };
     render();
+    void loadSuggestions();
   } catch (err) {
     showError(err instanceof Error ? err.message : String(err));
   }

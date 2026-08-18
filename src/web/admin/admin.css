@@ -62,6 +62,10 @@ body {
 .adm-eps { color: var(--adm-muted); font-size: 12px; }
 .adm-channel-input { width: 60px; }
 .adm-name-input { width: 100%; }
+.adm-source,
+.adm-target { justify-self: center; }
+
+#adm-fundir:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .adm-badge {
   padding: 1px 6px;

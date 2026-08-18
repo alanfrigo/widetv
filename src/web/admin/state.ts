@@ -1,4 +1,4 @@
-import type { AdminShow } from '@shared/api-types';
+import type { AdminShow, MetadataCandidate } from '@shared/api-types';
 
 /**
  * Estado da tela de administracao: decisao pura, sem DOM.
@@ -19,7 +19,7 @@ export function initialAdminState(): AdminUiState {
   return { shows: [], filter: '', mergeTargetId: null, mergeSourceIds: [] };
 }
 
-/** Acento e caixa fora: quem digita "magicos" procura "Mágicos". */
+/** Acento e caixa fora: quem digita "magicos" procura "Magicos". */
 function normalize(value: string): string {
   return value
     .normalize('NFD')
@@ -54,4 +54,10 @@ export function toggleMergeSource(state: AdminUiState, showId: number): AdminUiS
 
 export function canMerge(state: AdminUiState): boolean {
   return state.mergeTargetId !== null && state.mergeSourceIds.length > 0;
+}
+
+/** Rotulo do candidato na grade. Ano ausente nao deixa parenteses vazio. */
+export function candidateLabel(candidate: MetadataCandidate): string {
+  const year = candidate.year === null ? '' : ` (${String(candidate.year)})`;
+  return `${candidate.title}${year} — ${candidate.source}`;
 }

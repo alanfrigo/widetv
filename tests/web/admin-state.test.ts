@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 
 import type { AdminShow } from '../../src/shared/api-types';
 import {
+  candidateLabel,
   canMerge,
   initialAdminState,
   toggleMergeSource,
@@ -64,5 +65,33 @@ describe('selecao de fusao', () => {
     state = toggleMergeSource(state, 2);
     expect(state.mergeSourceIds).toEqual([]);
     expect(canMerge(state)).toBe(false);
+  });
+});
+
+describe('candidateLabel', () => {
+  test('junta titulo, ano e provedor, e aguenta ano ausente', () => {
+    expect(
+      candidateLabel({
+        source: 'tmdb',
+        externalId: '1',
+        title: 'Os Simpsons',
+        year: 1989,
+        overview: null,
+        posterUrl: null,
+        backdropUrl: null,
+      }),
+    ).toBe('Os Simpsons (1989) — tmdb');
+
+    expect(
+      candidateLabel({
+        source: 'tvmaze',
+        externalId: '2',
+        title: 'Serie',
+        year: null,
+        overview: null,
+        posterUrl: null,
+        backdropUrl: null,
+      }),
+    ).toBe('Serie — tvmaze');
   });
 });
