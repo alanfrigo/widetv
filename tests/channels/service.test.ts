@@ -62,9 +62,8 @@ function source(
   hiddenSlugs: string[] = [],
 ): ChannelSource {
   return {
-    listShows: () => shows,
-    // Como `Store.listVisibleShows`: o catalogo publico e `listShows` menos o
-    // que o painel marcou como oculto.
+    // Como `Store.listVisibleShows`: o catalogo publico e o acervo menos o que
+    // o painel marcou como oculto.
     listVisibleShows: () => shows.filter((s) => !hiddenSlugs.includes(s.slug)),
     getShowByChannel: (n) => shows.find((s) => s.channelNumber === n) ?? null,
     listEpisodes: (showId) => episodes[showId] ?? [],

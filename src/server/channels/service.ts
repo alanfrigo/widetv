@@ -15,8 +15,15 @@ import { readGrid, type TimelineCache } from './timeline-cache';
  * ganhar acesso a escrita sem querer.
  */
 export interface ChannelSource {
-  listShows(): ShowRow[];
-  /** Catalogo publico: `listShows` menos as series ocultas no painel. */
+  /**
+   * Catalogo publico: `Store.listShows` menos as series ocultas no painel.
+   *
+   * A fonte NAO expoe a listagem completa de proposito. Ela existia aqui e
+   * ficou sem chamador quando a grade passou a respeitar a curadoria; deixa-la
+   * no contrato so daria a uma edicao futura um jeito silencioso de trazer as
+   * series ocultas de volta ao ar - exatamente o que esta fonte estreita
+   * existe para impedir.
+   */
   listVisibleShows(): ShowRow[];
   getShowByChannel(channelNumber: number): ShowRow | null;
   listEpisodes(showId: number): EpisodeRow[];
