@@ -379,6 +379,11 @@ async function main(): Promise<void> {
       if (request.url.startsWith('/api/')) {
         return reply.code(404).send({ error: 'rota desconhecida' });
       }
+      // O painel e outra entry, com bundle proprio: cair no index.html da TV
+      // entregaria a SPA errada para quem digitou /admin.
+      if (request.url.startsWith('/admin')) {
+        return reply.sendFile('admin/index.html');
+      }
       return reply.sendFile('index.html');
     });
   }
