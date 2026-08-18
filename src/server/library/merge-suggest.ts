@@ -24,45 +24,45 @@ function slugBase(slug: string): string {
   return DIGEST_SUFFIX.exec(slug)?.groups?.['base'] ?? slug;
 }
 
-function agrupar(
+function groupBy(
   shows: readonly ShowRow[],
-  chave: (show: ShowRow) => string,
+  keyOf: (show: ShowRow) => string,
 ): Map<string, ShowRow[]> {
-  const grupos = new Map<string, ShowRow[]>();
+  const groups = new Map<string, ShowRow[]>();
   for (const show of shows) {
-    const key = chave(show);
-    const atual = grupos.get(key);
-    if (atual === undefined) grupos.set(key, [show]);
-    else atual.push(show);
+    const key = keyOf(show);
+    const current = groups.get(key);
+    if (current === undefined) groups.set(key, [show]);
+    else current.push(show);
   }
-  return grupos;
+  return groups;
 }
 
 export function suggestMerges(
   shows: readonly ShowRow[],
   episodeCounts: ReadonlyMap<number, number>,
 ): SuggestedMerge[] {
-  const sugestoes: SuggestedMerge[] = [];
+  const suggestions: SuggestedMerge[] = [];
   // Serie ja sugerida por nome nao volta pela chave do slug: uma linha por par
   // e o que mantem a lista lida, e o motivo mais forte manda.
-  const usados = new Set<number>();
+  const used = new Set<number>();
 
-  const emitir = (grupos: Map<string, ShowRow[]>, reason: SuggestedMerge['reason']): void => {
-    for (const grupo of grupos.values()) {
-      const livres = grupo.filter((show) => !usados.has(show.id));
-      if (livres.length < 2) continue;
-      const ordenado = [...livres].sort(
+  const emit = (groups: Map<string, ShowRow[]>, reason: SuggestedMerge['reason']): void => {
+    for (const group of groups.values()) {
+      const free = group.filter((show) => !used.has(show.id));
+      if (free.length < 2) continue;
+      const sorted = [...free].sort(
         (a, b) => (episodeCounts.get(b.id) ?? 0) - (episodeCounts.get(a.id) ?? 0) || a.id - b.id,
       );
-      for (const show of ordenado) usados.add(show.id);
-      sugestoes.push({ reason, showIds: ordenado.map((show) => show.id) });
+      for (const show of sorted) used.add(show.id);
+      suggestions.push({ reason, showIds: sorted.map((show) => show.id) });
     }
   };
 
   // `groupingKey` ja carrega o ano quando ele existe ("serie@1963"), entao a
   // separacao de remakes sai de graca.
-  emitir(agrupar(shows, (show) => groupingKey(parseFolderTitle(show.name))), 'nome-identico');
-  emitir(agrupar(shows, (show) => slugBase(show.slug)), 'slug-parecido');
+  emit(groupBy(shows, (show) => groupingKey(parseFolderTitle(show.name))), 'nome-identico');
+  emit(groupBy(shows, (show) => slugBase(show.slug)), 'slug-parecido');
 
-  return sugestoes;
+  return suggestions;
 }

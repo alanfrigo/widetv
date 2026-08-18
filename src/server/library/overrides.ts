@@ -18,14 +18,14 @@ import { compareEpisodes, type ScannedShow } from './scanner.js';
  * garantia, e um laco aqui travaria o scan inteiro.
  */
 export function resolveAliasTarget(slug: string, aliases: ReadonlyMap<string, string>): string {
-  const visto = new Set<string>([slug]);
-  let atual = slug;
+  const seen = new Set<string>([slug]);
+  let current = slug;
   for (;;) {
-    const proximo = aliases.get(atual);
-    if (proximo === undefined) return atual;
-    if (visto.has(proximo)) return atual;
-    visto.add(proximo);
-    atual = proximo;
+    const next = aliases.get(current);
+    if (next === undefined) return current;
+    if (seen.has(next)) return current;
+    seen.add(next);
+    current = next;
   }
 }
 
@@ -42,46 +42,46 @@ export function applyShowOverrides(
   aliases: readonly ShowAliasRow[],
   overrides: readonly ShowOverrideRow[],
 ): ScannedShow[] {
-  const mapa = new Map(aliases.map((row) => [row.slug, row.targetSlug] as const));
-  const nomes = new Map(
+  const targetBySlug = new Map(aliases.map((row) => [row.slug, row.targetSlug] as const));
+  const nameBySlug = new Map(
     overrides.filter((row) => row.name !== null).map((row) => [row.slug, row.name] as const),
   );
-  const presentes = new Set(shows.map((show) => show.slug));
+  const scannedSlugs = new Set(shows.map((show) => show.slug));
 
-  const porSlug = new Map<string, ScannedShow>();
-  const ordem: string[] = [];
+  const bySlug = new Map<string, ScannedShow>();
+  const order: string[] = [];
 
   for (const show of shows) {
-    const alvo = resolveAliasTarget(show.slug, mapa);
+    const target = resolveAliasTarget(show.slug, targetBySlug);
     // Alvo fora da varredura: a fonte vale por si mesma nesta rodada.
-    const destino = alvo !== show.slug && presentes.has(alvo) ? alvo : show.slug;
+    const destination = target !== show.slug && scannedSlugs.has(target) ? target : show.slug;
 
-    const existente = porSlug.get(destino);
-    if (existente === undefined) {
-      porSlug.set(destino, { ...show, slug: destino });
-      ordem.push(destino);
+    const existing = bySlug.get(destination);
+    if (existing === undefined) {
+      bySlug.set(destination, { ...show, slug: destination });
+      order.push(destination);
       continue;
     }
 
     // A serie que EMPRESTA o slug tambem empresta o caminho: `absolutePath` da
     // fonte apontaria para a pasta que deixou de ser canal.
-    const base = existente.slug === show.slug ? show : existente;
-    porSlug.set(destino, {
-      slug: destino,
+    const base = existing.slug === show.slug ? show : existing;
+    bySlug.set(destination, {
+      slug: destination,
       name: base.name,
       absolutePath: base.absolutePath,
-      episodes: [...existente.episodes, ...show.episodes],
+      episodes: [...existing.episodes, ...show.episodes],
     });
   }
 
-  return ordem.map((slug) => {
-    const show = porSlug.get(slug);
+  return order.map((slug) => {
+    const show = bySlug.get(slug);
     /* c8 ignore next */
     if (show === undefined) throw new Error(`slug ${slug} sumiu do agrupamento`);
     const episodes = [...show.episodes].sort(compareEpisodes);
     return {
       ...show,
-      name: nomes.get(slug) ?? show.name,
+      name: nameBySlug.get(slug) ?? show.name,
       episodes: episodes.map((episode, index) => ({ ...episode, orderIndex: index })),
     };
   });
@@ -98,7 +98,7 @@ export function channelNumberFixes(
   shows: readonly ShowRow[],
   overrides: readonly ShowOverrideRow[],
 ): { showId: number; channelNumber: number }[] {
-  const fixos = new Map(
+  const pinnedBySlug = new Map(
     overrides
       .filter((row) => row.channelNumber !== null)
       .map((row) => [row.slug, row.channelNumber] as const),
@@ -106,10 +106,10 @@ export function channelNumberFixes(
 
   const fixes: { showId: number; channelNumber: number }[] = [];
   for (const show of shows) {
-    const alvo = fixos.get(show.slug);
-    if (alvo === undefined || alvo === null) continue;
-    if (alvo === show.channelNumber) continue;
-    fixes.push({ showId: show.id, channelNumber: alvo });
+    const pinned = pinnedBySlug.get(show.slug);
+    if (pinned === undefined || pinned === null) continue;
+    if (pinned === show.channelNumber) continue;
+    fixes.push({ showId: show.id, channelNumber: pinned });
   }
   return fixes;
 }

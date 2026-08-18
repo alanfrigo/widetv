@@ -1415,14 +1415,14 @@ export function openStore(dbPath: string): Store {
     const map = new Map(
       (selectAliases.all() as ShowAliasRecord[]).map((row) => [row.slug, row.target_slug] as const),
     );
-    const visto = new Set<string>([slug]);
-    let atual = slug;
+    const seen = new Set<string>([slug]);
+    let current = slug;
     for (;;) {
-      const proximo = map.get(atual);
-      if (proximo === undefined) return atual;
-      if (visto.has(proximo)) return proximo;
-      visto.add(proximo);
-      atual = proximo;
+      const next = map.get(current);
+      if (next === undefined) return current;
+      if (seen.has(next)) return next;
+      seen.add(next);
+      current = next;
     }
   }
 
@@ -1438,16 +1438,16 @@ export function openStore(dbPath: string): Store {
   });
 
   const setChannelNumberTx = db.transaction((showId: number, channelNumber: number): void => {
-    const atual = selectShowById.get(showId) as ShowRecord | undefined;
-    if (atual === undefined) throw new Error(`serie ${String(showId)} nao existe`);
-    if (atual.channel_number === channelNumber) return;
+    const current = selectShowById.get(showId) as ShowRecord | undefined;
+    if (current === undefined) throw new Error(`serie ${String(showId)} nao existe`);
+    if (current.channel_number === channelNumber) return;
 
-    const ocupante = selectShowByChannel.get(channelNumber) as ShowRecord | undefined;
+    const occupant = selectShowByChannel.get(channelNumber) as ShowRecord | undefined;
     // Numero negativo como estacionamento: fora do espaco de numeros reais
     // (o contador so emite positivos), entao nao colide com ninguem.
     updateChannelNumber.run({ id: showId, channelNumber: -showId });
-    if (ocupante !== undefined) {
-      updateChannelNumber.run({ id: ocupante.id, channelNumber: atual.channel_number });
+    if (occupant !== undefined) {
+      updateChannelNumber.run({ id: occupant.id, channelNumber: current.channel_number });
     }
     updateChannelNumber.run({ id: showId, channelNumber });
   });
