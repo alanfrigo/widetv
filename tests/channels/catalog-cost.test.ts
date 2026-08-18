@@ -38,7 +38,7 @@ interface Spy {
 /** Envelope que so conta: delega tudo ao Store de verdade. */
 function spyOn(store: Store): Spy {
   const zero = (): Calls => ({
-    listShows: 0,
+    listVisibleShows: 0,
     getShowByChannel: 0,
     listEpisodes: 0,
     countEpisodesByShow: 0,
@@ -55,9 +55,9 @@ function spyOn(store: Store): Spy {
       spy.calls = zero();
     },
     source: {
-      listShows: () => {
-        spy.calls.listShows += 1;
-        return store.listShows();
+      listVisibleShows: () => {
+        spy.calls.listVisibleShows += 1;
+        return store.listVisibleShows();
       },
       getShowByChannel: (n) => {
         spy.calls.getShowByChannel += 1;
@@ -176,7 +176,10 @@ describe('custo de GET /api/channels', () => {
     spy.reset();
     await app.inject({ url: '/api/channels' });
 
-    expect(spy.calls.listShows).toBe(1);
+    // A listagem publica le o acervo UMA vez, por `listVisibleShows` - a
+    // unica listagem que a fonte oferece, justamente para nao haver caminho
+    // que devolva serie oculta no painel de curadoria.
+    expect(spy.calls.listVisibleShows).toBe(1);
     expect(spy.calls.countEpisodesByShow).toBe(1);
     expect(spy.calls.listSeasonsByShow).toBe(1);
     expect(spy.calls.hasShowsWithoutMetadata).toBe(1);

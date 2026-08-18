@@ -53,7 +53,9 @@ const METADATA = new Map<number, ShowMetadataRow>();
 let versaoDoIndice = 1;
 
 const SOURCE: ChannelSource = {
-  listShows: () => SHOWS,
+  // Nenhum teste aqui exercita curadoria: nada oculto, entao o catalogo
+  // publico e o acervo inteiro.
+  listVisibleShows: () => SHOWS,
   getShowByChannel: (n) => SHOWS.find((s) => s.channelNumber === n) ?? null,
   listEpisodes: (showId) => (showId === 1 ? EPISODES : []),
   // Como o GROUP BY do Store: o canal 9 ("Vazia") nao aparece no mapa.
@@ -78,6 +80,7 @@ function metadataRow(showId: number, over: Partial<ShowMetadataRow> = {}): ShowM
     source: 'tvmaze',
     fetchedAt: EPOCH,
     notFound: false,
+    manual: false,
     ...over,
   };
 }

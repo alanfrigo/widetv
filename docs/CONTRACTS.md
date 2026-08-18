@@ -259,6 +259,22 @@ export interface Store {
   /** Remove series que sumiram do disco. Numeros de canal removidos nao sao reciclados. */
   pruneShows(keepSlugs: readonly string[]): number;
 
+  /** Curadoria do painel; veja 4.1. */
+  listVisibleShows(): ShowRow[];
+  listShowOverrides(): ShowOverrideRow[];
+  getShowOverride(slug: string): ShowOverrideRow | null;
+  setShowOverride(input: {
+    slug: string;
+    name: string | null;
+    hidden: boolean;
+    channelNumber: number | null;
+  }): void;
+  listShowAliases(): ShowAliasRow[];
+  addShowAlias(slug: string, targetSlug: string): void;
+  removeShowAlias(slug: string): void;
+  setChannelNumber(showId: number, channelNumber: number): void;
+  mergeShows(sourceId: number, targetId: number): void;
+
   /** Probe cacheado, valido apenas se mtime e size baterem. */
   getCachedProbe(id: string, mtimeMs: number, size: number): ProbeResult | null;
 
@@ -299,6 +315,58 @@ Testes cobrem no minimo: estabilidade do numero de canal entre rescans, canal
 novo pega o proximo livre, numero de serie removida nao e reciclado, cache de
 probe invalidado por mtime e por size, prune de episodios, idempotencia de
 upsert, roundtrip de boolean e de campos null.
+
+### 4.1 Curadoria do acervo (migracao 13)
+
+O indice e derivado do disco: `upsertShow` reescreve `name` a cada rodada e
+`pruneShows` apaga a linha da serie cuja pasta sumiu. Sem uma camada propria,
+toda decisao humana sobre o catalogo - "estas duas pastas sao a mesma serie",
+"esta serie chama-se assim", "esta capa esta errada" - morre no rescan noturno.
+
+```sql
+CREATE TABLE show_override (
+  slug TEXT PRIMARY KEY,
+  name TEXT,                 -- null = usa o nome derivado da pasta
+  hidden INTEGER NOT NULL DEFAULT 0,
+  channel_number INTEGER,    -- null = numero automatico
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE show_alias (
+  slug TEXT PRIMARY KEY,           -- pasta que foi fundida
+  target_slug TEXT NOT NULL,       -- pasta que sobreviveu
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_show_alias_target ON show_alias (target_slug);
+
+ALTER TABLE show_metadata ADD COLUMN manual INTEGER NOT NULL DEFAULT 0;
+```
+
+- **Chave e o slug da pasta**, nao o `id` da serie: o slug e o unico
+  identificador estavel entre rodadas, e a fusao APAGA a linha da fonte.
+- **Sem chave estrangeira para `shows`, de proposito.** Uma raiz sem permissao
+  ou um volume desmontado levam a linha no prune, e um `ON DELETE CASCADE`
+  levaria a curadoria junto - o override precisa sobreviver justamente ao
+  acidente que motiva o rescan.
+- `setShowOverride` com linha totalmente neutra (sem nome, visivel, canal
+  automatico) **apaga** a linha em vez de grava-la: "desfiz tudo" volta ao
+  estado de quem nunca mexeu e a tabela nao acumula linha morta.
+- `addShowAlias` resolve a cadeia na ESCRITA (alias de alias aponta para o slug
+  final), lanca em ciclo, e **reaponta, na mesma transacao, os aliases que
+  miravam o slug recem-fundido**: sem isso, fundir A em B e depois B em C
+  deixaria `a -> b` orfao, e A sumiria do painel sem jeito de solta-la. A
+  leitura ainda resolve com guarda de ciclo, porque banco escrito por versao
+  anterior nao tem essa garantia.
+- `setChannelNumber` TROCA com quem ja ocupa o numero (`channel_number` e
+  UNIQUE, entao a transacao passa por um valor temporario negativo). Trocar
+  dois canais de lugar e o caso de uso; recusar com 409 deixaria a pessoa sem
+  saida. Quem chama precisa reconciliar o override da serie DESLOCADA - veja
+  14.2.
+- `listVisibleShows` e `listShows` menos os slugs com `hidden = 1`.
+  `listShows` continua devolvendo tudo: o painel precisa ver o que esta oculto.
+- `ShowMetadataRow` ganha `manual: boolean` - capa e sinopse escolhidas a mao.
+  Linha `manual` fica FORA da fila do enricher e sobrevive ao "refazer tudo" do
+  painel (`refreshMetadata(true)`); a saida e o `DELETE` da secao 14.4.
 
 ---
 
@@ -407,6 +475,12 @@ expirado falha, cookie malformado falha.
 O catalogo VOD (`/api/channels/:number/episodes`) e a grade ao vivo
 (`/api/channels/:number/now`) convivem: o servidor serve os dois, e o cliente
 decide o que mostrar.
+
+Serie marcada como oculta no painel de curadoria (4.1) sai de `/api/channels` e
+de `/api/now` - as duas listagens leem `listVisibleShows` -, mas o acesso
+direto por numero de canal (`/api/channels/:number/now`, `/episodes`,
+`/poster`, `/backdrop`) continua funcionando: o que some e a entrada no
+catalogo, nao o canal.
 
 ```ts
 // src/server/channels/service.ts
@@ -615,6 +689,9 @@ CREATE TABLE show_metadata (
   renomeada (rename e atomico: ninguem le um JPEG pela metade).
 - `not_found = 1` com `fetched_at`: so e reconsultado depois de **7 dias**.
 - Serie ja encontrada nunca e reconsultada.
+- `manual = 1` (migracao 13) marca a escolha feita a mao no painel: a serie sai
+  da fila do enricher em qualquer escopo e o "refazer tudo" do painel a pula.
+  Sem isso, um clique em "refazer tudo" apagaria a curadoria inteira.
 - **Erro de rede nao grava linha nenhuma** - inclusive quando a busca deu certo
   mas o download da capa falhou. Linha sem capa selaria o show como resolvido e
   a imagem nunca mais seria tentada.
@@ -919,7 +996,11 @@ DELETE /api/history              ->  204   limpa o historico inteiro
 `runScan` completo por dia dentro do proprio servidor
 (`library/rescan-timer.ts`) - o container nao tem cron. O scan ja e
 incremental (cache de probe por mtime/size) e ja faz o prune de episodios e
-series removidos; depois dele disparam o enricher (capas de series novas) e o
+series removidos - **todos os `pruneEpisodes` rodam DEPOIS do laco por serie**,
+nunca dentro dele: desfazer uma fusao move episodios de uma serie para outra
+dentro da mesma rodada, e podar antes de todo `upsertEpisodes` ter acontecido
+apagaria linhas que so estavam de passagem, levando junto, por CASCADE, o
+historico de exibicao; depois dele disparam o enricher (capas de series novas) e o
 remux. Uma trava compartilhada com o scan de bootstrap impede duas varreduras
 simultaneas; erro no rescan e logado e o dia seguinte tenta de novo. Reagenda
 DEPOIS de terminar: acervo que leva horas empurra o proximo disparo em vez de
@@ -1046,3 +1127,154 @@ POST /api/library/metadata   corpo: MetadataRefreshRequest ({ reset?: boolean })
 | Aceito | 202 | `TaskAccepted` (`started: true`) |
 | Ja ha uma busca de metadata rodando | 409 | `TaskAccepted` (`started: false`, `reason`) |
 | `reset` presente e nao boolean | 400 | `{ error }` |
+
+## 14. Curadoria do acervo - `/api/admin/*`
+
+Painel `/admin`, servido pela propria instancia, separado da SPA de TV. Cinco
+operacoes: fundir series duplicadas, escolher capa e sinopse entre os
+resultados dos provedores, renomear, ocultar do catalogo e fixar numero de
+canal. Rotas atras do mesmo guard de sessao que cobre `/api/`. Contrato em
+`src/shared/api-types.ts` (`AdminShow`, `AdminShowPatch`, `MergeSuggestion`,
+`MetadataCandidate`, `MergeRequest`, `UnmergeRequest`, `ApplyMetadataRequest`),
+rotas em `API.adminShows`, `API.adminMergeSuggestions`, `API.adminShow`,
+`API.adminMerge`, `API.adminUnmerge`, `API.adminMetadataSearch`,
+`API.adminMetadata`.
+
+```
+GET    /api/admin/shows                            ->  AdminShow[]
+GET    /api/admin/merge-suggestions                ->  MergeSuggestion[]
+PATCH  /api/admin/shows/:id                        ->  AdminShow
+POST   /api/admin/shows/:id/merge                  ->  TaskAccepted
+POST   /api/admin/shows/:id/unmerge                ->  TaskAccepted
+GET    /api/admin/shows/:id/metadata/search?q=...  ->  MetadataCandidate[]
+PUT    /api/admin/shows/:id/metadata               ->  AdminShow
+DELETE /api/admin/shows/:id/metadata               ->  TaskAccepted
+```
+
+Toda resposta que carrega ESTADO (`AdminShow`, `MergeSuggestion[]`,
+`MetadataCandidate[]`) leva `cache-control: no-store`: a tela e de edicao, e
+mostrar estado velho aqui e mostrar a pessoa desfazendo o que acabou de fazer.
+As tres respostas de tarefa aceita (`TaskAccepted`) nao carregam estado nenhum.
+`:id` que nao casa `/^\d+$/`, ou serie inexistente, e **404** em qualquer uma
+das rotas.
+
+**Toda decisao e gravada duas vezes**: no indice, para valer agora, e na tabela
+de override (4.1), para valer depois do proximo scan. Gravar so uma faria a
+curadoria durar ate a madrugada.
+
+### 14.1 Listagem - `GET /api/admin/shows` e `GET /api/admin/merge-suggestions`
+
+- `AdminShow` junta indice (`slug`, `folderName`, `channelNumber`,
+  `episodeCount`, `seasons`), curadoria (`hidden`, `renamed`, `mergedSlugs`) e
+  metadata (`year`, `overview`, `source`, `manual`, `posterUrl`,
+  `backdropUrl`). `folderName` e o basename de `absolutePath` - o nome REAL da
+  pasta, para a pessoa se achar no acervo quando o nome exibido veio de
+  override.
+- Contagem de episodios, temporadas e aliases saem de UMA consulta agregada por
+  requisicao, nunca por serie: com ~460 canais, perguntar linha a linha seriam
+  ~920 varreduras de tabela por request - a mesma razao de `listSeasonsByShow`
+  existir para `GET /api/channels`.
+- `MergeSuggestion` vem de `library/merge-suggest.ts`, puro: agrupa por nome
+  (`groupingKey(parseFolderTitle(name))`, que ja separa "(1963)" de "(2005)") e
+  por slug sem o sufixo de digest de `disambiguateSlugs`. `showIds` sai
+  ordenado por numero de episodios decrescente - o primeiro e o alvo padrao na
+  tela. **Nada aqui funde sozinho**; a fusao automatica continua sendo so a de
+  `dedupe.ts`.
+
+### 14.2 Editar - `PATCH /api/admin/shows/:id`
+
+Corpo `AdminShowPatch`: campo ausente nao e tocado. `name: null` (ou so
+espacos) volta ao nome derivado da pasta.
+
+- Renomear escreve `shows.name` AGORA (o painel nao espera scan) e grava o
+  override. Como `shows.name` e o termo que `lookupShowMetadata` usa, renomear
+  passa a valer para a busca de capa sem codigo extra.
+- `channelNumber` TROCA com quem ja ocupa o numero, e o override da serie
+  DESLOCADA e reconciliado com o numero que ela recebeu. Sem isso as duas
+  passariam a reivindicar o mesmo canal e a reconciliacao do fim do scan
+  inverteria a dupla a cada rodada, para sempre.
+- A resposta rele a serie DEPOIS da troca: devolver a foto de antes mostraria o
+  numero de canal antigo.
+
+| Situacao | Status | Corpo |
+| --- | --- | --- |
+| Corpo valido | 200 | `AdminShow` ja atualizado |
+| Corpo nao e objeto, campo com tipo errado, `channelNumber` nao inteiro ou < 1 | 400 | `{ error }` |
+| Serie inexistente | 404 | `{ error }` |
+
+### 14.3 Fundir e desfazer
+
+```
+POST /api/admin/shows/:id/merge     corpo: MergeRequest   ({ sourceIds })
+POST /api/admin/shows/:id/unmerge   corpo: UnmergeRequest ({ slug })
+```
+
+- `merge` grava o alias de cada fonte ANTES de chamar `mergeShows` - a fusao
+  apaga a linha da fonte, e depois dela o slug so existiria na memoria do
+  request. Responde **202**; o catalogo ja fica correto na hora.
+- `unmerge` apaga o alias e dispara scan incremental: o desfazer real acontece
+  la, pelo `ON CONFLICT(id) DO UPDATE SET show_id` de `upsertEpisodes`.
+  Responde **202** quando o scan comecou e **409** quando ja havia um rodando -
+  e, no 409, **devolve o alias que tinha acabado de apagar**. Responder
+  "recusei" e deixar a tabela sem o alias faria o scan seguinte (o noturno, sem
+  ninguem olhando) desfazer a fusao assim mesmo. Recolocar e melhor que
+  reordenar: `startScan` retorna antes de `runScan` ler a tabela de alias.
+- O painel acompanha as duas por `GET /api/library/status`.
+
+| Situacao | Status | Corpo |
+| --- | --- | --- |
+| Aceito | 202 | `TaskAccepted` (`started: true`) |
+| `unmerge` com scan ja rodando | 409 | `TaskAccepted` (`started: false`, `reason`) |
+| `sourceIds` ausente ou nao e lista de numeros; `slug` nao e string | 400 | `{ error }` |
+| Fonte igual ao alvo | 400 | `{ error }` |
+| Serie (alvo ou fonte) inexistente | 404 | `{ error }` |
+
+### 14.4 Capa e sinopse a mao
+
+```
+GET    /api/admin/shows/:id/metadata/search?q=...   ->  MetadataCandidate[]
+PUT    /api/admin/shows/:id/metadata                corpo: ApplyMetadataRequest
+DELETE /api/admin/shows/:id/metadata
+```
+
+- A busca roda os tres provedores em PARALELO (`searchShowCandidates`) e `q`
+  ausente cai no nome atual da serie. Provedor que falha nao mata a busca:
+  volta o que veio dos outros. `?q=a&q=b` chega como array e e **400** - sem
+  validacao de tipo, um array desceria ate `.trim()` dentro do provedor e
+  viraria 500.
+- **A allowlist de imagem e conferida aqui, antes de a requisicao existir.** O
+  corpo carrega URLs escolhidas pelo cliente e quem baixa e o servidor: sem
+  trava isso e SSRF contra `169.254.169.254` ou qualquer host da rede interna.
+  So passa `https` em `image.tmdb.org`, `static.tvmaze.com` e subdominio de
+  `mzstatic.com`; o download nao segue redirecionamento, senao a allowlist so
+  valeria para o primeiro salto. A sessao unica NAO substitui esta checagem -
+  um cookie vaza mais facil que a rede interna.
+- O `PUT` grava a linha com `manual: true`, `notFound: false` e o `source` do
+  candidato, e escreve as artes nos mesmos `posters/<showId>.jpg` e
+  `backdrops/<showId>.jpg` do caminho automatico. Cache-bust sai de graca:
+  `posterUrl` ja carrega `?v=<fetchedAt>`.
+- O `DELETE` e a saida: zera `manual`, marca `not_found` e devolve a serie para
+  a fila automatica. Responde **202**.
+
+| Situacao | Status | Corpo |
+| --- | --- | --- |
+| Busca | 200 | `MetadataCandidate[]` |
+| `q` repetido na querystring | 400 | `{ error }` |
+| `candidate` ausente ou invalido | 400 | `{ error }` |
+| Host de imagem fora da allowlist | 400 | `{ error }` |
+| `PUT` aceito | 200 | `AdminShow` ja atualizado |
+| `DELETE` aceito | 202 | `TaskAccepted` (`started: true`) |
+| Serie inexistente | 404 | `{ error }` |
+
+### 14.5 Pagina `/admin`
+
+Entry propria do vite (`src/web/admin/`), e nao uma tela da SPA de TV: o app de
+TV e dpad-first e digitar nome de serie no controle remoto e sofrimento. Em
+producao o `@fastify/static` serve `dist/web/admin/index.html`, e o
+`setNotFoundHandler` tem um ramo para url que comeca com `/admin`. `fetch` que
+volta 401 redireciona para `/` - o login mora na SPA de TV.
+
+**Paridade com o Android (secao 6): nao ha.** O painel e mouse-first e existe
+so na web; o cliente Android nao ganha tela de curadoria. O que ele ve e o
+RESULTADO - serie oculta some do catalogo, nome e capa mudam - pelos mesmos
+campos de `ChannelSummary` que ele ja consome.

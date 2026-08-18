@@ -13,18 +13,24 @@ import { openStore } from '../../src/server/library/index-store';
  * migracao afirmarem "chegou na versao mais nova", e nao um numero solto que
  * envelhece a cada coluna adicionada.
  */
-const SCHEMA_VERSION_ATUAL = 12;
+const SCHEMA_VERSION_ATUAL = 13;
 
 /**
  * Desfaz, num banco ja aberto na versao atual, tudo o que veio depois da versao
  * `alvo` - e o jeito de reencenar um indice daquela epoca sem manter um dump
  * SQL congelado por versao.
  */
+const DESFAZER_13 =
+  'DROP TABLE show_override;' +
+  'DROP TABLE show_alias;' +
+  'ALTER TABLE show_metadata DROP COLUMN manual;';
+
 const DESFAZER_12 =
   'ALTER TABLE remux DROP COLUMN size_bytes;' +
   'ALTER TABLE remux DROP COLUMN last_access_at;' +
   'ALTER TABLE audio_variant DROP COLUMN size_bytes;' +
-  'ALTER TABLE audio_variant DROP COLUMN last_access_at;';
+  'ALTER TABLE audio_variant DROP COLUMN last_access_at;' +
+  DESFAZER_13;
 
 const DESFAZER_11 = 'ALTER TABLE watch_history DROP COLUMN watched_at;' + DESFAZER_12;
 
@@ -46,6 +52,7 @@ const DESFAZER_ATE: Record<number, string> = {
   9: DESFAZER_10,
   10: DESFAZER_11,
   11: DESFAZER_12,
+  12: DESFAZER_13,
 };
 
 function rebobinar(dbPath: string, alvo: number): void {
@@ -643,6 +650,7 @@ describe('metadata da serie (schema 3)', () => {
       source: 'tvmaze',
       fetchedAt: 1_700_000_000_000,
       notFound: false,
+      manual: false,
     });
 
     expect(store.getShowMetadata(showId)).toEqual({
@@ -656,6 +664,7 @@ describe('metadata da serie (schema 3)', () => {
       source: 'tvmaze',
       fetchedAt: 1_700_000_000_000,
       notFound: false,
+      manual: false,
     });
 
     store.close();
@@ -677,6 +686,7 @@ describe('metadata da serie (schema 3)', () => {
       source: null,
       fetchedAt: 42,
       notFound: true,
+      manual: false,
     });
 
     const row = store.getShowMetadata(showId)!;
@@ -702,6 +712,7 @@ describe('metadata da serie (schema 3)', () => {
       source: null,
       fetchedAt: 1,
       notFound: true,
+      manual: false,
     });
     store.upsertShowMetadata({
       showId,
@@ -714,6 +725,7 @@ describe('metadata da serie (schema 3)', () => {
       source: 'itunes',
       fetchedAt: 2,
       notFound: false,
+      manual: false,
     });
 
     expect(store.getShowMetadata(showId)).toMatchObject({
@@ -741,6 +753,7 @@ describe('metadata da serie (schema 3)', () => {
         source: 'tvmaze',
         fetchedAt: 1,
         notFound: false,
+        manual: false,
       });
     }
 
@@ -814,6 +827,7 @@ describe('metadata da serie (schema 3)', () => {
       source: 'tvmaze',
       fetchedAt: 7,
       notFound: false,
+      manual: false,
     });
     expect(store.getShowMetadata(1)?.posterFile).toBe('1.jpg');
 
@@ -913,6 +927,7 @@ describe('hasShowsWithoutMetadata', () => {
       source: null,
       fetchedAt: 1,
       notFound: true,
+      manual: false,
     });
     expect(store.hasShowsWithoutMetadata()).toBe(false);
     store.close();
@@ -932,6 +947,7 @@ describe('hasShowsWithoutMetadata', () => {
       source: 'tvmaze',
       fetchedAt: 1,
       notFound: false,
+      manual: false,
     });
     expect(store.hasShowsWithoutMetadata()).toBe(false);
 
@@ -1047,6 +1063,7 @@ describe('indexVersion', () => {
       source: 'tmdb',
       fetchedAt: 1,
       notFound: false,
+      manual: false,
     });
     store.upsertWatchHistory({
       episodeId: 'serie/ep01.mp4',
@@ -1098,6 +1115,7 @@ describe('arte 16:9 (schema 8)', () => {
       source: 'tmdb',
       fetchedAt: 1,
       notFound: false,
+      manual: false,
     });
     expect(store.getShowMetadata(showId)?.backdropFile).toBe('1.jpg');
 
@@ -1112,6 +1130,7 @@ describe('arte 16:9 (schema 8)', () => {
       source: 'tvmaze',
       fetchedAt: 2,
       notFound: false,
+      manual: false,
     });
     expect(store.getShowMetadata(showId)?.backdropFile).toBeNull();
 
@@ -1136,6 +1155,7 @@ describe('arte 16:9 (schema 8)', () => {
       source: 'tvmaze',
       fetchedAt: 42,
       notFound: false,
+      manual: false,
     });
     sete.upsertWatchHistory({
       episodeId: 'serie/ep01.mp4',
@@ -1178,6 +1198,7 @@ describe('arte 16:9 (schema 8)', () => {
       source: 'tmdb',
       fetchedAt: 43,
       notFound: false,
+      manual: false,
     });
     expect(store.getShowMetadata(showId)?.backdropFile).toBe('1.jpg');
     store.close();
@@ -1207,6 +1228,7 @@ describe('carimbo de busca da arte (schema 9)', () => {
       source: 'tmdb',
       fetchedAt: 1,
       notFound: false,
+      manual: false,
     };
 
     store.upsertShowMetadata({ ...base, backdropFile: null, backdropCheckedAt: null });
@@ -1239,6 +1261,7 @@ describe('carimbo de busca da arte (schema 9)', () => {
       source: 'tmdb',
       fetchedAt: 42,
       notFound: false,
+      manual: false,
     });
     oito.close();
 
@@ -1641,6 +1664,7 @@ describe('quadro do episodio (schema 10)', () => {
       source: 'tmdb',
       fetchedAt: 10,
       notFound: false,
+      manual: false,
     });
     expect(store.hasShowsWithoutMetadata()).toBe(false);
     expect(store.getShowMetadata(showId)?.backdropSource).toBe('tmdb');
@@ -1673,6 +1697,7 @@ describe('quadro do episodio (schema 10)', () => {
       source: 'tmdb',
       fetchedAt: 42,
       notFound: false,
+      manual: false,
     });
     nove.setSetting('audio_lang', 'por');
     nove.close();
@@ -1967,5 +1992,213 @@ describe('orcamento de disco das copias geradas (schema 12)', () => {
     conferencia.close();
 
     rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('curadoria do acervo (schema 13)', () => {
+  it('indice na versao 12 ganha as tabelas de curadoria sem perder o acervo', () => {
+    const base = mkdtempSync(join(tmpdir(), 'index-store-v12-'));
+    const dbPath = join(base, 'library.db');
+
+    const doze = openStore(dbPath);
+    const showId = makeShow(doze, 'serie');
+    doze.upsertEpisodes(showId, [makeEpisode()]);
+    doze.upsertShowMetadata({
+      showId,
+      posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1985,
+      overview: 'Sinopse.',
+      source: 'tvmaze',
+      fetchedAt: 42,
+      notFound: false,
+      manual: false,
+    });
+    doze.setSetting('audio_lang', 'por');
+    doze.close();
+
+    // Um banco exatamente como o schema 12 deixava: sem override, sem alias e
+    // sem a coluna `manual`. E o estado do acervo de verdade que vai migrar.
+    rebobinar(dbPath, 12);
+
+    const store = openStore(dbPath);
+
+    // Migrou sem tocar no que ja existia...
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie']);
+    expect(store.getEpisode('serie/ep01.mp4')?.title).toBe('ep01');
+    expect(store.getSetting('audio_lang')).toBe('por');
+    expect(store.getShowMetadata(showId)).toMatchObject({
+      posterFile: '1.jpg',
+      year: 1985,
+      source: 'tvmaze',
+      fetchedAt: 42,
+    });
+    // ...a coluna nova entra como "escolha automatica", que e a verdade: nada
+    // no banco velho foi escolhido a mao.
+    expect(store.getShowMetadata(showId)?.manual).toBe(false);
+
+    // As tabelas novas nascem vazias e funcionando.
+    expect(store.listShowOverrides()).toEqual([]);
+    expect(store.listShowAliases()).toEqual([]);
+    store.setShowOverride({ slug: 'serie', name: 'Outro', hidden: true, channelNumber: 9 });
+    store.addShowAlias('serie-extra', 'serie');
+    expect(store.getShowOverride('serie')).toMatchObject({
+      name: 'Outro',
+      hidden: true,
+      channelNumber: 9,
+    });
+    expect(store.listShowAliases().map((row) => row.targetSlug)).toEqual(['serie']);
+    // A serie oculta sai do catalogo publico, mas continua na lista do painel.
+    expect(store.listVisibleShows()).toEqual([]);
+    expect(store.listShows()).toHaveLength(1);
+    store.close();
+
+    const conferencia = new Database(dbPath);
+    const versao = conferencia.prepare('SELECT version FROM schema_version').get() as {
+      version: number;
+    };
+    expect(versao.version).toBe(SCHEMA_VERSION_ATUAL);
+    conferencia.close();
+
+    rmSync(base, { recursive: true, force: true });
+  });
+});
+
+describe('show_override', () => {
+  it('sobrevive ao prune que apaga a serie', () => {
+    const store = openStore(':memory:');
+    store.upsertShow({ slug: 'simpsons', name: 'Simpsons', absolutePath: '/lib/Simpsons' });
+    store.setShowOverride({
+      slug: 'simpsons',
+      name: 'Os Simpsons',
+      hidden: false,
+      channelNumber: null,
+    });
+
+    // O NAS caiu: o scan nao viu a pasta e podou a serie inteira.
+    store.pruneShows([]);
+
+    expect(store.getShowOverride('simpsons')?.name).toBe('Os Simpsons');
+    store.close();
+  });
+
+  it('linha neutra e apagada em vez de gravada', () => {
+    const store = openStore(':memory:');
+    store.setShowOverride({ slug: 'x', name: 'X', hidden: true, channelNumber: 7 });
+    store.setShowOverride({ slug: 'x', name: null, hidden: false, channelNumber: null });
+
+    expect(store.getShowOverride('x')).toBeNull();
+    expect(store.listShowOverrides()).toEqual([]);
+    store.close();
+  });
+});
+
+describe('show_alias', () => {
+  it('resolve a cadeia na escrita: alias de alias aponta para o slug final', () => {
+    const store = openStore(':memory:');
+    store.addShowAlias('b', 'a');
+    store.addShowAlias('c', 'b');
+
+    expect(store.listShowAliases()).toEqual([
+      { slug: 'b', targetSlug: 'a', createdAt: expect.any(Number) },
+      { slug: 'c', targetSlug: 'a', createdAt: expect.any(Number) },
+    ]);
+    store.close();
+  });
+
+  it('fusao encadeada nao perde a primeira: quem apontava para o slug fundido segue o alvo novo', () => {
+    // Funde A em B e, depois, B em C. Sem repontar, a tabela guarda 'a -> b'
+    // com B ja fundida: o painel mostra C com apenas ['b'] e A some da tela
+    // sem nenhum jeito de solta-la.
+    const store = openStore(':memory:');
+    store.addShowAlias('a', 'b');
+    store.addShowAlias('b', 'c');
+
+    expect(store.listShowAliases().map((row) => [row.slug, row.targetSlug])).toEqual([
+      ['a', 'c'],
+      ['b', 'c'],
+    ]);
+    store.close();
+  });
+
+  it('recusa ciclo', () => {
+    const store = openStore(':memory:');
+    store.addShowAlias('b', 'a');
+
+    expect(() => store.addShowAlias('a', 'b')).toThrow(/circular/);
+    expect(() => store.addShowAlias('a', 'a')).toThrow(/circular/);
+    store.close();
+  });
+
+  it('removeShowAlias desfaz', () => {
+    const store = openStore(':memory:');
+    store.addShowAlias('b', 'a');
+    store.removeShowAlias('b');
+
+    expect(store.listShowAliases()).toEqual([]);
+    store.close();
+  });
+});
+
+describe('setChannelNumber', () => {
+  it('troca os numeros quando o destino esta ocupado', () => {
+    const store = openStore(':memory:');
+    const um = store.upsertShow({ slug: 'a', name: 'A', absolutePath: '/lib/A' });
+    const dois = store.upsertShow({ slug: 'b', name: 'B', absolutePath: '/lib/B' });
+
+    store.setChannelNumber(dois.id, um.channelNumber);
+
+    expect(store.getShowByChannel(um.channelNumber)?.id).toBe(dois.id);
+    expect(store.getShowByChannel(dois.channelNumber)?.id).toBe(um.id);
+    store.close();
+  });
+
+  it('numero livre nao mexe em ninguem', () => {
+    const store = openStore(':memory:');
+    const um = store.upsertShow({ slug: 'a', name: 'A', absolutePath: '/lib/A' });
+
+    store.setChannelNumber(um.id, 900);
+
+    expect(store.getShowByChannel(900)?.id).toBe(um.id);
+    expect(store.getShowByChannel(um.channelNumber)).toBeNull();
+    store.close();
+  });
+});
+
+describe('listVisibleShows', () => {
+  it('esconde o que tem override hidden, mas listShows continua vendo tudo', () => {
+    const store = openStore(':memory:');
+    store.upsertShow({ slug: 'a', name: 'A', absolutePath: '/lib/A' });
+    store.upsertShow({ slug: 'b', name: 'B', absolutePath: '/lib/B' });
+    store.setShowOverride({ slug: 'b', name: null, hidden: true, channelNumber: null });
+
+    expect(store.listVisibleShows().map((s) => s.slug)).toEqual(['a']);
+    expect(store.listShows().map((s) => s.slug)).toEqual(['a', 'b']);
+    store.close();
+  });
+});
+
+describe('manual em show_metadata', () => {
+  it('faz roundtrip', () => {
+    const store = openStore(':memory:');
+    const show = store.upsertShow({ slug: 'a', name: 'A', absolutePath: '/lib/A' });
+    store.upsertShowMetadata({
+      showId: show.id,
+      posterFile: 'x.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1989,
+      overview: 'sinopse',
+      source: 'tmdb',
+      fetchedAt: 10,
+      notFound: false,
+      manual: true,
+    });
+
+    expect(store.getShowMetadata(show.id)?.manual).toBe(true);
+    store.close();
   });
 });

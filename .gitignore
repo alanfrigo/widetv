@@ -69,3 +69,7 @@ desktop.ini
 *.swp
 *.swo
 *~
+
+# Worktrees isoladas de trabalho em andamento
+.worktrees/
+.superpowers/

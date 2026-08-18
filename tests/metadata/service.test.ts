@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ShowMetadataRow, ShowRow } from '../../src/server/library/index-store';
 import {
+  applyManualMetadata,
+  clearManualMetadata,
   createEnricher,
   enrichMissing,
   listShowsMissingMetadata,
@@ -13,7 +15,7 @@ import {
   type MetadataStore,
 } from '../../src/server/metadata/service';
 import { ImageGoneError } from '../../src/server/metadata/providers';
-import type { LookupResult, ShowMetadata } from '../../src/server/metadata/providers';
+import type { LookupResult, ShowMetadata, ShowCandidate } from '../../src/server/metadata/providers';
 
 /**
  * O que estes testes protegem, em uma frase: o indice so pode aprender coisa
@@ -76,6 +78,7 @@ function row(showId: number, over: Partial<ShowMetadataRow> = {}): ShowMetadataR
     source: 'tvmaze',
     fetchedAt: AGORA,
     notFound: false,
+    manual: false,
     ...over,
   };
 }
@@ -191,6 +194,7 @@ describe('enrichMissing', () => {
       source: 'tvmaze',
       fetchedAt: AGORA,
       notFound: false,
+      manual: false,
     });
     expect(Array.from(await readFile(join(dataDir, 'posters', '1.jpg')))).toEqual([
       0xff, 0xd8, 0xff,
@@ -382,6 +386,7 @@ describe('enrichMissing', () => {
       source: null,
       fetchedAt: AGORA,
       notFound: true,
+      manual: false,
     });
   });
 
@@ -871,5 +876,108 @@ describe('createEnricher', () => {
       enricher.trigger();
     }).not.toThrow();
     await enricher.run();
+  });
+});
+
+describe('metadata manual', () => {
+  test('grava capa, sinopse e o selo manual', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'widetv-manual-'));
+    const store = makeStore([show(1, 'Serie')]);
+
+    await applyManualMetadata(
+      store,
+      dataDir,
+      show(1, 'Serie'),
+      {
+        source: 'tmdb',
+        externalId: '99',
+        title: 'Serie Escolhida',
+        year: 1989,
+        overview: 'sinopse escolhida',
+        posterUrl: 'https://image.tmdb.org/t/p/w500/p.jpg',
+        backdropUrl: 'https://image.tmdb.org/t/p/w1280/b.jpg',
+      },
+      { now: () => AGORA, download: async () => new Uint8Array([1, 2, 3]) },
+    );
+
+    const row = store.rows.get(1);
+    expect(row?.manual).toBe(true);
+    expect(row?.overview).toBe('sinopse escolhida');
+    expect(row?.year).toBe(1989);
+    expect(row?.fetchedAt).toBe(AGORA);
+    expect(await readFile(join(dataDir, 'posters', '1.jpg'))).toHaveLength(3);
+    expect(await readFile(join(dataDir, 'backdrops', '1.jpg'))).toHaveLength(3);
+
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  test('recusa URL fora dos hosts dos provedores sem baixar nada', async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), 'widetv-manual-'));
+    const store = makeStore([show(1, 'Serie')]);
+    const download = vi.fn();
+
+    await expect(
+      applyManualMetadata(
+        store,
+        dataDir,
+        show(1, 'Serie'),
+        {
+          source: 'tmdb',
+          externalId: '1',
+          title: 'x',
+          year: null,
+          overview: null,
+          posterUrl: 'https://169.254.169.254/latest/meta-data/',
+          backdropUrl: null,
+        },
+        { now: () => AGORA, download },
+      ),
+    ).rejects.toThrow(/host de imagem/);
+
+    expect(download).not.toHaveBeenCalled();
+    expect(store.rows.get(1)).toBeUndefined();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  test('serie manual fica fora da fila do enriquecimento, em qualquer escopo', () => {
+    const store = makeStore([show(1, 'Serie')]);
+    store.rows.set(1, {
+      showId: 1,
+      posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1989,
+      overview: 'x',
+      source: 'tmdb',
+      fetchedAt: AGORA,
+      notFound: false,
+      manual: true,
+    });
+
+    expect(listShowsMissingMetadata(store, AGORA, NOT_FOUND_TTL_MS, 'missing')).toEqual([]);
+    expect(listShowsMissingMetadata(store, AGORA, NOT_FOUND_TTL_MS, 'refresh')).toEqual([]);
+  });
+
+  test('clearManualMetadata devolve a serie para a fila automatica', () => {
+    const store = makeStore([show(1, 'Serie')]);
+    store.rows.set(1, {
+      showId: 1,
+      posterFile: '1.jpg',
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1989,
+      overview: 'x',
+      source: 'tmdb',
+      fetchedAt: AGORA,
+      notFound: false,
+      manual: true,
+    });
+
+    clearManualMetadata(store, show(1, 'Serie'), () => AGORA);
+
+    expect(store.rows.get(1)?.manual).toBe(false);
+    expect(listShowsMissingMetadata(store, AGORA + 1, NOT_FOUND_TTL_MS, 'missing')).toHaveLength(1);
   });
 });

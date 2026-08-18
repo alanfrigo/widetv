@@ -12,6 +12,12 @@ export default defineConfig({
   build: {
     outDir: '../../dist/web',
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./src/web/index.html', import.meta.url)),
+        admin: fileURLToPath(new URL('./src/web/admin/index.html', import.meta.url)),
+      },
+    },
   },
   server: {
     port: 5173,

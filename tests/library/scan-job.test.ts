@@ -255,3 +255,81 @@ describe('runScan', () => {
     expect(report).toMatchObject({ shows: 0, episodes: 0, probed: 0 });
   });
 });
+
+describe('curadoria manual sobrevive ao scan', () => {
+  test('pasta com alias vira episodio do alvo, e nao canal proprio', async () => {
+    await makeEpisode('Serie', 'S01E01.mp4');
+    await makeEpisode('Serie Extra', 'S02E01.mp4');
+
+    await runScan({ root, store, probe: fakeProbe().probe });
+    expect(store.listShows().map((s) => s.slug)).toContain('serie-extra');
+
+    store.addShowAlias('serie-extra', 'serie');
+    await runScan({ root, store, probe: fakeProbe().probe });
+
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie']);
+    const alvo = store.listShows()[0];
+    expect(alvo).toBeDefined();
+    expect(store.listEpisodes(alvo!.id)).toHaveLength(2);
+  });
+
+  test('nome do override vence o nome da pasta', async () => {
+    await makeEpisode('Serie', 'S01E01.mp4');
+    store.setShowOverride({ slug: 'serie', name: 'Outro Nome', hidden: false, channelNumber: null });
+
+    await runScan({ root, store, probe: fakeProbe().probe });
+
+    expect(store.listShows()[0]?.name).toBe('Outro Nome');
+  });
+
+  test('canal fixado volta depois de a pasta sumir e voltar', async () => {
+    await makeEpisode('Serie', 'S01E01.mp4');
+    await runScan({ root, store, probe: fakeProbe().probe });
+
+    const serie = store.listShows()[0];
+    expect(serie).toBeDefined();
+    store.setChannelNumber(serie!.id, 42);
+    store.setShowOverride({ slug: 'serie', name: null, hidden: false, channelNumber: 42 });
+
+    // Volume desmontado: o prune apaga a serie. Depois ela volta - e o
+    // contador de canais nunca recicla numero, entao ela renasceria noutro.
+    store.pruneShows([]);
+    await runScan({ root, store, probe: fakeProbe().probe });
+
+    expect(store.listShows()[0]?.channelNumber).toBe(42);
+  });
+});
+
+describe('desfazer fusao', () => {
+  test('historico do episodio solto sobrevive ao scan que desfaz a fusao', async () => {
+    // A ordem importa: o scanner itera as series por nome, entao 'Serie' e
+    // processada ANTES de 'Serie Extra'. Com o prune dentro do laco, o prune
+    // do ALVO roda enquanto os episodios da fonte ainda estao pendurados nele,
+    // e o CASCADE de watch_history leva a posicao junto.
+    await makeEpisode('Serie', 'S01E01.mp4');
+    await makeEpisode('Serie Extra', 'S02E01.mp4');
+    await runScan({ root, store, probe: fakeProbe().probe });
+
+    const alvo = store.listShows().find((s) => s.slug === 'serie')!;
+    const fonte = store.listShows().find((s) => s.slug === 'serie-extra')!;
+    store.addShowAlias('serie-extra', 'serie');
+    store.mergeShows(fonte.id, alvo.id);
+
+    const episodio = 'Serie Extra/S02E01.mp4';
+    store.upsertWatchHistory({
+      episodeId: episodio,
+      positionMs: 600_000,
+      durationMs: 1_320_000,
+      updatedAt: 1,
+      watchedAt: null,
+    });
+
+    store.removeShowAlias('serie-extra');
+    const report = await runScan({ root, store, probe: fakeProbe().probe });
+
+    expect(store.listShows().map((s) => s.slug)).toEqual(['serie', 'serie-extra']);
+    // Nenhum arquivo saiu do disco: o prune nao tinha o que remover.
+    expect(report.removedEpisodes).toBe(0);
+    expect(store.getWatchHistory(episodio)?.positionMs).toBe(600_000);
+  });
+});

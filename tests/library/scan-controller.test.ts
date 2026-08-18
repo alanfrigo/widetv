@@ -598,6 +598,7 @@ describe('refreshMetadata', () => {
       source: 'tvmaze',
       fetchedAt: AGORA,
       notFound: false,
+      manual: false,
     });
 
     expect(harness.controller.refreshMetadata(true)).toEqual({ started: true });
@@ -615,6 +616,63 @@ describe('refreshMetadata', () => {
       backdropSource: null,
     });
     expect(harness.enricher.disparos).toBe(1);
+  });
+
+  test('reset poupa a linha manual; a automatica ao lado e apagada normalmente', () => {
+    const curada = harness.store.upsertShow({
+      slug: 'curada',
+      name: 'Curada a mao',
+      absolutePath: '/lib/curada',
+    });
+    const manualRow = {
+      showId: curada.id,
+      posterFile: `${curada.id}.jpg`,
+      backdropFile: `${curada.id}.jpg`,
+      backdropCheckedAt: AGORA,
+      backdropSource: 'tmdb',
+      year: 1989,
+      overview: 'Sinopse escolhida a mao.',
+      source: 'tmdb',
+      fetchedAt: AGORA,
+      notFound: false,
+      manual: true,
+    };
+    harness.store.upsertShowMetadata(manualRow);
+
+    const automatica = harness.store.upsertShow({
+      slug: 'automatica',
+      name: 'Automatica',
+      absolutePath: '/lib/automatica',
+    });
+    harness.store.upsertShowMetadata({
+      showId: automatica.id,
+      posterFile: `${automatica.id}.jpg`,
+      backdropFile: `${automatica.id}.jpg`,
+      backdropCheckedAt: null,
+      backdropSource: null,
+      year: 1985,
+      overview: 'Sinopse errada.',
+      source: 'tvmaze',
+      fetchedAt: AGORA,
+      notFound: false,
+      manual: false,
+    });
+
+    expect(harness.controller.refreshMetadata(true)).toEqual({ started: true });
+
+    // A escolha manual sai intacta, campo a campo: o botao de manutencao nao
+    // pode apagar uma curadoria so porque varreu o acervo inteiro.
+    expect(harness.store.getShowMetadata(curada.id)).toEqual(manualRow);
+
+    // A vizinha automatica continua sendo apagada normalmente.
+    expect(harness.store.getShowMetadata(automatica.id)).toMatchObject({
+      fetchedAt: 0,
+      notFound: true,
+      posterFile: null,
+      backdropFile: null,
+      backdropCheckedAt: null,
+      backdropSource: null,
+    });
   });
 });
 

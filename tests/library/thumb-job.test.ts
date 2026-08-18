@@ -359,6 +359,7 @@ describe('arte 16:9 tirada de quadro', () => {
       source: null,
       fetchedAt: 0,
       notFound: true,
+      manual: false,
     });
   });
 

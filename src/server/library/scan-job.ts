@@ -6,6 +6,7 @@ import type { EpisodeInput, Store } from './index-store';
 import { probeFile } from './probe';
 import type { ProbeResult } from './probe-types';
 import { scanLibrary, type ScannedEpisode } from './scanner';
+import { applyShowOverrides, channelNumberFixes } from './overrides.js';
 
 /**
  * Orquestracao do scan: caminha o acervo, mede o que mudou e grava o indice.
@@ -128,7 +129,11 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
   // Aqui ela morre mesmo no scan que vai falhar dez linhas abaixo.
   const mergedShows = mergeDuplicateShows(store);
 
-  const shows = await scanLibrary(root, { smartGrouping: options.smartGrouping ?? true });
+  // A curadoria entra ANTES da gravacao: alias funde as pastas, o nome manual
+  // substitui o derivado. Depois deste ponto o resto do job nao sabe que
+  // existe painel nenhum - ele so grava a lista de series que recebeu.
+  const scanned = await scanLibrary(root, { smartGrouping: options.smartGrouping ?? true });
+  const shows = applyShowOverrides(scanned, store.listShowAliases(), store.listShowOverrides());
   const total = shows.reduce((sum, show) => sum + show.episodes.length, 0);
 
   const failed: ScanFailure[] = [];
@@ -137,6 +142,14 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
   // nao viram canal novo, mas tambem nao podem ser podadas: prune aqui
   // transformaria uma ACL errada no NAS em canal apagado e renumerado.
   const protectedSlugs: string[] = [];
+  // O prune de episodios fica para DEPOIS do laco. Dentro dele, o episodio que
+  // esta trocando de serie (fusao desfeita) ainda aponta para a serie ANTIGA
+  // quando ela e processada primeiro, e `DELETE ... WHERE show_id = ? AND id
+  // NOT IN keep` o apagaria - levando junto, por CASCADE, o historico de
+  // exibicao, o remux e a variante de audio. Depois do laco todo `upsertEpisodes`
+  // ja rodou, entao todo arquivo que existe no disco esta sob o `show_id`
+  // final e o prune so alcanca o que realmente sumiu.
+  const pendingPrunes: { showId: number; keptEpisodeIds: string[] }[] = [];
   let probed = 0;
   let cached = 0;
   let removedEpisodes = 0;
@@ -199,16 +212,25 @@ export async function runScan(options: ScanJobOptions): Promise<ScanReport> {
 
     const rows = usable.map((item) => toRow(item, row.id));
     store.upsertEpisodes(row.id, rows);
-    removedEpisodes += store.pruneEpisodes(
-      row.id,
-      rows.map((r) => r.id),
-    );
+    pendingPrunes.push({ showId: row.id, keptEpisodeIds: rows.map((r) => r.id) });
     episodes += rows.length;
+  }
+
+  // Segunda fase: agora que todo episodio ja tem o `show_id` definitivo, o que
+  // nao esta na lista de mantidos sumiu mesmo do disco.
+  for (const pending of pendingPrunes) {
+    removedEpisodes += store.pruneEpisodes(pending.showId, pending.keptEpisodeIds);
   }
 
   // Um canal fundido na limpeza de duplicatas e um canal que sumiu do painel:
   // conta como removido, que e o que a pessoa ve.
   const removedShows = mergedShows + store.pruneShows([...keptSlugs, ...protectedSlugs]);
+
+  // Serie apagada e recriada (pasta que sumiu e voltou) renasce num canal
+  // qualquer: o contador nunca recicla numero. Isto devolve o numero escolhido.
+  for (const fix of channelNumberFixes(store.listShows(), store.listShowOverrides())) {
+    store.setChannelNumber(fix.showId, fix.channelNumber);
+  }
 
   return {
     shows: keptSlugs.length,

@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import type { ShowMetadataRow, ShowRow } from '../library/index-store';
 import {
   downloadImage,
+  imageUrlAllowed,
   ImageGoneError,
   lookupShowMetadata,
   type ChainOptions,
   type LookupResult,
+  type ProviderOptions,
+  type ShowCandidate,
 } from './providers';
 
 /**
@@ -137,6 +140,9 @@ export function listShowsMissingMetadata(
   return store.listShows().filter((show) => {
     const row = store.getShowMetadata(show.id);
     if (row === null) return true;
+    // Escolha da pessoa nao volta para a fila em escopo nenhum: a rodada
+    // automatica sobrescreveria a capa que ela foi ao painel corrigir.
+    if (row.manual) return false;
     if (row.notFound) return nowMs - row.fetchedAt >= ttlMs;
     return scope === 'refresh' && (row.backdropCheckedAt === null || row.posterFile === null);
   });
@@ -263,6 +269,7 @@ async function enrichOne(
       store.upsertShowMetadata({
         ...keep,
         backdropCheckedAt: backdropCapable ? now() : keep.backdropCheckedAt,
+        manual: false,
       });
       return;
     }
@@ -280,6 +287,7 @@ async function enrichOne(
       source: null,
       fetchedAt: now(),
       notFound: true,
+      manual: false,
     });
     return;
   }
@@ -368,6 +376,7 @@ async function enrichOne(
     source: keep?.source ?? metadata.source,
     fetchedAt: now(),
     notFound: false,
+    manual: false,
   });
 }
 
@@ -479,4 +488,105 @@ export function createEnricher(
       return last;
     },
   };
+}
+
+export interface ManualMetadataOptions extends ProviderOptions {
+  /** Injetavel para teste. Default: `Date.now`. */
+  now?: () => number;
+  /** Injetavel para teste; por padrao baixa a imagem de verdade. */
+  download?: (url: string) => Promise<Uint8Array>;
+}
+
+/**
+ * Aplica o candidato que a pessoa escolheu no painel.
+ *
+ * Ao contrario de `enrichOne`, aqui a gravacao e SOBRESCRITA declarada: quem
+ * clicou esta dizendo que o que estava ali era o errado. O que a rodada
+ * automatica nunca faz - trocar capa boa por outra - e exatamente o pedido.
+ *
+ * A checagem de host acontece ANTES de qualquer requisicao: a URL veio do
+ * cliente, e o `fetch` sai do servidor.
+ */
+export async function applyManualMetadata(
+  store: MetadataStore,
+  dataDir: string,
+  show: ShowRow,
+  candidate: ShowCandidate,
+  options: ManualMetadataOptions = {},
+): Promise<void> {
+  const now = options.now ?? Date.now;
+  const download = options.download ?? ((url: string) => downloadImage(url, options));
+
+  for (const url of [candidate.posterUrl, candidate.backdropUrl]) {
+    if (url !== null && !imageUrlAllowed(url)) {
+      throw new Error(`host de imagem nao permitido: ${url}`);
+    }
+  }
+
+  const existing = store.getShowMetadata(show.id);
+
+  let posterFile = existing?.posterFile ?? null;
+  if (candidate.posterUrl !== null) {
+    const dir = postersDir(dataDir);
+    await mkdir(dir, { recursive: true });
+    posterFile = await writeArt(dir, posterFileName(show.id), await download(candidate.posterUrl));
+  }
+
+  let backdropFile = existing?.backdropFile ?? null;
+  let backdropSource = existing?.backdropSource ?? null;
+  if (candidate.backdropUrl !== null) {
+    const dir = backdropsDir(dataDir);
+    await mkdir(dir, { recursive: true });
+    backdropFile = await writeArt(
+      dir,
+      backdropFileName(show.id),
+      await download(candidate.backdropUrl),
+    );
+    backdropSource = candidate.source;
+  }
+
+  store.upsertShowMetadata({
+    showId: show.id,
+    posterFile,
+    backdropFile,
+    // Carimbo do relogio da ESCOLHA: `posterUrlOf` publica `?v=<fetchedAt>`, e
+    // e isso que tira a capa velha do cache de um dia do navegador e da TV.
+    backdropCheckedAt: now(),
+    backdropSource,
+    year: candidate.year,
+    overview: candidate.overview,
+    source: candidate.source,
+    fetchedAt: now(),
+    notFound: false,
+    manual: true,
+  });
+}
+
+/**
+ * Desfaz a escolha manual: a serie volta para a fila automatica.
+ *
+ * `notFound: true` com `fetchedAt: 0` e o mesmo par que o reset do painel usa
+ * (`scan-controller.ts`): zero e sempre velho o bastante para vencer o TTL na
+ * hora, entao a rodada seguinte reconsulta a serie de novo, sem esperar dias.
+ * O parametro `now` fica so pela simetria com `applyManualMetadata`; nada
+ * aqui precisa do relogio.
+ */
+export function clearManualMetadata(
+  store: MetadataStore,
+  show: ShowRow,
+  now: () => number = Date.now,
+): void {
+  store.upsertShowMetadata({
+    showId: show.id,
+    posterFile: null,
+    backdropFile: null,
+    backdropCheckedAt: null,
+    backdropSource: null,
+    year: null,
+    overview: null,
+    source: null,
+    fetchedAt: 0,
+    notFound: true,
+    manual: false,
+  });
 }

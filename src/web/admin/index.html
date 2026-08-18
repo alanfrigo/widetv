@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>widetv — acervo</title>
+    <link rel="stylesheet" href="./admin.css" />
+  </head>
+  <body>
+    <header class="adm-top">
+      <h1>Acervo</h1>
+      <input id="adm-filter" type="search" placeholder="filtrar por nome ou pasta" />
+      <span id="adm-count"></span>
+      <button id="adm-fundir" type="button">Fundir selecionados</button>
+      <a href="/">voltar à TV</a>
+    </header>
+    <section id="adm-suggestions" class="adm-suggestions"></section>
+    <main id="adm-list" class="adm-list"></main>
+    <aside id="adm-panel" class="adm-panel" hidden></aside>
+    <p id="adm-error" class="adm-error" hidden></p>
+    <script type="module" src="./admin.ts"></script>
+  </body>
+</html>
