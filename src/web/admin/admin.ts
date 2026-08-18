@@ -39,28 +39,45 @@ function showError(message: string): void {
   error.hidden = false;
 }
 
-/** Aplica o patch e recarrega: o servidor e a verdade, nao o DOM. */
-async function applyPatch(showId: number, patch: AdminShowPatch): Promise<void> {
+/**
+ * Roda uma mutacao, recarrega do servidor e mostra erro se falhar.
+ *
+ * `clearMergeSelection` zera a selecao de fusao (alvo e fontes) depois de a
+ * mutacao dar certo, ANTES de recarregar. So faz sentido nos dois caminhos
+ * que fundem series: a fonte some do acervo, e um id que nao existe mais nao
+ * pode continuar marcado - nem no radio do alvo nem na lista de fontes, ou o
+ * proximo clique em "Fundir selecionados" tentaria fundir ids apagados. So
+ * limpa em sucesso: se a fusao falhar as series continuam la e a selecao
+ * continua valida.
+ */
+async function runMutation(
+  action: () => Promise<unknown>,
+  clearMergeSelection = false,
+): Promise<void> {
   try {
-    await patchShow(showId, patch);
+    await action();
+    if (clearMergeSelection) {
+      state = { ...state, mergeTargetId: null, mergeSourceIds: [] };
+    }
     await load();
   } catch (err) {
     showError(err instanceof Error ? err.message : String(err));
   }
 }
 
+/** Aplica o patch e recarrega: o servidor e a verdade, nao o DOM. */
+async function applyPatch(showId: number, patch: AdminShowPatch): Promise<void> {
+  await runMutation(() => patchShow(showId, patch));
+}
+
 async function mergeSelected(): Promise<void> {
-  if (!canMerge(state) || state.mergeTargetId === null) return;
-  try {
-    await mergeShows(state.mergeTargetId, state.mergeSourceIds);
-    // Limpa a selecao antes de recarregar: as series fundidas somem do
-    // acervo, e um segundo clique com a selecao antiga tentaria fundir ids
-    // que nao existem mais.
-    state = { ...state, mergeTargetId: null, mergeSourceIds: [] };
-    await load();
-  } catch (err) {
-    showError(err instanceof Error ? err.message : String(err));
-  }
+  // Desestrutura antes do `if`: `state` e `let` e pode ser reatribuido por
+  // outro handler antes do closure abaixo rodar, entao o TypeScript nao
+  // mantem o estreitamento de `state.mergeTargetId` dentro dele - so o de uma
+  // constante local sobrevive.
+  const { mergeTargetId, mergeSourceIds } = state;
+  if (mergeTargetId === null || !canMerge(state)) return;
+  await runMutation(() => mergeShows(mergeTargetId, mergeSourceIds), true);
 }
 
 /** Painel lateral de capa/sinopse: busca nos provedores e aplica ao clicar. */
@@ -81,11 +98,7 @@ async function openMetadataPanel(show: AdminShow): Promise<void> {
   resetButton.type = 'button';
   resetButton.textContent = 'Voltar ao automático';
   resetButton.addEventListener('click', () => {
-    void clearMetadata(show.id)
-      .then(load)
-      .catch((err: unknown) => {
-        showError(err instanceof Error ? err.message : String(err));
-      });
+    void runMutation(() => clearMetadata(show.id));
   });
 
   const search = async (): Promise<void> => {
@@ -137,11 +150,7 @@ async function openMetadataPanel(show: AdminShow): Promise<void> {
     unmergeButton.type = 'button';
     unmergeButton.textContent = `Soltar ${slug}`;
     unmergeButton.addEventListener('click', () => {
-      void unmergeSlug(show.id, slug)
-        .then(load)
-        .catch((err: unknown) => {
-          showError(err instanceof Error ? err.message : String(err));
-        });
+      void runMutation(() => unmergeSlug(show.id, slug));
     });
     panel.append(unmergeButton);
   }
@@ -297,11 +306,9 @@ async function loadSuggestions(): Promise<void> {
         mergeSuggestionButton.addEventListener('click', () => {
           const [first, ...sources] = suggestion.showIds;
           if (first === undefined || sources.length === 0) return;
-          void mergeShows(first, sources)
-            .then(load)
-            .catch((err: unknown) => {
-              showError(err instanceof Error ? err.message : String(err));
-            });
+          // Mesma limpeza de `mergeSelected`: esta fusao pode incluir ids que
+          // a pessoa tambem marcou na linha, e eles somem do acervo aqui.
+          void runMutation(() => mergeShows(first, sources), true);
         });
         suggestionRow.append(mergeSuggestionButton);
         return suggestionRow;
