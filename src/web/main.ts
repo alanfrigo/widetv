@@ -1,3 +1,5 @@
+import { Requests } from './requests';
+import { isCancelled, resetRequests } from './request';
 import {
   API,
   type AppSettings,
@@ -292,8 +294,12 @@ interface VodIntent {
 const storage = browserStorage();
 
 let screen: Screen = initialScreen();
+const requests = new Requests();
+let screenGeneration = 0;
+let sessionGeneration = 0;
 let channels: ChannelSummary[] = [];
 let channelsLoaded = false;
+let catalogFetchedAtMs = 0;
 /** Catalogo por numero de canal; uma serie so e buscada uma vez por sessao. */
 const episodeCache = new Map<number, EpisodeRef[]>();
 
@@ -339,6 +345,8 @@ let seasonTab: SeasonTab | null = null;
 
 let tracks: TracksState = initialTracks();
 let vod: VodSession | null = null;
+/** The previous video's clock must not be saved against an episode still preparing. */
+let vodReady = false;
 let vodIntent: VodIntent = { episodeId: null, index: 0, startMs: null };
 // Cache local primeiro: o player abre com a preferencia certa antes de o
 // `GET /api/settings` responder. O servidor corrige assim que chega.
@@ -351,6 +359,7 @@ let settingsUi: SettingsUiState = initialSettings();
 let library: LibraryStatus | null = null;
 let libraryTimer: number | null = null;
 let libraryFails = 0;
+let libraryInFlight = false;
 /** Invalida a resposta de um PATCH antigo quando a seta anda de novo no meio. */
 let settingsPatch = 0;
 
@@ -722,6 +731,7 @@ function activeAudio(): AudioControl {
  * @returns true quando o erro ja foi resolvido trocando de tela.
  */
 function expiredSession(error: unknown): boolean {
+  if (isCancelled(error)) return true;
   if (!(error instanceof UnauthorizedError)) return false;
   go({ type: 'unauthorized' });
   return true;
@@ -758,6 +768,14 @@ function go(event: ScreenEvent): void {
   const after = reduceScreen(before, event);
   if (after === before) return;
 
+  requests.cancel();
+  screenGeneration += 1;
+  if (after.name === 'login') {
+    resetRequests(); sessionGeneration += 1;
+    channelsLoaded = false; channels = []; episodeCache.clear();
+    nowAll = null; resume = []; history.clear(); settings = null; library = null;
+    shelfPainted = null; resumePainted = null; episodesPainted = null; liveCards = [];
+  }
   screen = after;
   onLeave(before, after);
   render();
@@ -865,6 +883,24 @@ function liveOffsetMs(playing: NowPlaying): number {
 }
 
 /** Recado no lugar do catalogo: acervo vazio e falha de rede tem o mesmo espaco. */
+function retryInto(container: HTMLElement, retry: () => void): void {
+  const button = el('button', 'btn btn--retry', 'Tentar novamente');
+  button.type = 'button';
+  button.addEventListener('click', retry);
+  container.append(button);
+}
+
+const homeNotice = el('div', 'connection-status');
+homeNotice.hidden = true;
+homeNotice.setAttribute('role', 'status');
+dom.home.prepend(homeNotice);
+function showHomeNotice(): void {
+  if (screen.name !== 'home') return;
+  homeNotice.textContent = 'Atualização indisponível. Exibindo os últimos dados recebidos.';
+  retryInto(homeNotice, () => { homeNotice.hidden = true; void openHome(screen); });
+  homeNotice.hidden = false;
+}
+
 function homeMessage(title: string, text: string): void {
   clear(dom.railShelf);
   // O DOM foi limpo por fora do desenho normal: sem zerar a marca, a proxima
@@ -873,23 +909,31 @@ function homeMessage(title: string, text: string): void {
   dom.homeEmptyTitle.textContent = title;
   dom.homeEmptyText.textContent = text;
   dom.homeEmpty.hidden = false;
+  retryInto(dom.homeEmptyText, () => void openHome(screen));
 }
 
 async function openHome(before: Screen): Promise<void> {
+  const task = requests.start('openHome');
   // Preferencias uma vez por sessao, sem segurar a grade: e o que faz o
   // primeiro episodio abrir ja com o idioma escolhido na tela de configuracoes.
   if (settings === null) void loadSettings();
 
-  if (!channelsLoaded) {
-    renderSkeleton();
+  if (!channelsLoaded || before.name === 'settings' || Date.now() - catalogFetchedAtMs >= 60_000) {
+    if (!channelsLoaded) renderSkeleton();
     try {
-      channels = await fetchChannels();
+      const next = await fetchChannels(task.signal);
+      if (!task.current()) return;
+      channels = next;
+      if (channelsLoaded) episodeCache.clear();
       channelsLoaded = true;
+      catalogFetchedAtMs = Date.now();
     } catch (error) {
+    if (!task.current()) return;
       if (!expiredSession(error)) {
+        if (channelsLoaded) { showHomeNotice(); return; }
         homeMessage(
           'Não foi possível carregar o catálogo',
-          'O servidor não respondeu. Confira se ele está no ar e recarregue a página.',
+          'O servidor não respondeu. Confira sua conexão e tente novamente.',
         );
       }
       return;
@@ -1150,7 +1194,6 @@ function resumeSignature(entries: readonly ResumeEntry[]): string {
         entry.channelName,
         entry.episode.id,
         resumeArtOf(entry) ?? '',
-        entry.positionMs,
         entry.durationMs,
         episodeHeadline(entry.episode),
       ].join(' '),
@@ -1172,7 +1215,16 @@ function renderResumeRail(): void {
   }
 
   const signature = resumeSignature(resume);
-  if (signature === resumePainted) return;
+  if (signature === resumePainted) {
+    const cards = railItems(dom.railResume);
+    resume.forEach((entry, index) => {
+      const fill = cards[index]?.querySelector<HTMLElement>('.card__bar-fill');
+      const left = cards[index]?.querySelector<HTMLElement>('.card__left');
+      if (fill) fill.style.width = percent(progressRatio(entry));
+      if (left) left.textContent = formatLeftBadge(remainingMs(entry));
+    });
+    return;
+  }
   resumePainted = signature;
   clear(dom.railResume);
 
@@ -1202,7 +1254,7 @@ function renderResumeRail(): void {
     card.append(art, text);
     // A posicao vem da propria entrada, que e o que o card acabou de desenhar.
     card.addEventListener('click', () =>
-      watchEpisodeId(entry.channelNumber, entry.episode.id, resumeStartMs(entry)),
+      watchEpisodeId(entry.channelNumber, entry.episode.id, resumeStartMs(resume.find((current) => current.episode.id === entry.episode.id) ?? entry)),
     );
     bindHomeFocus(card, RAIL_RESUME, index);
     dom.railResume.append(card);
@@ -1244,8 +1296,6 @@ function shelfSignature(visible: readonly ChannelSummary[]): string {
         channel.number,
         channel.name,
         channel.posterUrl ?? '',
-        shelfBadge(channel) ?? '',
-        shelfProgress(channel.number).toFixed(3),
         formatChannelMeta(channel.year, channel.episodeCount),
       ].join(' '),
     )
@@ -1274,7 +1324,33 @@ function renderShelfRail(): void {
   const signature = shelfSignature(visible);
   // Nada do que se ve mudou: nao encostar no DOM preserva o foco, a rolagem da
   // faixa e as capas ja decodificadas.
-  if (signature === shelfPainted) return;
+  if (signature === shelfPainted) {
+    const cards = railItems(dom.railShelf);
+    visible.forEach((channel, index) => {
+      const card = cards[index];
+      if (!card) return;
+      const progress = shelfProgress(channel.number);
+      const art = card.querySelector<HTMLElement>('.card__art')!;
+      let bar = art.querySelector<HTMLElement>('.card__bar');
+      if (!bar && progress > 0) {
+        bar = el('span', 'card__bar');
+        bar.append(el('span', 'card__bar-fill'));
+        art.append(bar);
+      }
+      if (bar) {
+        if (progress <= 0) bar.remove();
+        else bar.querySelector<HTMLElement>('.card__bar-fill')!.style.width = percent(progress);
+      }
+      const label = shelfBadge(channel);
+      let badge = art.querySelector<HTMLElement>('.card__badge');
+      if (label === null) badge?.remove();
+      else {
+        if (!badge) { badge = el('span', 'card__badge'); art.append(badge); }
+        badge.textContent = label;
+      }
+    });
+    return;
+  }
   shelfPainted = signature;
   clear(dom.railShelf);
 
@@ -1350,13 +1426,17 @@ async function refreshNow(): Promise<void> {
   // Sem trava, um servidor lento faria o relogio do catalogo empilhar um
   // request por segundo em cima do anterior.
   if (nowInFlight) return;
+  const task = requests.start('refreshNow');
   nowInFlight = true;
 
   let expired = false;
   try {
-    nowAll = await fetchNowAll();
+    const next = await fetchNowAll(task.signal);
+    if (!task.current()) return;
+    nowAll = next;
   } catch (error) {
-    nowAll = null;
+    if (!task.current()) return;
+    showHomeNotice();
     // Sessao expirada e a saida universal do app. Engolir o 401 aqui deixava a
     // tela pedindo a grade para sempre contra um servidor que so responde 401.
     expired = expiredSession(error);
@@ -1376,10 +1456,14 @@ async function refreshNow(): Promise<void> {
 
 /** Mesma regra da faixa do ao vivo: falhou, a faixa some e o catalogo segue. */
 async function refreshResume(): Promise<void> {
+  const task = requests.start('refreshResume');
   try {
-    resume = await fetchResume();
+    const next = await fetchResume(task.signal);
+    if (!task.current()) return;
+    resume = next;
   } catch (error) {
-    resume = [];
+    if (!task.current()) return;
+    showHomeNotice();
     if (expiredSession(error)) return;
   }
   if (screen.name !== 'home') return;
@@ -1392,6 +1476,7 @@ async function refreshResume(): Promise<void> {
 /* --- 3. tela da serie ----------------------------------------------------- */
 
 async function openSeries(number: number): Promise<void> {
+  const task = requests.start('openSeries');
   seriesCursor = { rail: 0, index: 0 };
   seasonTab = null;
   renderSeries(number);
@@ -1402,15 +1487,20 @@ async function openSeries(number: number): Promise<void> {
     try {
       // 404 aqui e canal que sumiu num rescan: lista vazia diz a verdade do
       // ponto de vista de quem esta olhando.
-      episodeCache.set(number, (await fetchEpisodes(number)) ?? []);
+      const next = await fetchEpisodes(number, task.signal);
+      if (!task.current()) return;
+      episodeCache.set(number, next ?? []);
     } catch (error) {
+    if (!task.current()) return;
       if (!expiredSession(error)) {
         clear(dom.episodeList);
         // O DOM foi limpo por fora do desenho normal: sem zerar a marca, a
         // proxima repintura com a mesma assinatura acharia que nao tem o que
         // fazer e o recado ficaria na tela para sempre.
         episodesPainted = null;
-        dom.episodeList.append(el('li', 'ep__empty', 'Não foi possível carregar os episódios.'));
+        const errorRow = el('li', 'ep__empty', 'Não foi possível carregar os episódios.');
+        retryInto(errorRow, () => void openSeries(number));
+        dom.episodeList.append(errorRow);
       }
       return;
     }
@@ -1522,6 +1612,9 @@ function renderSeriesActions(channel: ChannelSummary, episodes: EpisodeRef[] | n
 }
 
 function renderSeasonTabs(tabs: readonly SeasonTab[]): void {
+  const signature = JSON.stringify([screen.name === 'series' ? screen.channel : null, tabs, seasonTab?.season]);
+  if (dom.seasonTabs.dataset.signature === signature) return;
+  dom.seasonTabs.dataset.signature = signature;
   clear(dom.seasonTabs);
   // Sem temporada nenhuma a barra some e sobra o aside, que continua contando a
   // serie inteira.
@@ -1554,7 +1647,6 @@ function renderSeasonTabs(tabs: readonly SeasonTab[]): void {
  */
 function episodeListSignature(channelNumber: number, shown: readonly EpisodeRef[]): string {
   const rows = shown.map((episode, index) => {
-    const entry = history.get(episode.id);
     return [
       episode.id,
       episode.title,
@@ -1564,8 +1656,6 @@ function episodeListSignature(channelNumber: number, shown: readonly EpisodeRef[
       episode.width ?? '',
       episode.height ?? '',
       episode.audioTracks.length,
-      entry?.positionMs ?? '',
-      entry?.durationMs ?? '',
     ].join(' ');
   });
   return [channelNumber, seasonTab?.season ?? '', ...rows].join('|');
@@ -1598,7 +1688,17 @@ function renderEpisodeList(
   dom.seasonAside.textContent = seasonAside(shown);
 
   const signature = episodeListSignature(channelNumber, shown);
-  if (signature === episodesPainted) return;
+  if (signature === episodesPainted) {
+    const rows = dom.episodeList.querySelectorAll<HTMLElement>('.ep');
+    shown.forEach((episode, index) => {
+      const row = rows[index];
+      const fill = row?.querySelector<HTMLElement>('.ep__bar-fill');
+      const meta = row?.querySelector<HTMLElement>('.ep__meta');
+      if (fill) fill.style.width = percent(progressRatio(history.get(episode.id)));
+      if (meta) { clear(meta); appendEpisodeMeta(meta, episode); }
+    });
+    return;
+  }
   episodesPainted = signature;
   clear(dom.episodeList);
 
@@ -1662,11 +1762,14 @@ function appendEpisodeMeta(meta: HTMLElement, episode: EpisodeRef): void {
 
 /** Recarrega o historico do servidor e repinta o que estiver na tela. */
 async function refreshHistory(): Promise<void> {
+  const task = requests.start('refreshHistory');
   try {
-    const entries = await fetchHistory();
+    const entries = await fetchHistory(task.signal);
+    if (!task.current()) return;
     history = new Map(entries.map((entry) => [entry.episodeId, entry]));
     if (screen.name === 'series') renderSeries(screen.channel);
   } catch {
+    if (!task.current()) return;
     // Historico e conforto, nao funcao vital: sem ele o catalogo segue igual.
   }
 }
@@ -1690,8 +1793,13 @@ function adoptSettings(next: AppSettings): void {
 
 /** Uma vez por sessao: e o que faz o player abrir com o idioma escolhido. */
 async function loadSettings(): Promise<void> {
+  const generation = sessionGeneration;
+  const revision = settingsPatch;
   try {
-    adoptSettings(await fetchSettings());
+    const next = await fetchSettings();
+    if (revision !== settingsPatch) return;
+    if (generation !== sessionGeneration) return;
+    adoptSettings(next);
   } catch {
     // Rota fora do ar: valem as preferencias que ficaram no cache local.
   }
@@ -1709,14 +1817,17 @@ function settingsRowNodes(): HTMLElement[] {
 }
 
 async function openSettings(): Promise<void> {
+  const task = requests.start('openSettings');
   settingsUi = initialSettings();
   renderSettings();
 
   try {
-    const [next, status] = await Promise.all([fetchSettings(), fetchLibraryStatus()]);
+    const [next, status] = await Promise.all([fetchSettings(task.signal), fetchLibraryStatus(task.signal)]);
+    if (!task.current()) return;
     adoptSettings(next);
     library = status;
   } catch (error) {
+    if (!task.current()) return;
     if (expiredSession(error)) return;
     settingsUi = { ...settingsUi, message: 'Não foi possível falar com o servidor.' };
     renderSettings();
@@ -1919,6 +2030,7 @@ function runSettingsCommand(command: Exclude<SettingsCommand, null>): void {
  * a escolha que nao foi gravada mente para quem esta olhando.
  */
 async function savePreference(patch: SettingsPatch): Promise<void> {
+  const generation = sessionGeneration;
   const before = settings;
   if (before === null) return;
 
@@ -1928,11 +2040,13 @@ async function savePreference(patch: SettingsPatch): Promise<void> {
 
   try {
     const next = await patchSettings(patch);
+    if (generation !== sessionGeneration) return;
     // Resposta de um PATCH que outra seta ja atropelou: aplicar agora devolveria
     // um valor velho para a tela.
     if (mine !== settingsPatch) return;
     adoptSettings(next);
   } catch (error) {
+    if (generation !== sessionGeneration) return;
     if (expiredSession(error)) return;
     if (mine !== settingsPatch) return;
     adoptSettings(before);
@@ -1948,8 +2062,10 @@ async function savePreference(patch: SettingsPatch): Promise<void> {
  * so a memoria dela no proximo aparelho.
  */
 function rememberPreference(patch: SettingsPatch): void {
+  const generation = sessionGeneration;
   void patchSettings(patch)
     .then((next) => {
+      if (generation !== sessionGeneration) return;
       settings = next;
     })
     .catch(() => undefined);
@@ -1960,14 +2076,17 @@ function rememberPreference(patch: SettingsPatch): void {
  * falha: e "ja esta rodando", e a barra de progresso vai mostrar o resto.
  */
 async function runLibraryTask(request: Promise<TaskAccepted>, started: string): Promise<void> {
+  const generation = screenGeneration;
   try {
     const result = await request;
+    if (generation !== screenGeneration) return;
     settingsUi = {
       ...settingsUi,
       busy: null,
       message: result.started ? started : (result.reason ?? 'Já está em andamento.'),
     };
   } catch (error) {
+    if (generation !== screenGeneration) return;
     if (expiredSession(error)) return;
     settingsUi = { ...settingsUi, busy: null, message: 'Não foi possível iniciar a tarefa.' };
   }
@@ -1978,9 +2097,13 @@ async function runLibraryTask(request: Promise<TaskAccepted>, started: string): 
 }
 
 async function refreshLibrary(): Promise<void> {
+  const task = requests.start('refreshLibrary');
   try {
-    library = await fetchLibraryStatus();
+    const next = await fetchLibraryStatus(task.signal);
+    if (!task.current()) return;
+    library = next;
   } catch {
+    if (!task.current()) return;
     return;
   }
   if (screen.name !== 'settings') return;
@@ -2005,7 +2128,7 @@ function libraryBusy(): boolean {
  * acaba, o proximo estado ja nao pede intervalo nenhum.
  */
 function pollLibraryWhileBusy(): void {
-  if (screen.name !== 'settings' || !libraryBusy()) {
+  if (document.hidden || screen.name !== 'settings' || !libraryBusy()) {
     stopLibraryPolling();
     return;
   }
@@ -2020,15 +2143,21 @@ function stopLibraryPolling(): void {
 }
 
 async function pollLibrary(): Promise<void> {
+  if (libraryInFlight || document.hidden) return;
+  const task = requests.start('pollLibrary');
   if (screen.name !== 'settings') {
     stopLibraryPolling();
     return;
   }
 
   try {
-    library = await fetchLibraryStatus();
+    libraryInFlight = true;
+    const next = await fetchLibraryStatus(task.signal);
+    if (!task.current()) return;
+    library = next;
     libraryFails = 0;
   } catch (error) {
+    if (!task.current()) return;
     if (expiredSession(error)) return;
     // Uma falha isolada nao pode apagar o progresso da tela; teimar para sempre
     // contra um servidor fora do ar tambem nao.
@@ -2077,12 +2206,14 @@ function watchFromStart(channelNumber: number): void {
 }
 
 async function openPlayer(target: Extract<Screen, { name: 'player' }>): Promise<void> {
+  const task = requests.start('openPlayer');
   if (target.source === 'live') {
     endVod();
     // Zap: o <track> pendurado ainda e o do canal anterior e recarregaria junto
     // com o proximo `load()`.
     clearSubtitles(currentVideo());
     const ok = await live.tune(target.channel);
+    if (!task.current()) return;
     if (!ok) notice('Sem sinal');
     return;
   }
@@ -2093,9 +2224,11 @@ async function openPlayer(target: Extract<Screen, { name: 'player' }>): Promise<
   let episodes = episodesOf(target.channel);
   if (episodes === null) {
     try {
-      episodes = (await fetchEpisodes(target.channel)) ?? [];
+      episodes = (await fetchEpisodes(target.channel, task.signal)) ?? [];
+      if (!task.current()) return;
       episodeCache.set(target.channel, episodes);
     } catch (error) {
+    if (!task.current()) return;
       if (!expiredSession(error)) notice('Sem episódios');
       return;
     }
@@ -2166,6 +2299,11 @@ async function playVod(
   // sozinha quando o servidor terminar - abrir um episodio nunca espera ffmpeg.
   const audioIndex = options?.audioIndex !== undefined ? options.audioIndex : null;
 
+  reportProgress();
+  vodReady = false;
+  session.video.pause();
+  session.player.cancelPending();
+  variantPoll += 1;
   vod = { ...session, index, audioIndex };
   // Antes do `play`: o <track> antigo aponta para a legenda do episodio
   // anterior e recarregaria com o `load()` do proximo.
@@ -2184,7 +2322,10 @@ async function playVod(
   // em vez de entregar o <video> a um erro generico de "Sem sinal".
   if (!(await waitStreamReady(episode.id, audioIndex))) return;
 
+  const playingSession = vod;
   const ok = await session.player.play(episode.id, { startMs, audioIndex });
+  if (vod !== playingSession) return;
+  vodReady = true;
   if (!ok) {
     // Autoplay bloqueado e formato inreproduzivel chegam os dois aqui como
     // `false`; so o segundo tem explicacao propria.
@@ -2227,20 +2368,25 @@ const VARIANT_POLL_LIMIT = 100;
  *          de verdade ou prazo esgotado); o proprio aviso ja foi dado aqui.
  */
 async function waitStreamReady(episodeId: string, audioIndex: number | null): Promise<boolean> {
-  let state = await probeStream(episodeId, audioIndex);
+  const myWait = ++streamWait;
+  const request = requests.start('streamProbe');
+  const session = vod;
+  const valid = () => request.current() && streamWait === myWait && vod === session && screen.name === 'player';
+  let state = await probeStream(episodeId, audioIndex, request.signal);
+  if (!valid()) return false;
   // 'error' nao desiste: um HEAD bloqueado nao prova nada, e o play de verdade
   // e quem sabe mostrar 'Sem sinal'.
   if (state !== 'preparing') return true;
 
-  const myWait = ++streamWait;
   notice('Preparando o episódio… começa sozinho', { sticky: true });
   for (let attempt = 0; attempt < VARIANT_POLL_LIMIT; attempt += 1) {
     await sleep(VARIANT_POLL_MS);
-    if (streamWait !== myWait) return false;
+    if (!valid()) return false;
     const current = vod;
     if (current === null || current.episodes[current.index]?.id !== episodeId) return false;
 
-    state = await probeStream(episodeId, audioIndex);
+    state = await probeStream(episodeId, audioIndex, request.signal);
+    if (!valid()) return false;
     if (state === 'ready') {
       notice(null);
       return true;
@@ -2272,6 +2418,7 @@ async function switchVodAudio(trackIndex: number, options: { announce: boolean }
   if (target === session.audioIndex) return;
 
   const myPoll = ++variantPoll;
+  const request = requests.start('audioProbe');
 
   const replay = async (): Promise<void> => {
     // Mesma trava de geracao do laco abaixo (e a mesma ideia de `settingsPatch`):
@@ -2292,7 +2439,8 @@ async function switchVodAudio(trackIndex: number, options: { announce: boolean }
     return;
   }
 
-  let state = await probeStream(episode.id, target);
+  let state = await probeStream(episode.id, target, request.signal);
+  if (!request.current() || variantPoll !== myPoll || vod !== session) return;
   if (state === 'ready') {
     await replay();
     return;
@@ -2309,7 +2457,8 @@ async function switchVodAudio(trackIndex: number, options: { announce: boolean }
     if (variantPoll !== myPoll) return;
     if (vod === null || vod.episodes[vod.index]?.id !== episode.id) return;
 
-    state = await probeStream(episode.id, target);
+    state = await probeStream(episode.id, target, request.signal);
+    if (!request.current() || variantPoll !== myPoll || vod !== session) return;
     if (state === 'ready') {
       if (options.announce) notice(null);
       await replay();
@@ -2333,6 +2482,7 @@ const FINISHED_RATIO = 0.95;
 
 /** Grava a posicao atual do catalogo no servidor e no espelho local. */
 function reportProgress(): void {
+  if (!vodReady) return;
   const session = vod;
   if (session === null) return;
   const episode = session.episodes[session.index];
@@ -2376,6 +2526,7 @@ function stopProgressReporter(): void {
 }
 
 function onVodEnded(): void {
+  if (!vodReady) return;
   const session = vod;
   if (session === null) return;
 
@@ -2405,6 +2556,7 @@ function endVod(): void {
   clearSubtitles(vod.video);
   vod.player.stop();
   vod = null;
+  vodReady = false;
 
   // Volume mexido no catalogo continua valendo no ao vivo.
   live.setVolume(level);
@@ -2546,7 +2698,7 @@ function renderVolume(): void {
 }
 
 function seekBy(deltaMs: number): void {
-  if (!isVodScreen()) return;
+  if (!isVodScreen() || !vodReady) return;
   const video = currentVideo();
   const duration = Number.isFinite(video.duration) ? video.duration : 0;
   const wanted = video.currentTime + deltaMs / 1000;
@@ -2555,6 +2707,7 @@ function seekBy(deltaMs: number): void {
 }
 
 function togglePause(): void {
+  if (isVodScreen() && !vodReady) return;
   // Pausa nao existe no ao vivo: a grade continua andando no servidor e o video
   // voltaria com um buraco que o loop de sincronia corrigiria com um pulo.
   if (!isVodScreen()) return;
@@ -3103,6 +3256,9 @@ dom.openSettings.addEventListener('click', () => go({ type: 'openSettings' }));
 
 dom.logout.addEventListener('click', () => {
   void (async () => {
+    resetRequests();
+    sessionGeneration += 1;
+    requests.cancel();
     await logout();
     channelsLoaded = false;
     channels = [];
@@ -3144,13 +3300,13 @@ dom.loginForm.addEventListener('submit', (event) => {
 /* --- relogios ------------------------------------------------------------- */
 
 window.setInterval(() => {
-  if (screen.name !== 'player' || dom.overlay.hidden) return;
+  if (document.hidden || screen.name !== 'player' || dom.overlay.hidden) return;
   renderScrub();
   if (screen.source === 'live') renderUpNext(true);
 }, TICK_MS);
 
 window.setInterval(() => {
-  if (screen.name !== 'home') return;
+  if (document.hidden || screen.name !== 'home') return;
   tickLiveRail();
   // A projecao local nao sabe de virada de episodio: de tempos em tempos a
   // grade inteira vem de novo do servidor, que e quem manda nela.
@@ -3165,7 +3321,17 @@ window.setInterval(() => {
 // Aba fechada ou minimizada no meio do episodio: a ultima chance de gravar a
 // posicao. `saveProgress` usa keepalive, entao o request sobrevive a pagina.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') reportProgress();
+  if (document.hidden) {
+    reportProgress();
+    stopLibraryPolling();
+    if (screen.name !== 'player') requests.cancel();
+  } else if (screen.name === 'home') {
+    void openHome(screen);
+  } else if (screen.name === 'settings') {
+    void openSettings();
+  } else if (screen.name === 'series') {
+    void openSeries(screen.channel);
+  }
 });
 
 /* --- partida -------------------------------------------------------------- */

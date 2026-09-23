@@ -1,3 +1,4 @@
+import { controlRequest, sessionSignal } from './request';
 import {
   API,
   type AppSettings,
@@ -25,15 +26,15 @@ export class UnauthorizedError extends Error {
   }
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url, { credentials: 'same-origin' });
+async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const response = await controlRequest(url, { credentials: 'same-origin', ...(signal ? { signal } : {}) });
   if (response.status === 401) throw new UnauthorizedError();
   if (!response.ok) throw new Error(`${url} respondeu ${response.status}`);
   return (await response.json()) as T;
 }
 
-export async function fetchChannels(): Promise<ChannelSummary[]> {
-  return getJson<ChannelSummary[]>(API.channels);
+export async function fetchChannels(signal?: AbortSignal): Promise<ChannelSummary[]> {
+  return getJson<ChannelSummary[]>(API.channels, signal);
 }
 
 /**
@@ -43,9 +44,9 @@ export async function fetchChannels(): Promise<ChannelSummary[]> {
  *          `UnauthorizedError`, como em `fetchNow`, para o chamador reabrir a
  *          tela de senha em vez de mostrar catalogo vazio.
  */
-export async function fetchEpisodes(channelNumber: number): Promise<EpisodeRef[] | null> {
+export async function fetchEpisodes(channelNumber: number, signal?: AbortSignal): Promise<EpisodeRef[] | null> {
   const url = API.episodes(channelNumber);
-  const response = await fetch(url, { credentials: 'same-origin' });
+  const response = await controlRequest(url, { credentials: 'same-origin', ...(signal ? { signal } : {}) });
 
   if (response.status === 401) throw new UnauthorizedError();
   if (response.status === 404) return null;
@@ -64,9 +65,9 @@ export interface TimedNow {
  * Busca o estado do canal medindo o relogio local dos dois lados do request.
  * Os dois carimbos alimentam `estimateSkewMs`.
  */
-export async function fetchNow(channelNumber: number): Promise<TimedNow | null> {
+export async function fetchNow(channelNumber: number, signal?: AbortSignal): Promise<TimedNow | null> {
   const sentAtMs = Date.now();
-  const response = await fetch(API.now(channelNumber), { credentials: 'same-origin' });
+  const response = await controlRequest(API.now(channelNumber), { credentials: 'same-origin', ...(signal ? { signal } : {}) });
   const receivedAtMs = Date.now();
 
   if (response.status === 401) throw new UnauthorizedError();
@@ -92,9 +93,9 @@ export interface TimedNowAll {
  * Lanca quando a rota nao existe ou falha - a faixa e opcional, e quem chama
  * decide esconde-la em vez de derrubar o catalogo.
  */
-export async function fetchNowAll(): Promise<TimedNowAll> {
+export async function fetchNowAll(signal?: AbortSignal): Promise<TimedNowAll> {
   const sentAtMs = Date.now();
-  const response = await fetch(API.nowAll, { credentials: 'same-origin' });
+  const response = await controlRequest(API.nowAll, { credentials: 'same-origin', ...(signal ? { signal } : {}) });
   const receivedAtMs = Date.now();
 
   if (response.status === 401) throw new UnauthorizedError();
@@ -104,8 +105,8 @@ export async function fetchNowAll(): Promise<TimedNowAll> {
 }
 
 /** Faixa "Continuar assistindo", ja resolvida pelo servidor. */
-export async function fetchResume(): Promise<ResumeEntry[]> {
-  return getJson<ResumeEntry[]>(API.resume);
+export async function fetchResume(signal?: AbortSignal): Promise<ResumeEntry[]> {
+  return getJson<ResumeEntry[]>(API.resume, signal);
 }
 
 /**
@@ -136,10 +137,12 @@ export type StreamProbe = 'ready' | 'preparing' | 'error';
 export async function probeStream(
   episodeId: string,
   audioIndex?: number | null,
+  signal?: AbortSignal,
 ): Promise<StreamProbe> {
   try {
-    const response = await fetch(streamUrl(episodeId, audioIndex ?? null), {
+    const response = await controlRequest(streamUrl(episodeId, audioIndex ?? null), {
       method: 'HEAD',
+      ...(signal ? { signal } : {}),
       credentials: 'same-origin',
     });
     if (response.status === 200) return 'ready';
@@ -150,8 +153,8 @@ export async function probeStream(
   }
 }
 
-export async function fetchHistory(): Promise<WatchProgress[]> {
-  return getJson<WatchProgress[]>(API.history);
+export async function fetchHistory(signal?: AbortSignal): Promise<WatchProgress[]> {
+  return getJson<WatchProgress[]>(API.history, signal);
 }
 
 /**
@@ -171,8 +174,8 @@ export function saveProgress(episodeId: string, positionMs: number, durationMs: 
 
 /* --- configuracoes e manutencao ------------------------------------------- */
 
-export async function fetchSettings(): Promise<AppSettings> {
-  return getJson<AppSettings>(API.settings);
+export async function fetchSettings(signal?: AbortSignal): Promise<AppSettings> {
+  return getJson<AppSettings>(API.settings, signal);
 }
 
 /**
@@ -180,8 +183,17 @@ export async function fetchSettings(): Promise<AppSettings> {
  * O servidor e quem responde o valor final: ele normaliza codigo de idioma e
  * horario, e a tela mostra o que ficou gravado, nao o que foi pedido.
  */
-export async function patchSettings(patch: SettingsPatch): Promise<AppSettings> {
-  const response = await fetch(API.settings, {
+let preferenceWrites: Promise<unknown> = Promise.resolve();
+export function patchSettings(patch: SettingsPatch): Promise<AppSettings> {
+  const signal = sessionSignal();
+  const request = preferenceWrites.catch(() => undefined).then(() => writeSettings(patch, signal));
+  preferenceWrites = request;
+  return request;
+}
+
+async function writeSettings(patch: SettingsPatch, signal: AbortSignal): Promise<AppSettings> {
+  const response = await controlRequest(API.settings, {
+    signal,
     method: 'PATCH',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
@@ -193,8 +205,8 @@ export async function patchSettings(patch: SettingsPatch): Promise<AppSettings> 
   return (await response.json()) as AppSettings;
 }
 
-export async function fetchLibraryStatus(): Promise<LibraryStatus> {
-  return getJson<LibraryStatus>(API.libraryStatus);
+export async function fetchLibraryStatus(signal?: AbortSignal): Promise<LibraryStatus> {
+  return getJson<LibraryStatus>(API.libraryStatus, signal);
 }
 
 /**
@@ -205,7 +217,7 @@ export async function fetchLibraryStatus(): Promise<LibraryStatus> {
  * quebrou quando na verdade o scan que o usuario quer ja esta em andamento.
  */
 async function startTask(url: string, body: unknown): Promise<TaskAccepted> {
-  const response = await fetch(url, {
+  const response = await controlRequest(url, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
@@ -236,7 +248,7 @@ export async function startThumbs(reset: boolean): Promise<TaskAccepted> {
 }
 
 export async function login(password: string): Promise<boolean> {
-  const response = await fetch(API.login, {
+  const response = await controlRequest(API.login, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     credentials: 'same-origin',
@@ -246,7 +258,7 @@ export async function login(password: string): Promise<boolean> {
 }
 
 export async function hasSession(): Promise<boolean> {
-  const response = await fetch(API.session, { credentials: 'same-origin' });
+  const response = await controlRequest(API.session, { credentials: 'same-origin' });
   return response.ok;
 }
 
@@ -256,7 +268,7 @@ export async function hasSession(): Promise<boolean> {
  */
 export async function logout(): Promise<void> {
   try {
-    await fetch(API.logout, { method: 'POST', credentials: 'same-origin' });
+    await controlRequest(API.logout, { method: 'POST', credentials: 'same-origin' });
   } catch {
     // Rede caida no logout: a tela de senha aparece do mesmo jeito.
   }

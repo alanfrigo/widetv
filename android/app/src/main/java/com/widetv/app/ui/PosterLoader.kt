@@ -4,6 +4,14 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.LruCache
 import com.widetv.app.net.ApiClient
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -17,7 +25,7 @@ import java.io.IOException
  * de series, a imagem vem do proprio servidor (atras do guard de sessao, pelo
  * MESMO OkHttp da API — um cliente novo nasceria sem cookie) e o unico requisito
  * de verdade e nao decodificar 1280x720 para caber num card de 230dp. Um cache
- * LRU e um `inSampleSize` resolvem isso em trinta linhas; uma dependencia nova
+ * LRU e um `inSampleSize` controlam a memoria; uma dependencia nova
  * custaria mais do que resolve.
  *
  * O cancelamento e de quem chama: o ViewHolder guarda o `Job` e o cancela quando
@@ -54,8 +62,8 @@ object PosterLoader {
    * @param targetHeightPx 0 quando so a largura importa — e o caso da capa 2:3,
    *   cuja altura sai da propria proporcao.
    */
-  fun cached(path: String, targetWidthPx: Int, targetHeightPx: Int = 0): Bitmap? =
-    cache.get(key(path, targetWidthPx, targetHeightPx))
+  fun cached(api: ApiClient, path: String, targetWidthPx: Int, targetHeightPx: Int = 0): Bitmap? =
+    cache.get(key(api.imageUrl(path), targetWidthPx, targetHeightPx))
 
   /**
    * @param path rota relativa da imagem, como vem de `ChannelSummary.posterUrl`
@@ -71,19 +79,49 @@ object PosterLoader {
     targetWidthPx: Int,
     targetHeightPx: Int = 0,
   ): Bitmap? {
-    cached(path, targetWidthPx, targetHeightPx)?.let { return it }
-
-    return withContext(Dispatchers.IO) {
-      val bytes = try {
-        api.bytes(path)
-      } catch (error: IOException) {
-        null
-      } ?: return@withContext null
-
-      val bitmap = decode(bytes, targetWidthPx, targetHeightPx) ?: return@withContext null
-      cache.put(key(path, targetWidthPx, targetHeightPx), bitmap)
-      bitmap
+    val url = api.imageUrl(path)
+    val cacheKey = key(url, targetWidthPx, targetHeightPx)
+    cache.get(cacheKey)?.let { return it }
+    val flight = synchronized(pending) {
+      pending.getOrPut(cacheKey) {
+        Flight(scope.async(start = CoroutineStart.LAZY) {
+          permits.withPermit {
+            cache.get(cacheKey) ?: run {
+              val bytes = try { api.bytes(path, url) } catch (error: IOException) { null }
+                ?: return@withPermit null
+              val bitmap = decode(bytes, targetWidthPx, targetHeightPx) ?: return@withPermit null
+              synchronized(pending) {
+                coroutineContext.ensureActive()
+                cache.put(cacheKey, bitmap)
+              }
+              bitmap
+            }
+          }
+        })
+      }.also { it.readers++ }
     }
+    try {
+      return flight.job.await()
+    } finally {
+      synchronized(pending) {
+        flight.readers--
+        if (flight.readers == 0) {
+          if (pending[cacheKey] === flight) pending.remove(cacheKey)
+          flight.job.cancel()
+        }
+      }
+    }
+  }
+
+  private class Flight(val job: Deferred<Bitmap?>, var readers: Int = 0)
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private val permits = Semaphore(4)
+  private val pending = mutableMapOf<String, Flight>()
+
+  fun clear() = synchronized(pending) {
+    pending.values.forEach { it.job.cancel() }
+    pending.clear()
+    cache.evictAll()
   }
 
   /**

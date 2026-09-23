@@ -18,9 +18,10 @@ export interface ReadyableMedia {
   /** `HTMLMediaElement.HAVE_METADATA` e 1. */
   readyState: number;
   addEventListener(type: string, listener: () => void): void;
+  removeEventListener?(type: string, listener: () => void): void;
 }
 
-export type ReadyOutcome = 'ready' | 'error' | 'timeout';
+export type ReadyOutcome = 'ready' | 'error' | 'timeout' | 'cancelled';
 
 /**
  * Espera a metadata do video, com prazo.
@@ -30,7 +31,8 @@ export type ReadyOutcome = 'ready' | 'error' | 'timeout';
  * espera por ele trava o canal para sempre — sem erro, sem tela e sem
  * recuperacao. Esta funcao nunca rejeita e nunca fica pendurada.
  */
-export function awaitMediaReady(media: ReadyableMedia, timeoutMs: number): Promise<ReadyOutcome> {
+export function awaitMediaReady(media: ReadyableMedia, timeoutMs: number, signal?: AbortSignal): Promise<ReadyOutcome> {
+  if (signal?.aborted) return Promise.resolve('cancelled');
   if (media.readyState >= 1) return Promise.resolve('ready');
 
   return new Promise<ReadyOutcome>((resolve) => {
@@ -39,12 +41,19 @@ export function awaitMediaReady(media: ReadyableMedia, timeoutMs: number): Promi
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      media.removeEventListener?.('loadedmetadata', ready);
+      media.removeEventListener?.('error', error);
+      signal?.removeEventListener('abort', cancel);
       resolve(outcome);
     };
 
     const timer = setTimeout(() => finish('timeout'), timeoutMs);
-    media.addEventListener('loadedmetadata', () => finish('ready'));
-    media.addEventListener('error', () => finish('error'));
+    const ready = () => finish('ready');
+    const error = () => finish('error');
+    const cancel = () => finish('cancelled');
+    media.addEventListener('loadedmetadata', ready);
+    media.addEventListener('error', error);
+    signal?.addEventListener('abort', cancel, { once: true });
   });
 }
 
@@ -64,12 +73,14 @@ export type PlaybackOutcome =
 export async function startPlayback(
   media: PlayableMedia,
   wantMuted: boolean,
+  signal?: AbortSignal,
 ): Promise<PlaybackOutcome> {
+  if (signal?.aborted) return 'blocked';
   try {
     await media.play();
     return 'playing';
   } catch {
-    if (wantMuted) return 'blocked';
+    if (signal?.aborted || wantMuted) return 'blocked';
   }
 
   media.muted = true;

@@ -25,7 +25,10 @@
     "hash-password": "tsx src/server/cli/hash-password.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:media": "node scripts/test-media.mjs",
+    "test:perf": "WIDETV_PERF=1 node scripts/test-media.mjs performance.spec.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -34,6 +37,7 @@
     "fastify": "^5.2.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.13.5",
     "concurrently": "^9.1.2",

@@ -1,6 +1,6 @@
 package com.widetv.app.ui
 
-import android.annotation.SuppressLint
+import androidx.recyclerview.widget.DiffUtil
 import android.graphics.Bitmap
 import android.view.LayoutInflater
 import android.view.View
@@ -36,15 +36,23 @@ class EpisodeAdapter(
   private val onPlay: (Int) -> Unit,
 ) : RecyclerView.Adapter<EpisodeAdapter.Holder>() {
 
-  @set:SuppressLint("NotifyDataSetChanged")
   var items: List<EpisodeItem> = emptyList()
     set(value) {
+      if (field == value) return
+      val previous = field
+      val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+        override fun getOldListSize() = previous.size
+        override fun getNewListSize() = value.size
+        override fun areItemsTheSame(old: Int, new: Int) = previous[old].index == value[new].index
+        override fun areContentsTheSame(old: Int, new: Int) = previous[old] == value[new]
+      })
       field = value
-      notifyDataSetChanged()
+      diff.dispatchUpdatesTo(this)
     }
 
   class Holder(val views: ItemEpisodeBinding) : RecyclerView.ViewHolder(views.root) {
     var job: Job? = null
+    var binding: Any? = null
   }
 
   override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
@@ -65,6 +73,7 @@ class EpisodeAdapter(
 
   override fun onBindViewHolder(holder: Holder, position: Int) {
     val item = items[position]
+    holder.binding = item
     val views = holder.views
 
     views.episodeN.text = item.number
@@ -89,7 +98,7 @@ class EpisodeAdapter(
     // pedir a altura da view aqui daria 0 na primeira passada do layout.
     val height = width * 9 / 16
 
-    val ready = if (path == null) null else PosterLoader.cached(path, width, height)
+    val ready = if (path == null) null else PosterLoader.cached(api, path, width, height)
     showThumb(holder, ready)
     if (path == null || ready != null) return
 
@@ -98,11 +107,12 @@ class EpisodeAdapter(
     // null e nao ha nada a dizer: 404 aqui e "ainda nao gerei", nao erro.
     holder.job = scope.launch {
       val bitmap = PosterLoader.load(api, path, width, height)
-      if (holder.bindingAdapterPosition == position) showThumb(holder, bitmap)
+      if (holder.binding === item) showThumb(holder, bitmap)
     }
   }
 
   override fun onViewRecycled(holder: Holder) {
+    holder.binding = null
     holder.job?.cancel()
     holder.job = null
     showThumb(holder, null)

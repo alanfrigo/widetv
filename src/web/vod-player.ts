@@ -29,6 +29,7 @@ export interface VodPlayerEvents {
 export class VodPlayer {
   /** false depois do `stop()`: listener que sobrar nao mexe mais em nada. */
   private active = false;
+  private loading = new AbortController();
   private volume = 1;
   private muted = false;
   /** Mudo imposto pela politica de autoplay, nao escolhido pelo usuario. */
@@ -61,6 +62,8 @@ export class VodPlayer {
     episodeId: string,
     options?: { startMs?: number; audioIndex?: number | null },
   ): Promise<boolean> {
+    this.loading.abort();
+    const loading = this.loading = new AbortController();
     try {
       this.active = true;
       this.video.src = streamUrl(episodeId, options?.audioIndex ?? null);
@@ -70,26 +73,31 @@ export class VodPlayer {
       this.video.playbackRate = 1;
       this.applyAudio();
 
-      const ready = await awaitMediaReady(this.video, METADATA_TIMEOUT_MS);
+      const ready = await awaitMediaReady(this.video, METADATA_TIMEOUT_MS, loading.signal);
+      if (loading.signal.aborted) return false;
       if (ready === 'ready') {
         this.video.currentTime = Math.max(0, options?.startMs ?? 0) / 1000;
       } else {
         this.events.onStalled?.(ready);
       }
 
-      const outcome = await startPlayback(this.video, this.muted);
+      const outcome = await startPlayback(this.video, this.muted, loading.signal);
+      if (loading.signal.aborted) return false;
       this.policyMuted = outcome === 'playing-muted';
       // `startPlayback` mexe em `video.muted` direto; realinha com o estado real.
       this.applyAudio();
       return outcome !== 'blocked';
     } catch (error) {
-      this.events.onError?.(error);
+      if (!loading.signal.aborted) this.events.onError?.(error);
       return false;
     }
   }
 
   /** Encerra a sessao e devolve o elemento limpo para o ao vivo reassumir. */
+  cancelPending(): void { this.loading.abort(); }
+
   stop(): void {
+    this.loading.abort();
     this.active = false;
     this.video.removeEventListener('ended', this.handleEnded);
     this.video.pause();

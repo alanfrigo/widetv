@@ -1,6 +1,6 @@
 package com.widetv.app.ui
 
-import android.annotation.SuppressLint
+import androidx.recyclerview.widget.DiffUtil
 import android.graphics.Bitmap
 import android.view.LayoutInflater
 import android.view.View
@@ -31,16 +31,19 @@ class PosterAdapter(
   private val onOpen: (TallCard) -> Unit,
 ) : RecyclerView.Adapter<PosterAdapter.Holder>() {
 
-  /**
-   * Lista inteira de uma vez: o acervo chega pronto do servidor e so muda em
-   * bloco (login, rescan, busca). Diff aqui seria maquinario sem nada para
-   * diferenciar.
-   */
-  @set:SuppressLint("NotifyDataSetChanged")
+  /** Atualiza apenas os cards alterados, preservando o foco e as imagens. */
   var items: List<TallCard> = emptyList()
     set(value) {
+      if (field == value) return
+      val previous = field
+      val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+        override fun getOldListSize() = previous.size
+        override fun getNewListSize() = value.size
+        override fun areItemsTheSame(old: Int, new: Int) = previous[old].channelNumber == value[new].channelNumber
+        override fun areContentsTheSame(old: Int, new: Int) = previous[old] == value[new]
+      })
       field = value
-      notifyDataSetChanged()
+      diff.dispatchUpdatesTo(this)
     }
 
   private var focusUpId: Int = View.NO_ID
@@ -56,6 +59,7 @@ class PosterAdapter(
 
   class Holder(val views: ItemCardTallBinding) : RecyclerView.ViewHolder(views.root) {
     var job: Job? = null
+    var binding: Any? = null
   }
 
   override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
@@ -82,6 +86,7 @@ class PosterAdapter(
 
   override fun onBindViewHolder(holder: Holder, position: Int) {
     val card = items[position]
+    holder.binding = card
     val views = holder.views
 
     views.cardName.text = card.name
@@ -101,7 +106,7 @@ class PosterAdapter(
     val path = card.posterUrl
     val width = views.root.resources.getDimensionPixelSize(R.dimen.card_tall_width)
 
-    val ready = if (path == null) null else PosterLoader.cached(path, width)
+    val ready = if (path == null) null else PosterLoader.cached(api, path, width)
     showPoster(holder, ready)
     if (path == null || ready != null) return
 
@@ -110,11 +115,12 @@ class PosterAdapter(
     // faria a faixa inteira piscar a cada rolagem.
     holder.job = scope.launch {
       val bitmap = PosterLoader.load(api, path, width)
-      if (holder.bindingAdapterPosition == position) showPoster(holder, bitmap)
+      if (holder.binding === card) showPoster(holder, bitmap)
     }
   }
 
   override fun onViewRecycled(holder: Holder) {
+    holder.binding = null
     holder.job?.cancel()
     holder.job = null
     showPoster(holder, null)

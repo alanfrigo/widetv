@@ -116,4 +116,8 @@
     <string name="cd_backdrop">Arte do canal</string>
     <string name="cd_card_art">Arte do card</string>
     <string name="cd_episode_thumb">Miniatura do episódio</string>
+    <string name="home_retry">Não foi possível atualizar. Pressione OK para tentar novamente.</string>
+    <string name="episodes_loading">Carregando episódios…</string>
+    <string name="episodes_retry">Não foi possível carregar os episódios. Pressione OK para tentar novamente.</string>
+    <string name="episodes_empty">Nenhum episódio disponível nesta série.</string>
 </resources>

@@ -13,7 +13,10 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  quality:
+    uses: ./.github/workflows/check.yml
   publish:
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,13 +28,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Rodar a suite antes de publicar
-        # Publicar imagem quebrada e pior do que nao publicar.
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
 
       # QEMU so e necessario para o stage amd64/arm64 que nao for nativo do
       # runner. better-sqlite3 compila dentro do stage certo, entao a emulacao
