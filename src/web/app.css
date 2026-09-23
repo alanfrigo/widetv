@@ -2660,3 +2660,18 @@ code {
     animation: none;
   }
 }
+/* Recovery remains reachable with keyboard, touch and a TV remote. */
+.connection-status {
+  padding: 12px 20px;
+  color: var(--text, #fff);
+  background: #332819;
+  border: 1px solid #a97d39;
+  border-radius: 12px;
+}
+.btn--retry { margin: 8px 12px; min-height: 44px; padding: 8px 16px; }
+.btn--retry:focus-visible { outline: 3px solid var(--accent, #f2a93b); outline-offset: 4px; }
+.ep__title { overflow-wrap: anywhere; }
+@media (max-width: 560px) {
+  .connection-status { margin: 8px; padding: 12px; }
+  .btn--retry { margin-left: 0; }
+}

@@ -171,7 +171,13 @@ export function resolveNowPlaying(
 ): NowPlaying | null {
   const show = source.getShowByChannel(channelNumber);
   if (show === null) return null;
+  return resolveShowNowPlaying(source, show, epochMs, nowMs, cache);
+}
 
+/** Bulk callers already resolved visibility and identity; do not query them again. */
+function resolveShowNowPlaying(
+  source: ChannelSource, show: ShowRow, epochMs: number, nowMs: number, cache?: TimelineCache,
+): NowPlaying | null {
   const grid = cache === undefined ? readGrid(source, show.id) : cache.get(show.id);
   if (grid === null) return null;
 
@@ -215,7 +221,7 @@ export function listNowPlaying(
   const shows = [...source.listVisibleShows()].sort((a, b) => a.channelNumber - b.channelNumber);
   const playing: NowPlaying[] = [];
   for (const show of shows) {
-    const now = resolveNowPlaying(source, show.channelNumber, epochMs, nowMs, cache);
+    const now = resolveShowNowPlaying(source, show, epochMs, nowMs, cache);
     if (now !== null) playing.push(now);
   }
   return playing;

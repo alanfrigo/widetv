@@ -1,5 +1,7 @@
 package com.widetv.app.player
 
+import com.widetv.app.net.catchingNetwork
+
 import android.content.Context
 import android.util.Log
 import androidx.annotation.OptIn
@@ -14,6 +16,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -120,6 +123,7 @@ class ChannelPlayer(
   private var playing: NowPlaying? = null
   private var channelNumber: Int? = null
   private var lastResyncMs = 0L
+  private var tuneJob: Job? = null
   private var loop: Job? = null
   private var vodChannel: ChannelSummary? = null
   private var vodQueue: List<EpisodeRef> = emptyList()
@@ -219,7 +223,7 @@ class ChannelPlayer(
         val channel = channelNumber ?: return
         scope.launch {
           delay(RETRY_DELAY_MS)
-          runCatching { tune(channel) }.onFailure { events.onError(it) }
+          catchingNetwork { tune(channel) }.onFailure { events.onError(it) }
         }
       }
 
@@ -278,23 +282,24 @@ class ChannelPlayer(
     }
 
   /** false quando o canal nao existe. */
-  suspend fun tune(channelNumber: Int): Boolean {
-    stopLoop()
-    ensureSession()
-    // Sintonizar e sempre sair do sob demanda: o canal ao vivo nao divide a
-    // tela com maratona nenhuma.
-    resetVod()
-    this.channelNumber = channelNumber
-
-    val timed = api.now(channelNumber) ?: return false
-
-    // load pode esperar um episodio "preparando"; se outra sintonia (ou o
-    // stop) assumiu nesse meio tempo, quem assumiu ja cuidou do OSD e do loop
-    // — repetir aqui sobrescreveria o canal novo com o velho.
-    if (!load(timed)) return true
-    events.onTuned(timed.data)
-    startLoop()
-    return true
+  suspend fun tune(channelNumber: Int): Boolean = coroutineScope {
+    val owner = coroutineContext[Job]!!
+    tuneJob?.cancel()
+    tuneJob = owner
+    try {
+      stopLoop()
+      loadToken++
+      ensureSession()
+      resetVod()
+      this@ChannelPlayer.channelNumber = channelNumber
+      val timed = api.now(channelNumber) ?: return@coroutineScope false
+      if (!load(timed)) return@coroutineScope false
+      events.onTuned(timed.data)
+      startLoop()
+      true
+    } finally {
+      if (tuneJob === owner) tuneJob = null
+    }
   }
 
   /**
@@ -311,6 +316,8 @@ class ChannelPlayer(
     startIndex: Int,
     startPositionMs: Long = 0L,
   ) {
+    tuneJob?.cancel()
+    tuneJob = null
     stopLoop()
     ensureSession()
     mode = PlaybackMode.ON_DEMAND
@@ -399,6 +406,8 @@ class ChannelPlayer(
 
   /** Solta o decoder quando a TV dorme. A grade nao precisa de ninguem olhando. */
   fun stop() {
+    tuneJob?.cancel()
+    tuneJob = null
     stopLoop()
     releaseSession()
     resetVod()
@@ -456,11 +465,13 @@ class ChannelPlayer(
     // ficar pronto o video entra na posicao em que a grade ja esta.
     val token = ++loadToken
     var probe = api.probeStream(timed.data.episode.id)
+    if (token != loadToken || channelNumber == null) return false
     if (probe == StreamProbe.PREPARING) events.onPreparing()
     while (probe == StreamProbe.PREPARING) {
       delay(STREAM_POLL_MS)
       if (token != loadToken || channelNumber == null) return false
       probe = api.probeStream(timed.data.episode.id)
+      if (token != loadToken || channelNumber == null) return false
     }
     // ERROR segue em frente: um HEAD falhado nao prova nada, e o fluxo normal
     // ja sabe avisar quando o arquivo realmente nao vem.
@@ -531,13 +542,15 @@ class ChannelPlayer(
   }
 
   private suspend fun resync(channel: Int, episodeChanged: Boolean = false) {
+    val generation = loadToken
     val timed = try {
       api.now(channel) ?: return
     } catch (error: IOException) {
-      events.onError(error)
+      if (generation == loadToken) events.onError(error)
       return
     }
 
+    if (generation != loadToken || channelNumber != channel) return
     sample = toSample(timed)
     playing = timed.data
     lastResyncMs = System.currentTimeMillis()

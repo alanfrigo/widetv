@@ -74,6 +74,9 @@ export class ChannelPlayer {
   private policyMuted = false;
   private blocked = false;
   private advancing = false;
+  private tuning = new AbortController();
+  private loading = new AbortController();
+  private resyncing = false;
   /** Id do episodio carregado em `active`, para nao comparar URLs. */
   private activeEpisodeId: string | null = null;
 
@@ -121,15 +124,24 @@ export class ChannelPlayer {
   }
 
   async tune(channelNumber: number): Promise<boolean> {
+    this.tuning.abort();
+    this.loading.abort();
+    const tuning = this.tuning = new AbortController();
     this.stopLoop();
     this.channelNumber = channelNumber;
     this.preloadedEpisodeId = null;
     this.preloadRequestedId = null;
 
-    const timed = await fetchNow(channelNumber);
+    let timed: TimedNow | null;
+    try { timed = await fetchNow(channelNumber, tuning.signal); } catch (error) {
+      if (!tuning.signal.aborted) this.events.onError?.(error);
+      return false;
+    }
+    if (tuning.signal.aborted) return false;
     if (timed === null) return false;
 
     await this.load(this.active, timed);
+    if (tuning.signal.aborted) return false;
     this.events.onTuned?.(timed.data);
     // Depois do onTuned, senao o aviso de autoplay bloqueado seria sobrescrito
     // pelo OSD do canal e o usuario ficaria olhando uma tela parada sem saber
@@ -195,6 +207,9 @@ export class ChannelPlayer {
    * `advance()` da grade em cima do elemento que o VodPlayer esta usando.
    */
   stop(): HTMLVideoElement {
+    this.tuning.abort();
+    this.loading.abort();
+    this.loadToken++;
     this.stopLoop();
     this.channelNumber = null;
     this.playing = null;
@@ -212,7 +227,7 @@ export class ChannelPlayer {
   }
 
   destroy(): void {
-    this.stopLoop();
+    this.stop();
     for (const video of [this.active, this.spare]) {
       video.pause();
       video.removeAttribute('src');
@@ -247,14 +262,18 @@ export class ChannelPlayer {
     // generico e o canal fica sem som ou sem imagem ate a proxima sintonia.
     // O offset nao se perde: `expectedOffsetMs` projeta a grade pelo relogio,
     // entao ao ficar pronto o video entra na posicao em que a grade ja esta.
+    this.loading.abort();
+    const loading = this.loading = new AbortController();
     const token = ++this.loadToken;
-    let probe = await probeStream(timed.data.episode.id);
+    let probe = await probeStream(timed.data.episode.id, null, loading.signal);
+    if (loading.signal.aborted || token !== this.loadToken) return;
     if (probe === 'preparing') this.events.onPreparing?.();
     while (probe === 'preparing') {
       await sleep(STREAM_POLL_MS);
       // Outro load, stop() ou tune() assumiu no meio: esta espera morreu.
       if (token !== this.loadToken || this.channelNumber === null) return;
-      probe = await probeStream(timed.data.episode.id);
+      probe = await probeStream(timed.data.episode.id, null, loading.signal);
+      if (loading.signal.aborted || token !== this.loadToken) return;
     }
     // 'error' segue em frente: um HEAD bloqueado nao prova nada, e o fluxo
     // normal ja sabe avisar 'Sem sinal' quando o arquivo realmente nao vem.
@@ -263,7 +282,8 @@ export class ChannelPlayer {
     video.load();
     this.applyAudio();
 
-    const ready = await awaitMediaReady(video, METADATA_TIMEOUT_MS);
+    const ready = await awaitMediaReady(video, METADATA_TIMEOUT_MS, loading.signal);
+    if (loading.signal.aborted || token !== this.loadToken) return;
     if (ready === 'ready') {
       // Projeta o offset ate o instante do seek: o request e o metadata custam
       // centenas de ms, e sem isso o canal ja nasce atrasado.
@@ -275,7 +295,8 @@ export class ChannelPlayer {
       this.events.onStalled?.(ready);
     }
 
-    const outcome = await startPlayback(video, this.muted);
+    const outcome = await startPlayback(video, this.muted, loading.signal);
+    if (loading.signal.aborted || token !== this.loadToken) return;
     this.policyMuted = outcome === 'playing-muted';
     this.blocked = outcome === 'blocked';
     // `startPlayback` mexe em `video.muted` direto; realinha os dois elementos.
@@ -386,8 +407,12 @@ export class ChannelPlayer {
   }
 
   private async resync(channelNumber: number, episodeChanged = false): Promise<void> {
+    if (this.resyncing) return;
+    this.resyncing = true;
+    const tuning = this.tuning;
     try {
-      const timed = await fetchNow(channelNumber);
+      const timed = await fetchNow(channelNumber, tuning.signal);
+      if (tuning.signal.aborted) return;
       if (timed === null) return;
 
       // stop() ou um tune() no meio do round-trip: a resposta e de uma sintonia
@@ -407,11 +432,14 @@ export class ChannelPlayer {
       if (mismatch) {
         await this.load(this.active, timed);
       }
+      if (tuning.signal.aborted) return;
       if (episodeChanged || mismatch) {
         this.events.onEpisodeChange?.(timed.data);
       }
     } catch (error) {
-      this.events.onError?.(error);
+      if (!tuning.signal.aborted) this.events.onError?.(error);
+    } finally {
+      this.resyncing = false;
     }
   }
 }

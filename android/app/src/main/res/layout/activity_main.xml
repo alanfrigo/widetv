@@ -883,7 +883,7 @@
                         android:clipChildren="false"
                         android:clipToPadding="false"
                         android:descendantFocusability="afterDescendants"
-                        android:nestedScrollingEnabled="false"
+                        android:nestedScrollingEnabled="true"
                         android:paddingStart="@dimen/page_x"
                         android:paddingTop="8dp"
                         android:paddingEnd="@dimen/page_x"
@@ -935,7 +935,7 @@
                         android:clipChildren="false"
                         android:clipToPadding="false"
                         android:descendantFocusability="afterDescendants"
-                        android:nestedScrollingEnabled="false"
+                        android:nestedScrollingEnabled="true"
                         android:paddingStart="@dimen/page_x"
                         android:paddingTop="8dp"
                         android:paddingEnd="@dimen/page_x"
@@ -987,7 +987,7 @@
                         android:clipChildren="false"
                         android:clipToPadding="false"
                         android:descendantFocusability="afterDescendants"
-                        android:nestedScrollingEnabled="false"
+                        android:nestedScrollingEnabled="true"
                         android:paddingStart="@dimen/page_x"
                         android:paddingTop="8dp"
                         android:paddingEnd="@dimen/page_x"
@@ -1469,10 +1469,21 @@
                         android:layout_marginEnd="@dimen/page_x"
                         android:background="@color/line" />
 
-                    <!--
-                      `nestedScrollingEnabled=false`: quem rola e o
-                      NestedScrollView de fora; a lista so se estica.
-                    -->
+                    <!-- A altura limitada à tela mantém a reciclagem em temporadas longas. -->
+                    <TextView
+                        android:id="@+id/series_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minHeight="48dp"
+                        android:layout_marginStart="@dimen/page_x"
+                        android:layout_marginEnd="@dimen/page_x"
+                        android:padding="12dp"
+                        android:background="@drawable/btn_soft"
+                        android:textColor="@color/muted"
+                        android:textSize="@dimen/text_meta"
+                        android:accessibilityLiveRegion="polite"
+                        android:visibility="gone" />
+
                     <androidx.recyclerview.widget.RecyclerView
                         android:id="@+id/series_episodes"
                         android:layout_width="match_parent"
@@ -1480,7 +1491,7 @@
                         android:layout_marginTop="6dp"
                         android:clipToPadding="false"
                         android:descendantFocusability="afterDescendants"
-                        android:nestedScrollingEnabled="false"
+                        android:nestedScrollingEnabled="true"
                         android:paddingStart="@dimen/page_x"
                         android:paddingEnd="@dimen/page_x" />
                 </LinearLayout>

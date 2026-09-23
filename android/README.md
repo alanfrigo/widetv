@@ -38,9 +38,10 @@ os reducers das telas novas:
 | `ui/Settings.kt` | cursor e valor de cada linha das configuracoes, e o texto do estado da biblioteca (porte de `src/web/settings.ts`) |
 | `net/Models.kt` | contrato HTTP (espelho de `src/shared/api-types.ts`) |
 
-Todos sao funcoes puras e todos tem teste JVM. Nao ha teste instrumentado: o que
-sobra na `MainActivity` e cola de View, que um emulador verificaria pior do que
-uma pessoa olhando a tela.
+A lógica tem testes JVM. Os testes instrumentados em `app/src/androidTest` também
+validam foco, ciclo de vida, temporadas longas, isolamento do cache e concorrência
+de imagens em Android TV. Execute `./gradlew connectedDebugAndroidTest` com um
+emulador conectado; a CI executa essa etapa antes da publicação.
 
 ## Controle remoto
 
@@ -135,8 +136,10 @@ preco de guardar o numero, que e o que o contrato promete estavel entre rescans.
 
 Sem biblioteca de imagem. `ui/PosterLoader.kt` baixa pelo MESMO OkHttp da API
 (a capa esta atras do guard de sessao — um cliente novo nasceria sem cookie),
-reduz com `inSampleSize` para o tamanho do card e guarda num `LruCache` de 48MB.
-O `Job` fica no ViewHolder e e cancelado na reciclagem. Sem capa, o card mostra
+reduz com `inSampleSize` e guarda num `LruCache` limitado a 1/4 do heap (até 48 MB).
+A chave inclui o servidor, a versão da URL e o tamanho. Pedidos iguais compartilham
+um download; há no máximo quatro downloads/decodificações em paralelo. O último
+ViewHolder a abandonar uma imagem cancela também sua chamada HTTP. Sem capa, o card mostra
 as iniciais da serie sobre um gradiente.
 
 ## Requisitos

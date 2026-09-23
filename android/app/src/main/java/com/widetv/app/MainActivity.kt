@@ -1,5 +1,7 @@
 package com.widetv.app
 
+import com.widetv.app.net.catchingNetwork
+
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Bundle
@@ -132,6 +134,11 @@ import com.widetv.app.ui.seriesResumeLabel
 import com.widetv.app.ui.shelfRail
 import com.widetv.app.ui.taskCard
 import com.widetv.app.ui.unpackNav
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -263,6 +270,10 @@ class MainActivity : AppCompatActivity() {
   private var audioGroups: List<Tracks.Group> = emptyList()
   private var textGroups: List<Tracks.Group> = emptyList()
 
+  private val screenScope by lazy { CoroutineScope(lifecycleScope.coroutineContext + SupervisorJob(lifecycleScope.coroutineContext[Job])) }
+  private var homeJob: Job? = null
+  private var railsJob: Job? = null
+  private var stopped = false
   private var ticker: Job? = null
   private var osdHide: Job? = null
   private var episodesJob: Job? = null
@@ -270,6 +281,8 @@ class MainActivity : AppCompatActivity() {
   private var backdropJob: Job? = null
   private var heroJob: Job? = null
   private var settingsJob: Job? = null
+  private val settingsWrites = Mutex()
+  private var settingsMutation = 0
   private var statusPoll: Job? = null
 
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -365,7 +378,7 @@ class MainActivity : AppCompatActivity() {
       }
     }
 
-    lifecycleScope.launch {
+    screenScope.launch {
       val event = if (hasAccess()) NavEvent.Authenticated else NavEvent.SessionLost
       // A tela salva so volta com sessao valida — e quem a reabre e o acervo,
       // depois de carregar os canais e validar o que foi salvo.
@@ -373,7 +386,7 @@ class MainActivity : AppCompatActivity() {
         pendingRestore = unpackNav(savedInstanceState?.getString(KEY_NAV))
       }
       applyNav(reduceNav(nav, event))
-      if (event == NavEvent.Authenticated) seedSettings()
+
     }
   }
 
@@ -390,7 +403,7 @@ class MainActivity : AppCompatActivity() {
    * justamente para o app abrir certo com a rota fora do ar.
    */
   private suspend fun seedSettings() {
-    val loaded = runCatching { api.settings() }.getOrNull() ?: return
+    val loaded = catchingNetwork { api.settings() }.getOrNull() ?: return
     adoptSettings(loaded)
   }
 
@@ -402,9 +415,9 @@ class MainActivity : AppCompatActivity() {
    * implementacao — e o app ja tem a credencial na mao.
    */
   private suspend fun hasAccess(): Boolean {
-    if (runCatching { api.hasSession() }.getOrDefault(false)) return true
+    if (catchingNetwork { api.hasSession() }.getOrDefault(false)) return true
     val password = store.password ?: return false
-    return runCatching { api.login(password) }.getOrDefault(false)
+    return catchingNetwork { api.login(password) }.getOrDefault(false)
   }
 
   /**
@@ -446,10 +459,24 @@ class MainActivity : AppCompatActivity() {
   override fun onStart() {
     super.onStart()
     if (nav.screen == ScreenId.PLAYER) applyNav(reduceNav(nav, NavEvent.Back(now())))
+    else if (stopped) {
+      when (nav.screen) {
+        ScreenId.HOME -> openHome(null)
+        ScreenId.SERIES -> nav.channelNumber?.let { showSeries(it) }
+        ScreenId.SETTINGS -> openSettings()
+        ScreenId.GATE -> screenScope.launch {
+          if (hasAccess()) applyNav(reduceNav(nav, NavEvent.Authenticated))
+        }
+        else -> Unit
+      }
+    }
+    stopped = false
   }
 
   override fun onStop() {
     super.onStop()
+    stopped = true
+    screenScope.coroutineContext.cancelChildren()
     // O app foi para segundo plano com o episodio no ar (botao HOME da TV, troca
     // de entrada HDMI). Mesma razao do `applyNav`: depois do `stop` a posicao ja
     // nao existe.
@@ -479,6 +506,7 @@ class MainActivity : AppCompatActivity() {
   private fun applyNav(result: NavResult) {
     val previous = nav
     nav = result.state
+    if (previous != nav) screenScope.coroutineContext.cancelChildren()
 
     // Sair do player e sempre parar de tocar: som de episodio por baixo do
     // catalogo seria um aparelho que nao obedece ao VOLTAR.
@@ -508,6 +536,9 @@ class MainActivity : AppCompatActivity() {
       ScreenId.PLAYER -> openPlayer()
       ScreenId.SETTINGS -> openSettings()
     }
+    if (previous.screen == ScreenId.GATE && nav.screen == ScreenId.HOME) {
+      screenScope.launch { seedSettings() }
+    }
   }
 
   private fun show(visible: Boolean) = if (visible) View.VISIBLE else View.GONE
@@ -534,10 +565,21 @@ class MainActivity : AppCompatActivity() {
       views.gateError.setText(R.string.gate_no_server)
       return
     }
+    if (store.serverUrl != server) {
+      screenScope.coroutineContext.cancelChildren()
+      PosterLoader.clear()
+      channels = emptyList()
+      live = emptyList()
+      resume = emptyList()
+      history = emptyMap()
+      episodes = emptyList()
+      episodesChannel = null
+      settings = null
+    }
     store.serverUrl = server
     views.gateError.text = ""
 
-    lifecycleScope.launch {
+    screenScope.launch {
       val ok = try {
         api.login(password)
       } catch (error: BadServerUrlException) {
@@ -565,6 +607,11 @@ class MainActivity : AppCompatActivity() {
     // A senha sai junto: sem isso o relogin automatico refaria a sessao no
     // proximo request e o botao nao teria feito nada.
     store.password = null
+    PosterLoader.clear()
+    history = emptyMap()
+    episodes = emptyList()
+    episodesChannel = null
+    settings = null
     channels = emptyList()
     live = emptyList()
     resume = emptyList()
@@ -575,15 +622,17 @@ class MainActivity : AppCompatActivity() {
   // ------------------------------------------------------------------ acervo
 
   private fun wireHome() {
-    liveRow = WideCardAdapter(lifecycleScope, api, ::enterChannel)
+    views.homeStatus.isFocusable = true
+    views.homeStatus.setOnClickListener { openHome(null) }
+    liveRow = WideCardAdapter(screenScope, api, ::enterChannel)
     views.railLive.layoutManager = horizontal()
     views.railLive.adapter = liveRow
 
-    resumeRow = WideCardAdapter(lifecycleScope, api, ::continueCard)
+    resumeRow = WideCardAdapter(screenScope, api, ::continueCard)
     views.railResume.layoutManager = horizontal()
     views.railResume.adapter = resumeRow
 
-    shelfRow = PosterAdapter(lifecycleScope, api, ::openSeries)
+    shelfRow = PosterAdapter(screenScope, api, ::openSeries)
     views.railShelf.layoutManager = horizontal()
     views.railShelf.adapter = shelfRow
 
@@ -646,6 +695,13 @@ class MainActivity : AppCompatActivity() {
   /** @param focusOn serie de onde o VOLTAR veio, para o foco cair nela. */
   private fun openHome(focusOn: Int?) {
     if (channels.isNotEmpty()) {
+      // A cancelled artwork request must be rebound when its rail becomes visible again.
+      for (rail in listOf(views.railShelf, views.railLive, views.railResume)) {
+        for (index in 0 until rail.childCount) {
+          val position = rail.getChildAdapterPosition(rail.getChildAt(index))
+          if (position != RecyclerView.NO_POSITION) rail.adapter?.notifyItemChanged(position)
+        }
+      }
       views.homeStatus.visibility = View.GONE
       focusShelf(focusOn)
       // A grade andou enquanto alguem estava na serie ou no player: as duas
@@ -655,17 +711,18 @@ class MainActivity : AppCompatActivity() {
       return
     }
 
+    homeJob?.cancel()
     views.homeStatus.setText(R.string.home_loading)
     views.homeStatus.visibility = View.VISIBLE
 
-    lifecycleScope.launch {
+    homeJob = screenScope.launch {
       val loaded = try {
         api.channels()
       } catch (error: UnauthorizedException) {
         onUnauthorized()
         return@launch
       } catch (error: IOException) {
-        views.homeStatus.setText(R.string.gate_offline)
+        views.homeStatus.setText(R.string.home_retry)
         return@launch
       }
 
@@ -715,22 +772,30 @@ class MainActivity : AppCompatActivity() {
    * correspondente simplesmente nao aparece. Por isso as duas sao independentes
    * e nenhuma delas propaga erro — o acervo ja esta na tela e continua inteiro.
    */
+  private fun showHomeOffline() {
+    if (nav.screen != ScreenId.HOME) return
+    views.homeStatus.setText(R.string.home_retry)
+    views.homeStatus.visibility = View.VISIBLE
+  }
+
   private fun loadRails() {
-    lifecycleScope.launch {
-      live = runCatching { api.nowAll() }.getOrDefault(emptyList())
-      renderLive()
-      renderHero()
-    }
-    lifecycleScope.launch {
-      resume = runCatching { api.resume() }.getOrDefault(emptyList())
-      renderResume()
-    }
-    // O historico cru nao alimenta faixa nenhuma: ele e o que a lista de
-    // episodios da serie consulta para desenhar a barra e a marca de visto.
-    lifecycleScope.launch {
-      history = runCatching { api.history() }.getOrDefault(emptyList())
-        .associateBy { it.episodeId }
-      if (nav.screen == ScreenId.SERIES) renderSeasons()
+    railsJob?.cancel()
+    railsJob = screenScope.launch {
+      launch {
+        live = catchingNetwork { api.nowAll() }.getOrElse { showHomeOffline(); live }
+        renderLive()
+        renderHero()
+      }
+      launch {
+        resume = catchingNetwork { api.resume() }.getOrElse { showHomeOffline(); resume }
+        renderResume()
+      }
+      launch {
+        catchingNetwork { api.history() }.getOrNull()?.let { entries ->
+          history = entries.associateBy { it.episodeId }
+        }
+        if (nav.screen == ScreenId.SERIES) renderSeasons()
+      }
     }
   }
 
@@ -787,7 +852,7 @@ class MainActivity : AppCompatActivity() {
     val path = hero.artUrl ?: return
     val width = resources.displayMetrics.widthPixels
     val height = resources.getDimensionPixelSize(R.dimen.hero_h)
-    heroJob = lifecycleScope.launch {
+    heroJob = screenScope.launch {
       val bitmap = PosterLoader.load(api, path, width, height)
       // O hero pode ter mudado enquanto a arte vinha.
       if (bitmap != null && heroChannel()?.number == hero.channelNumber) {
@@ -929,15 +994,21 @@ class MainActivity : AppCompatActivity() {
   private fun enterLive(channelNumber: Int) {
     applyNav(reduceNav(nav, NavEvent.OpenPlayer(channelNumber)))
     tuner = initialTuner(channelNumber)
-    lifecycleScope.launch { tune(channelNumber) }
+    screenScope.launch { tune(channelNumber) }
   }
 
   // ------------------------------------------------------------------- serie
 
   private fun wireSeries() {
-    episodeRows = EpisodeAdapter(lifecycleScope, api, ::playFrom)
+    episodeRows = EpisodeAdapter(screenScope, api, ::playFrom)
     views.seriesEpisodes.layoutManager = LinearLayoutManager(this)
     views.seriesEpisodes.adapter = episodeRows
+    // A wrap-content list inside the page scroll inflates every episode at once.
+    views.seriesEpisodes.layoutParams = views.seriesEpisodes.layoutParams.apply {
+      height = (resources.displayMetrics.heightPixels * 0.6).toInt()
+    }
+    views.seriesEpisodes.isNestedScrollingEnabled = true
+    views.seriesStatus.setOnClickListener { nav.channelNumber?.let { loadEpisodes(it) } }
 
     seasonRows = SeasonAdapter(::pickSeason)
     views.seasonTabs.layoutManager = horizontal()
@@ -1019,7 +1090,7 @@ class MainActivity : AppCompatActivity() {
 
     val path = channel.posterUrl ?: return
     val width = resources.getDimensionPixelSize(R.dimen.series_cover_w)
-    posterJob = lifecycleScope.launch {
+    posterJob = screenScope.launch {
       val bitmap = PosterLoader.load(api, path, width)
       // A serie pode ter mudado enquanto a capa vinha: sem esta conferencia,
       // uma capa atrasada pousaria na serie errada.
@@ -1041,7 +1112,7 @@ class MainActivity : AppCompatActivity() {
     val path = channel.backdropUrl ?: return
     val width = resources.displayMetrics.widthPixels
     val height = resources.getDimensionPixelSize(R.dimen.shero_h)
-    backdropJob = lifecycleScope.launch {
+    backdropJob = screenScope.launch {
       val bitmap = PosterLoader.load(api, path, width, height)
       if (bitmap != null && nav.channelNumber == channel.number) {
         views.seriesBackdrop.setImageBitmap(bitmap)
@@ -1051,6 +1122,10 @@ class MainActivity : AppCompatActivity() {
   }
 
   private fun loadEpisodes(channelNumber: Int) {
+    views.seriesStatus.setText(R.string.episodes_loading)
+    views.seriesStatus.isFocusable = false
+    views.seriesStatus.isClickable = false
+    views.seriesStatus.visibility = View.VISIBLE
     // A lista some antes da resposta chegar: um OK apressado nao pode tocar o
     // episodio da serie anterior.
     episodes = emptyList()
@@ -1058,18 +1133,23 @@ class MainActivity : AppCompatActivity() {
     episodeRows.items = emptyList()
 
     episodesJob?.cancel()
-    episodesJob = lifecycleScope.launch {
+    episodesJob = screenScope.launch {
       val loaded = try {
         api.episodes(channelNumber)
       } catch (error: UnauthorizedException) {
         onUnauthorized()
         return@launch
       } catch (error: IOException) {
+        views.seriesStatus.setText(R.string.episodes_retry)
+        views.seriesStatus.isFocusable = true
+        views.seriesStatus.isClickable = true
         return@launch
       }
 
       if (nav.channelNumber != channelNumber) return@launch
       episodes = loaded.orEmpty()
+      views.seriesStatus.setText(R.string.episodes_empty)
+      views.seriesStatus.visibility = show(episodes.isEmpty())
       episodesChannel = channelNumber
       val channel = channels.firstOrNull { it.number == channelNumber }
       seasons = seasonTabs(channel?.seasons.orEmpty(), episodes)
@@ -1183,7 +1263,7 @@ class MainActivity : AppCompatActivity() {
 
   private fun loadSettings() {
     settingsJob?.cancel()
-    settingsJob = lifecycleScope.launch {
+    settingsJob = screenScope.launch {
       val loaded = try {
         api.settings()
       } catch (error: UnauthorizedException) {
@@ -1254,18 +1334,20 @@ class MainActivity : AppCompatActivity() {
   }
 
   private fun sendPatch(command: SettingsCommand.Patch) {
+    val mutation = ++settingsMutation
     val previous = settings ?: return
     // Otimista: a linha muda agora. Esperar o round-trip inteiro entre a seta e
     // o valor faria o controle remoto parecer quebrado.
     adoptSettings(applySettingsValue(previous, command.field, command.value))
 
-    lifecycleScope.launch {
+    screenScope.launch {
       val applied = try {
         api.patchSettings(bodyOf(command))
       } catch (error: UnauthorizedException) {
         onUnauthorized()
         return@launch
       } catch (error: IOException) {
+        if (mutation != settingsMutation) return@launch
         // PATCH que falha nao pode deixar a tela mentindo: o valor volta ao que
         // o servidor confirmou por ultimo, e o aviso explica por que ele voltou.
         adoptSettings(previous)
@@ -1307,7 +1389,7 @@ class MainActivity : AppCompatActivity() {
    * outro vira "ja esta rodando". Quem conta o resto e o polling.
    */
   private fun runTask(start: suspend () -> TaskAccepted) {
-    lifecycleScope.launch {
+    screenScope.launch {
       val accepted = try {
         start()
       } catch (error: UnauthorizedException) {
@@ -1339,7 +1421,7 @@ class MainActivity : AppCompatActivity() {
    */
   private fun startStatusPoll() {
     statusPoll?.cancel()
-    statusPoll = lifecycleScope.launch {
+    statusPoll = screenScope.launch {
       while (isActive) {
         val status = try {
           api.libraryStatus()
@@ -1748,7 +1830,7 @@ class MainActivity : AppCompatActivity() {
       return
     }
     result.preview?.let { showOsd(labelFor(it)) }
-    result.tuneTo?.let { target -> lifecycleScope.launch { tune(target) } }
+    result.tuneTo?.let { target -> screenScope.launch { tune(target) } }
   }
 
   private fun channelNumbers(): List<Int> = channels.map { it.number }
@@ -1780,7 +1862,7 @@ class MainActivity : AppCompatActivity() {
     // Com o cursor na fileira de acoes o overlay fica: quem esta escolhendo
     // alguma coisa nao pode ver o menu apagar debaixo do dedo aos 3 s.
     if (sticky) return
-    osdHide = lifecycleScope.launch {
+    osdHide = screenScope.launch {
       delay(OSD_HOLD_MS)
       // Sem `cancel` aqui: quem esconde por tempo E o timer, e mandar o timer
       // cancelar a si mesmo no meio do proprio corpo e uma armadilha.
@@ -1941,9 +2023,9 @@ class MainActivity : AppCompatActivity() {
       ),
     )
 
-    lifecycleScope.launch {
+    screenScope.launch {
       if (api.setWatched(episode.id, target)) {
-        history = runCatching { api.history() }.getOrDefault(emptyList())
+        history = catchingNetwork { api.history() }.getOrDefault(emptyList())
           .associateBy { it.episodeId }
       } else {
         history = previous
@@ -1975,7 +2057,7 @@ class MainActivity : AppCompatActivity() {
    */
   private fun startTicker() {
     if (ticker != null) return
-    ticker = lifecycleScope.launch {
+    ticker = screenScope.launch {
       while (isActive) {
         delay(TICK_MS)
         if (views.overlay.visibility == View.VISIBLE) renderOverlay()
@@ -2197,8 +2279,8 @@ class MainActivity : AppCompatActivity() {
    */
   private fun pushPreference(body: JsonObject) {
     if (!rememberTrack) return
-    lifecycleScope.launch {
-      val applied = runCatching { api.patchSettings(body) }.getOrNull() ?: return@launch
+    screenScope.launch {
+      val applied = catchingNetwork { settingsWrites.withLock { api.patchSettings(body) } }.getOrNull() ?: return@launch
       settings = applied
       store.applyServerSettings(applied)
     }
@@ -2227,7 +2309,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onError(error: Throwable) {
       if (error is UnauthorizedException) {
-        lifecycleScope.launch { onUnauthorized() }
+        screenScope.launch { onUnauthorized() }
       } else {
         Log.w(TAG, "erro no player", error)
       }

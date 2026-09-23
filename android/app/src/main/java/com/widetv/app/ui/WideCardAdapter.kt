@@ -1,6 +1,6 @@
 package com.widetv.app.ui
 
-import android.annotation.SuppressLint
+import androidx.recyclerview.widget.DiffUtil
 import android.graphics.Bitmap
 import android.view.LayoutInflater
 import android.view.View
@@ -30,16 +30,19 @@ class WideCardAdapter(
   private val onOpen: (WideCard) -> Unit,
 ) : RecyclerView.Adapter<WideCardAdapter.Holder>() {
 
-  /**
-   * Lista inteira de uma vez: a faixa chega pronta do servidor e so muda em
-   * bloco (login, rescan, tique do relogio). Diff aqui seria maquinario sem nada
-   * para diferenciar.
-   */
-  @set:SuppressLint("NotifyDataSetChanged")
+  /** Atualiza apenas os cards alterados, preservando o foco e as imagens. */
   var items: List<WideCard> = emptyList()
     set(value) {
+      if (field == value) return
+      val previous = field
+      val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+        override fun getOldListSize() = previous.size
+        override fun getNewListSize() = value.size
+        override fun areItemsTheSame(old: Int, new: Int) = previous[old].channelNumber == value[new].channelNumber
+        override fun areContentsTheSame(old: Int, new: Int) = previous[old] == value[new]
+      })
       field = value
-      notifyDataSetChanged()
+      diff.dispatchUpdatesTo(this)
     }
 
   /**
@@ -60,6 +63,7 @@ class WideCardAdapter(
 
   class Holder(val views: ItemCardWideBinding) : RecyclerView.ViewHolder(views.root) {
     var job: Job? = null
+    var binding: Any? = null
   }
 
   override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
@@ -81,6 +85,7 @@ class WideCardAdapter(
 
   override fun onBindViewHolder(holder: Holder, position: Int) {
     val card = items[position]
+    holder.binding = card
     val views = holder.views
 
     views.cardName.text = card.name
@@ -109,7 +114,7 @@ class WideCardAdapter(
     val width = resources.getDimensionPixelSize(R.dimen.card_wide_width)
     val height = width * 9 / 16
 
-    val ready = if (path == null) null else PosterLoader.cached(path, width, height)
+    val ready = if (path == null) null else PosterLoader.cached(api, path, width, height)
     showArt(holder, ready)
     if (path == null || ready != null) return
 
@@ -118,11 +123,12 @@ class WideCardAdapter(
     // faria a faixa inteira piscar a cada rolagem.
     holder.job = scope.launch {
       val bitmap = PosterLoader.load(api, path, width, height)
-      if (holder.bindingAdapterPosition == position) showArt(holder, bitmap)
+      if (holder.binding === card) showArt(holder, bitmap)
     }
   }
 
   override fun onViewRecycled(holder: Holder) {
+    holder.binding = null
     holder.job?.cancel()
     holder.job = null
     showArt(holder, null)

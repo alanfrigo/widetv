@@ -14,6 +14,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -106,6 +107,8 @@ class ApiClient(private val store: Store) {
     .addInterceptor(ReloginInterceptor())
     .build()
 
+  fun imageUrl(path: String): String = resolveServerPath(base(), path).toString()
+
   private fun base(): HttpUrl =
     store.serverUrl.toHttpUrlOrNull() ?: throw BadServerUrlException(store.serverUrl)
 
@@ -130,20 +133,21 @@ class ApiClient(private val store: Store) {
   suspend fun probeStream(episodeId: String): StreamProbe = withContext(Dispatchers.IO) {
     try {
       val request = Request.Builder().url(streamUrl(episodeId)).head().build()
-      http.newCall(request).execute().use { response -> classifyProbe(response.code) }
+      http.newCall(request).consume { response -> classifyProbe(response.code) }
     } catch (error: IOException) {
       StreamProbe.ERROR
     }
   }
 
   suspend fun login(password: String): Boolean = withContext(Dispatchers.IO) {
-    performLogin(password)
+    val body = json.encodeToString(LoginRequest.serializer(), LoginRequest(password)).toRequestBody(JSON_MEDIA_TYPE)
+    bare.newCall(Request.Builder().url(url(Routes.LOGIN)).post(body).build()).consume { it.isSuccessful }
   }
 
   suspend fun hasSession(): Boolean = withContext(Dispatchers.IO) {
     // Vai pelo `bare`: aqui a pergunta e justamente se ha sessao, e um relogin
     // automatico transformaria "nao tem" em "tem" e esconderia a resposta.
-    bare.newCall(Request.Builder().url(url(Routes.SESSION)).build()).execute().use { it.isSuccessful }
+    bare.newCall(Request.Builder().url(url(Routes.SESSION)).build()).consume { it.isSuccessful }
   }
 
   suspend fun channels(): List<ChannelSummary> = withContext(Dispatchers.IO) {
@@ -153,10 +157,10 @@ class ApiClient(private val store: Store) {
   /** Encerra a sessao no servidor. Falhar aqui nao muda nada do lado de ca. */
   suspend fun logout() {
     withContext(Dispatchers.IO) {
-      runCatching {
+      catchingNetwork {
         http.newCall(
           Request.Builder().url(url(Routes.LOGOUT)).post(EMPTY_BODY).build(),
-        ).execute().close()
+        ).consume { Unit }
       }
     }
   }
@@ -219,7 +223,7 @@ class ApiClient(private val store: Store) {
       )
     }
 
-  private fun putHistory(episodeId: String, body: String): Boolean {
+  private suspend fun putHistory(episodeId: String, body: String): Boolean {
     // Id como segmento unico: as barras do caminho relativo viram %2F, do mesmo
     // jeito que no `streamUrl`.
     val target = base().newBuilder()
@@ -228,7 +232,7 @@ class ApiClient(private val store: Store) {
       .build()
     val request = Request.Builder().url(target).put(body.toRequestBody(JSON_MEDIA_TYPE)).build()
     return try {
-      http.newCall(request).execute().use { it.isSuccessful }
+      http.newCall(request).consume { it.isSuccessful }
     } catch (error: IOException) {
       false
     }
@@ -247,9 +251,9 @@ class ApiClient(private val store: Store) {
   suspend fun now(channelNumber: Int): TimedNow? = withContext(Dispatchers.IO) {
     val request = Request.Builder().url(url(Routes.now(channelNumber))).build()
     val sentAtMs = System.currentTimeMillis()
-    http.newCall(request).execute().use { response ->
+    http.newCall(request).consume { response ->
       val receivedAtMs = System.currentTimeMillis()
-      if (response.code == 404) return@withContext null
+      if (response.code == 404) return@consume null
       if (response.code == 401) throw UnauthorizedException()
       if (!response.isSuccessful) throw IOException("${request.url} respondeu ${response.code}")
       val body = response.body?.string() ?: throw IOException("${request.url} sem corpo")
@@ -268,10 +272,10 @@ class ApiClient(private val store: Store) {
    *   chegam percent-encoded e pode haver query; ver `resolveServerPath`.
    * @return null quando o recurso nao existe (404).
    */
-  suspend fun bytes(path: String): ByteArray? = withContext(Dispatchers.IO) {
-    val target = resolveServerPath(base(), path)
-    http.newCall(Request.Builder().url(target).build()).execute().use { response ->
-      if (response.code == 404) return@withContext null
+  suspend fun bytes(path: String, absoluteUrl: String = imageUrl(path)): ByteArray? = withContext(Dispatchers.IO) {
+    val target = absoluteUrl.toHttpUrlOrNull() ?: throw BadServerUrlException(absoluteUrl)
+    http.newCall(Request.Builder().url(target).build()).consume { response ->
+      if (response.code == 404) return@consume null
       if (response.code == 401) throw UnauthorizedException()
       if (!response.isSuccessful) throw IOException("$target respondeu ${response.code}")
       response.body?.bytes() ?: throw IOException("$target sem corpo")
@@ -297,7 +301,7 @@ class ApiClient(private val store: Store) {
   suspend fun patchSettings(patch: JsonObject): AppSettings = withContext(Dispatchers.IO) {
     val target = url(Routes.SETTINGS)
     val body = json.encodeToString(JsonObject.serializer(), patch).toRequestBody(JSON_MEDIA_TYPE)
-    http.newCall(Request.Builder().url(target).patch(body).build()).execute().use { response ->
+    http.newCall(Request.Builder().url(target).patch(body).build()).consume { response ->
       if (response.code == 401) throw UnauthorizedException()
       if (!response.isSuccessful) throw IOException("$target respondeu ${response.code}")
       json.decodeFromString<AppSettings>(
@@ -348,42 +352,31 @@ class ApiClient(private val store: Store) {
    * apertou OK duas vezes veria "servidor fora do ar". So o resto do nao-2xx
    * (400 de modo invalido, 500) e falha de verdade.
    */
-  private fun postTask(target: HttpUrl, body: String): TaskAccepted {
+  private suspend fun postTask(target: HttpUrl, body: String): TaskAccepted {
     val request = Request.Builder().url(target).post(body.toRequestBody(JSON_MEDIA_TYPE)).build()
-    http.newCall(request).execute().use { response ->
+    return http.newCall(request).consume { response ->
       if (response.code == 401) throw UnauthorizedException()
       if (!response.isSuccessful && response.code != 409) {
         throw IOException("$target respondeu ${response.code}")
       }
-      return json.decodeFromString(
+      json.decodeFromString(
         response.body?.string() ?: throw IOException("$target sem corpo"),
       )
     }
   }
 
   /** null quando o recurso nao existe (404). */
-  private fun getBodyOrNull(target: HttpUrl): String? {
-    http.newCall(Request.Builder().url(target).build()).execute().use { response ->
-      if (response.code == 404) return null
+  private suspend fun getBodyOrNull(target: HttpUrl): String? {
+    return http.newCall(Request.Builder().url(target).build()).consume { response ->
+      if (response.code == 404) return@consume null
       if (response.code == 401) throw UnauthorizedException()
       if (!response.isSuccessful) throw IOException("$target respondeu ${response.code}")
-      return response.body?.string() ?: throw IOException("$target sem corpo")
+      response.body?.string() ?: throw IOException("$target sem corpo")
     }
   }
 
-  private fun getBody(target: HttpUrl): String =
+  private suspend fun getBody(target: HttpUrl): String =
     getBodyOrNull(target) ?: throw IOException("$target respondeu 404")
-
-  private fun performLogin(password: String): Boolean {
-    val body = json.encodeToString(LoginRequest.serializer(), LoginRequest(password))
-      .toRequestBody(JSON_MEDIA_TYPE)
-    val request = Request.Builder().url(url(Routes.LOGIN)).post(body).build()
-    return try {
-      bare.newCall(request).execute().use { it.isSuccessful }
-    } catch (error: IOException) {
-      false
-    }
-  }
 
   /**
    * 401 em qualquer rota significa sessao vencida, nao senha errada: a senha
@@ -396,11 +389,18 @@ class ApiClient(private val store: Store) {
       if (response.code != 401) return response
 
       val password = store.password ?: return response
-      // Devolve o 401 original quando o relogin falha: quem chamou decide se
-      // abre a tela de senha. Repetir o request so gastaria outro round-trip.
-      if (!performLogin(password)) return response
-
+      val loginUrl = url(Routes.LOGIN)
+      val original = chain.request().url
+      if (chain.call().isCanceled() || original.host != loginUrl.host ||
+        original.port != loginUrl.port || original.scheme != loginUrl.scheme) return response
+      // Same Call: cancelling a screen also cancels its automatic login.
       response.close()
+      val body = json.encodeToString(LoginRequest.serializer(), LoginRequest(password)).toRequestBody(JSON_MEDIA_TYPE)
+      val login = chain.proceed(Request.Builder().url(loginUrl).post(body).build())
+      val success = login.use { it.isSuccessful }
+      if (!success || store.password != password) {
+        return response.newBuilder().body(ByteArray(0).toResponseBody(null)).build()
+      }
       return chain.proceed(chain.request())
     }
   }

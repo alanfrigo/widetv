@@ -73,3 +73,9 @@ desktop.ini
 # Worktrees isoladas de trabalho em andamento
 .worktrees/
 .superpowers/
+
+# Browser test artifacts
+/test-results/
+/playwright-report/
+
+/android/.kotlin/

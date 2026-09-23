@@ -14,6 +14,6 @@
     android:gravity="center"
     android:paddingStart="17dp"
     android:paddingEnd="17dp"
-    android:textColor="@color/text_2"
+    android:textColor="@color/season_text"
     android:textSize="@dimen/text_card"
     android:textStyle="bold" />

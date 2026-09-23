@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from 'fastify';
+import { writeFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 
 import { registerChannelRoutes } from '../../src/server/channels/routes';
@@ -163,6 +164,16 @@ afterAll(async () => {
 });
 
 describe('custo de GET /api/channels', () => {
+  test('a grade em lote reaproveita as series ja consultadas', async () => {
+    spy.reset();
+    const response = await app.inject({ url: '/api/now' });
+    expect(response.statusCode).toBe(200);
+    expect(spy.calls.getShowByChannel).toBe(0);
+    expect(spy.calls.listVisibleShows).toBe(1);
+    spy.reset();
+    await app.inject({ url: '/api/now' });
+    expect(spy.calls.listEpisodes).toBe(0);
+  });
   test('nao carrega episodio nenhum para montar a listagem', async () => {
     spy.reset();
     const r = await app.inject({ url: '/api/channels' });
@@ -170,6 +181,23 @@ describe('custo de GET /api/channels', () => {
 
     // A assercao central: zero. Antes eram 500 chamadas, 15 mil linhas lidas.
     expect(spy.calls.listEpisodes).toBe(0);
+  });
+
+  test.skipIf(!process.env.WIDETV_PERF_ENDPOINT_OUTPUT)('benchmark endpoints', async () => {
+    const samples: Record<string, { milliseconds: number[]; calls: Calls }> = {};
+    for (const url of ['/api/channels', '/api/now', '/api/channels/1/episodes']) {
+      await app.inject({ url });
+      const milliseconds: number[] = [];
+      for (let run = 0; run < 50; run++) {
+        spy.reset();
+        const start = performance.now();
+        const response = await app.inject({ url });
+        milliseconds.push(performance.now() - start);
+        expect(response.statusCode).toBe(200);
+      }
+      samples[url] = { milliseconds, calls: { ...spy.calls } };
+    }
+    writeFileSync(process.env.WIDETV_PERF_ENDPOINT_OUTPUT!, JSON.stringify(samples, null, 2));
   });
 
   test('contagem, temporadas e o gatilho de metadata sao UMA consulta cada', async () => {
